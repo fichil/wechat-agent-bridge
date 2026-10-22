@@ -3,7 +3,32 @@
 **让不同 AI 智能体通过统一、可控的工具与微信交互。**  
 A model-agnostic framework for controlled WeChat interactions by AI agents.
 
-> 非腾讯或微信官方项目。本仓库目前只有项目定义与开发交接文档，尚无可运行的微信适配器或 AI 服务，未验证任何微信版本的实际兼容性。
+> 非腾讯或微信官方项目。已实现 M0 离线骨架与合成数据 mock；没有真实微信适配器或 AI 服务，未验证任何微信版本的实际兼容性。
+
+## M0 本地运行
+
+使用 Python 3.12，仅依赖标准库，无需安装包、微信、账号或 API key。在仓库根目录运行：
+
+```powershell
+python -X utf8 -m unittest discover -s tests -v
+python -X utf8 -m wechat_agent_bridge
+python -X utf8 -m wechat_agent_bridge --mode dry-run
+```
+
+默认模式为 `read-only`，演示动作返回 `denied / read_only`；`dry-run` 校验账号、会话、草稿和连接状态后返回 `dry_run`，不会提交动作。演示只读取内置合成事件，过滤重复事件和自己发言，不自动回复。
+
+显式选择 `mock` 可在内存中演练尝试、核验和不确定结果，仍不会操作任何客户端：
+
+```powershell
+python -X utf8 -m wechat_agent_bridge --mode mock --outcome verify-timeout --state-db .local/unknown-demo.sqlite3
+python -X utf8 -m wechat_agent_bridge --mode mock --state-db .local/unknown-demo.sqlite3
+```
+
+使用新的示例数据库时，第一条命令返回 `unknown`；第二条仍为 `unknown`，且 `replayed=true`、`mock_submissions=0`。固定演示请求 ID 不会因为重启或切换 mock 结果而再次提交。
+
+默认状态文件为 `.local/m0-state.sqlite3`，仅保存去重哈希与结果，不保存消息正文；已从 Git 排除。`--state-db :memory:` 适合相互独立的合成演示，不提供跨进程去重。`--paused` 演示暂停。输出中的 `ui_confirmed` 只是 **mock 核验结果**，不代表真实发送或收件人送达。
+
+实现与测试环境见 [M0 实现说明](docs/M0.md)，后续验证见 [M1 测试计划](docs/M1_TEST_PLAN.md)。
 
 ## 项目目标
 
@@ -16,7 +41,7 @@ A model-agnostic framework for controlled WeChat interactions by AI agents.
 - 账号操作：后续探索好友申请与联系人管理，默认关闭，独立授权。
 - 控制：会话白名单、只读/预演模式、操作确认、暂停开关与审计记录。
 
-以上均为规划，不代表已实现。项目不提供微信账号，不解决移动端登录资格，也不能保证客户端长期在线。
+除上文列出的 M0 离线能力外，以上仍为规划。项目不提供微信账号，不解决移动端登录资格，也不能保证客户端长期在线。
 
 ## 设计原则
 
@@ -45,7 +70,7 @@ AI 不是直接控制所有界面动作的唯一决策者；目标核对、去�
 - 已有草稿、目标不确定、掉线或超时时安全停止；
 - 不做自动回复、不添加/删除好友、不连接真实模型。
 
-见 [开发交接](docs/DEVELOPMENT.md) 和 [AGENTS.md](AGENTS.md)。本地 Codex 应先阅读这些文件，再制定最小实现计划。
+其中 mock 与离线策略属于已实现的 M0，真实读发属于尚未执行的 M1。见 [开发交接](docs/DEVELOPMENT.md) 和 [AGENTS.md](AGENTS.md)。本地 Codex 应先阅读这些文件。
 
 ## 可参考项目
 
