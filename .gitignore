@@ -12,10 +12,12 @@ secrets*.json
 /logs/
 /screenshots/
 /sessions/
+.local/
 *.db
 *.db-*
 *.sqlite
 *.sqlite3
+*.sqlite3-*
 *.log
 
 # Python
