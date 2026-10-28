@@ -1,0 +1,2 @@
+# Optional static disassembly only. Install into .local/static-tools, not runtime.
+capstone==5.0.6

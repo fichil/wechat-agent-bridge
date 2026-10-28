@@ -1,7 +1,7 @@
 # Development instructions
 
 ## Scope
-Read README.md and docs/DEVELOPMENT.md before implementation. This repository starts as documentation only. Do not claim any adapter, provider or platform is supported without tests and explicit evidence.
+Read README.md and docs/DEVELOPMENT.md before implementation. M0 and the mock-backed M1 console are implemented; live M1 acceptance remains blocked as recorded in docs/M1_TEST_PLAN.md. Do not claim any adapter, provider or platform is supported without tests and explicit evidence.
 
 ## Working approach
 - Implement a small mock-backed vertical slice before touching a live client.

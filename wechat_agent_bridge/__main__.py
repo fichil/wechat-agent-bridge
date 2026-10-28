@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+import sys
 
 from .adapters.mock import MockAdapter, MockOutcome
 from .application import Bridge
@@ -12,6 +13,10 @@ from .state import StateStore
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "console":
+        from .console import main as console_main
+        return console_main(argv[1:])
     parser = argparse.ArgumentParser(description="M0 offline demo (synthetic data only)")
     parser.add_argument("--mode", choices=[mode.value for mode in Mode], default=Mode.READ_ONLY.value)
     parser.add_argument("--outcome", choices=[item.value for item in MockOutcome], default="confirmed")
