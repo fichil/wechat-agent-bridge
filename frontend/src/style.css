@@ -74,6 +74,28 @@ h3 {
   justify-content: space-between;
   border-bottom: 1px solid #e1e6de;
 }
+.app-shell--workspace .brand-header {
+  height: auto;
+  max-width: none;
+  margin: 0 0 24px;
+  padding: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 16px;
+  border-bottom: 0;
+  flex-shrink: 0;
+}
+.header-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.app-shell--workspace .header-actions {
+  align-items: flex-start;
+}
 .brand {
   display: flex;
   gap: 12px;
@@ -111,7 +133,8 @@ h3 {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  margin: 22px 0 18px;
+  min-height: 54px;
+  margin: 0 0 18px;
 }
 .conversation-toolbar .intro-copy {
   margin: 0 0 5px;
@@ -263,7 +286,6 @@ h3 {
   margin: 16px auto;
 }
 .settings-menu {
-  margin-top: 25px;
   border-bottom: 1px solid #e5ebe3;
 }
 .settings-menu span {
@@ -275,6 +297,21 @@ h3 {
 }
 .conversation-settings {
   margin-top: 20px;
+}
+.settings-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px 24px;
+  margin-top: 12px;
+}
+.settings-copy {
+  flex: 1 1 420px;
+  min-width: 0;
+}
+.settings-copy .intro-copy {
+  margin-top: 0;
 }
 .filter-option {
   display: flex;
@@ -299,16 +336,19 @@ h3 {
   line-height: 1.6;
 }
 .settings-actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
   align-items: center;
-  gap: 12px;
-  margin-top: 24px;
+  gap: 8px 12px;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .settings-actions .el-button + .el-button {
   margin-left: 0;
 }
 .settings-actions > span {
+  grid-column: 1 / -1;
+  justify-self: end;
   font-size: 12px;
   color: #47764e;
 }
@@ -318,6 +358,7 @@ h3 {
   }
   .conversation-list {
     border-right: 0;
+    height: 420px;
   }
   .conversation-detail {
     min-height: 150px;
@@ -340,9 +381,10 @@ h3 {
   }
 }
 .workspace-page {
-  width: min(1120px, calc(100% - 80px));
-  margin: 64px auto 40px;
+  width: calc(100% - 48px);
+  margin: 16px 24px 40px;
   flex: 1;
+  min-width: 0;
 }
 .accounts-page {
   width: min(1120px, calc(100% - 64px));
@@ -576,6 +618,11 @@ h3 {
   font-size: 10px;
   letter-spacing: 1px;
 }
+.app-shell--workspace .app-footer {
+  max-width: none;
+  padding-right: 24px;
+  padding-left: 24px;
+}
 .status-alert {
   margin-bottom: 20px;
 }
@@ -647,20 +694,14 @@ h3 {
 .is-unresolved {
   background: #fbfcfa;
 }
-.workspace-page {
-  margin-top: 36px;
-}
-.workspace-account {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  margin-bottom: 28px;
-}
 .selected-account {
   display: flex;
   align-items: center;
   gap: 15px;
+  min-width: 0;
+  margin-bottom: 28px;
+}
+.selected-account > div {
   min-width: 0;
 }
 .selected-account .eyebrow {
@@ -673,15 +714,24 @@ h3 {
   overflow-wrap: anywhere;
 }
 .workspace-layout {
+  --workspace-history-height: min(620px, 75vh);
+  --workspace-list-height: 0px;
+  --workspace-padding-y: 32px;
   display: grid;
-  grid-template-columns: 200px 1fr;
-  gap: 26px;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 24px;
   min-height: 490px;
+}
+@media (max-width: 1100px) {
+  .workspace-layout {
+    --workspace-list-height: 420px;
+  }
 }
 .sidebar {
   display: flex;
   flex-direction: column;
-  padding: 24px 0;
+  min-width: 0;
+  padding: 0;
 }
 .sidebar-label {
   padding: 0 18px;
@@ -731,19 +781,20 @@ h3 {
 }
 .workspace-content {
   min-width: 0;
+  /* Match the conversation panel: history/list, toolbar, gap, padding and borders. */
+  height: calc(
+    max(420px, var(--workspace-history-height) + var(--workspace-list-height)) +
+      54px + 18px + var(--workspace-padding-y) + var(--workspace-padding-y) +
+      4px
+  );
+  overflow-y: auto;
   background: white;
   border: 1px solid #e0e7df;
   border-radius: 16px;
-  padding: 32px 36px;
+  padding: var(--workspace-padding-y) 36px;
 }
-.content-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 15px;
-}
-.content-heading h2 {
-  font-size: 24px;
+.workspace-content > .intro-copy:first-child {
+  margin-top: 0;
 }
 .detail-grid {
   display: grid;
@@ -787,6 +838,7 @@ h3 {
   color: #9aa596;
 }
 .placeholder-state {
+  height: 100%;
   min-height: 340px;
   display: flex;
   flex-direction: column;
@@ -817,8 +869,7 @@ h3 {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  height: 620px;
-  max-height: 75vh;
+  height: var(--workspace-history-height);
   background: #f2f3f2;
   overflow: hidden;
   border-radius: 0 10px 10px 0;
@@ -984,7 +1035,6 @@ h3 {
 @media (max-width: 800px) {
   .message-history {
     border-radius: 10px;
-    height: 560px;
   }
   .message-scroll {
     padding: 10px 12px 24px;
@@ -1008,7 +1058,8 @@ h3 {
   }
   .workspace-page {
     width: calc(100% - 40px);
-    margin-top: 32px;
+    margin-right: 20px;
+    margin-left: 20px;
   }
   h1 {
     font-size: 25px;
@@ -1020,11 +1071,10 @@ h3 {
     padding: 0;
   }
   .workspace-layout {
+    --workspace-history-height: min(560px, 75vh);
+    --workspace-padding-y: 25px;
     grid-template-columns: 1fr;
     gap: 16px;
-  }
-  .sidebar {
-    padding: 0;
   }
   .sidebar-label,
   .sidebar-note {
@@ -1040,13 +1090,21 @@ h3 {
     padding: 12px;
   }
   .workspace-content {
-    padding: 25px;
+    padding-right: 25px;
+    padding-left: 25px;
   }
   .app-footer {
     padding: 20px 24px;
   }
+  .app-shell--workspace .app-footer {
+    padding-right: 20px;
+    padding-left: 20px;
+  }
 }
 @media (max-width: 480px) {
+  .workspace-layout {
+    --workspace-padding-y: 22px;
+  }
   .intro-copy {
     font-size: 12px;
   }
@@ -1061,7 +1119,8 @@ h3 {
     font-size: 9px;
   }
   .workspace-content {
-    padding: 22px 18px;
+    padding-right: 18px;
+    padding-left: 18px;
   }
   .sidebar nav a {
     font-size: 12px;
@@ -1069,9 +1128,6 @@ h3 {
   }
   .sidebar nav a > span:first-child {
     display: none;
-  }
-  .workspace-account .el-button {
-    flex-shrink: 0;
   }
 }
 @media (max-width: 759px) {

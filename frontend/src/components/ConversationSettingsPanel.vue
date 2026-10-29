@@ -65,41 +65,47 @@ function reset() {
 
 <template>
   <div class="settings-menu"><span aria-current="page">会话过滤</span></div>
-  <p class="intro-copy">
-    仅应用于当前微信账号。开启开关表示排除，默认全部开启。
-  </p>
-  <p class="settings-note">
-    取消排除后，服务号、公众号和折叠群聊仍以分类入口显示。
-  </p>
-  <p v-if="loading" role="status">正在读取设置…</p>
-  <div v-if="error" class="conversation-alert" role="alert">
-    {{ error }}
-    <ElButton v-if="!ready && !loading" @click="load">重试</ElButton>
-  </div>
-  <form v-if="ready" class="conversation-settings" @submit.prevent="save">
-    <div
-      v-for="option in exclusionOptions"
-      :key="option.key"
-      class="filter-option"
-    >
-      <label :for="`exclude-${option.key}`"
-        ><strong>{{ option.label }}</strong
-        ><span>{{ option.description }}</span></label
-      >
-      <ElSwitch
-        :id="`exclude-${option.key}`"
-        v-model="exclusions[option.key]"
-        :aria-label="`排除${option.label}`"
-        :disabled="saving"
-        @change="saved = false"
-      />
+  <form @submit.prevent="save">
+    <div class="settings-toolbar">
+      <div class="settings-copy">
+        <p class="intro-copy">
+          仅应用于当前微信账号。开启开关表示排除，默认全部开启。
+        </p>
+        <p class="settings-note">
+          取消排除后，服务号、公众号和折叠群聊仍以分类入口显示。
+        </p>
+      </div>
+      <div v-if="ready" class="settings-actions">
+        <ElButton type="primary" native-type="submit" :loading="saving"
+          >保存设置</ElButton
+        >
+        <ElButton :disabled="saving" @click="reset">恢复默认</ElButton>
+        <span v-if="saved" role="status">设置已保存</span>
+      </div>
     </div>
-    <div class="settings-actions">
-      <ElButton type="primary" native-type="submit" :loading="saving"
-        >保存设置</ElButton
+    <p v-if="loading" role="status">正在读取设置…</p>
+    <div v-if="error" class="conversation-alert" role="alert">
+      {{ error }}
+      <ElButton v-if="!ready && !loading" @click="load">重试</ElButton>
+    </div>
+    <div v-if="ready" class="conversation-settings">
+      <div
+        v-for="option in exclusionOptions"
+        :key="option.key"
+        class="filter-option"
       >
-      <ElButton :disabled="saving" @click="reset">恢复默认</ElButton>
-      <span v-if="saved" role="status">设置已保存</span>
+        <label :for="`exclude-${option.key}`"
+          ><strong>{{ option.label }}</strong
+          ><span>{{ option.description }}</span></label
+        >
+        <ElSwitch
+          :id="`exclude-${option.key}`"
+          v-model="exclusions[option.key]"
+          :aria-label="`排除${option.label}`"
+          :disabled="saving"
+          @change="saved = false"
+        />
+      </div>
     </div>
   </form>
 </template>

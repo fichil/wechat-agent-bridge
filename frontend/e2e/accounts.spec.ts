@@ -78,7 +78,7 @@ test("reload preserves cached selection; a genuinely missing archive returns to 
   await page.goto("/");
   await page.getByRole("button", { name: "进入工作台" }).click();
   await page.reload();
-  await expect(page.getByRole("heading", { name: "账号概览" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "账号概览" })).toBeVisible();
   expect(state.posts).toBe(0);
   state.snapshot = snapshot([
     { ...syntheticAccount, account_id: "new-backend-id" },
