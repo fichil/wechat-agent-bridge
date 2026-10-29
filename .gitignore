@@ -1,0 +1,14 @@
+# Chat archives, media, diagnostics and runtime files stay on this computer.
+.local/
+.venv*/
+__pycache__/
+*.py[cod]
+.env*
+*.sqlite*
+*.db*
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+*.tsbuildinfo
