@@ -85,16 +85,21 @@ def packed_transcript(data):
     return None
 
 
+def message_text(row, sender=None):
+    raw = row.get("message_content")
+    text = decode_text(raw if raw not in (None, b"", "") else row.get("compress_content"))
+    if sender and text.startswith(sender + ":\n"):
+        text = text[len(sender)+2:]
+    return text
+
+
 def parse_content(row, sender=None):
     issues = []
     try:
-        raw = row.get("message_content")
-        text = decode_text(raw if raw not in (None, b"", "") else row.get("compress_content"))
+        text = message_text(row, sender)
     except Exception:
         text = ""
         issues.append("message_content_unavailable")
-    if sender and text.startswith(sender + ":\n"):
-        text = text[len(sender)+2:]
     code = row["local_type"] & 0xffffffff
     kind = {1: "text", 3: "image", 34: "voice", 43: "video", 47: "sticker",
             49: "attachment", 10000: "system", 10002: "system", 11000: "sticker"}.get(code, "unsupported")
@@ -106,8 +111,8 @@ def parse_content(row, sender=None):
         result["text"] = text
     elif kind == "system":
         result["text"] = "".join(root.itertext()).strip() if root is not None else text
-    elif kind == "image":
-        result.update(image_status="not_loaded", description="图片")
+    elif kind in ("image", "sticker"):
+        result.update(image_status="not_loaded", description="表情" if kind == "sticker" else "图片")
     elif kind == "voice":
         transcript, source = None, None
         if root is not None:

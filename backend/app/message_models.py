@@ -12,6 +12,7 @@ class MessageRequest(ConversationAccountRequest):
 
 
 class ImageRequest(ConversationAccountRequest):
+    """Read image or sticker bytes by an archived message identity; no caller URLs."""
     conversation_id: str = Field(min_length=1, max_length=128)
     message_id: str = Field(min_length=1, max_length=128)
 
@@ -70,6 +71,7 @@ class MessagePage(BaseModel):
 
 
 class MessageImage(BaseModel):
+    """Original image/sticker bytes as standard base64 JSON; GIF animation is preserved."""
     needs_sync: bool = False
     message_id: str
     status: Literal["available", "unavailable"]

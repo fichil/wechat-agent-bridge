@@ -183,6 +183,7 @@ class MessageReader:
 
     def image(self, request, deadline):
         from .images import read_image
+        from .stickers import read_sticker
         self.session.bind(deadline)
         reference = request["reference"]
         shard = reference["shard"]
@@ -192,11 +193,13 @@ class MessageReader:
             if isinstance(self.cache, DatabaseCache) and (reference.get("generation") or "legacy").split(":")[0] not in ("legacy", self.cache.generation(shard)):
                 raise ProbeError("message_source_changed")
             table = self.table(request["source_id"])
-            safe = ",".join(f"CASE WHEN length({c})<={MAX_CONTENT} THEN {c} ELSE NULL END AS {c}" for c in ("message_content", "packed_info_data"))
-            row = db.execute(f'SELECT local_type,{safe},create_time,server_id '
-                             f'FROM "{table}" WHERE local_id=?', (reference["local_id"],)).fetchone()
-            if not row or str(row["server_id"]) != reference["server_id"] or row["local_type"] & 0xffffffff != 3:
+            safe = ",".join(f"CASE WHEN length(m.{c})<={MAX_CONTENT} THEN m.{c} ELSE NULL END AS {c}" for c in ("message_content", "compress_content", "packed_info_data"))
+            row = db.execute(f'SELECT m.local_type,{safe},m.create_time,m.server_id,n.user_name AS sender_username '
+                             f'FROM "{table}" m LEFT JOIN Name2Id n ON m.real_sender_id=n.rowid WHERE m.local_id=?', (reference["local_id"],)).fetchone()
+            if not row or str(row["server_id"]) != reference["server_id"] or row["local_type"] & 0xffffffff not in (3, 47, 11000):
                 raise ProbeError("message_not_found")
-            result = read_image(self, request["source_id"], dict(row))
+            row = dict(row)
+        # Release the message snapshot before the optional emoticon lookup/network wait.
+        result = read_image(self, request["source_id"], row) if row["local_type"] & 0xffffffff == 3 else read_sticker(self, row)
         self.session.bind(deadline)
         return result

@@ -63,6 +63,24 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual([r["message_id"] for r in before],[r["message_id"] for r in after])
         self.assertEqual(after[-1]["content"]["text"],"changed")
 
+    def test_sticker_restart_preserves_gif_and_shared_image_quota(self):
+        from test_stickers import picture
+        item = message(); item.update(type="sticker",content=dict(description="表情"))
+        self.store.save_history(self.aid,self.cid,dict(items=[item],has_more=False,issues=[],status="complete"),dict(boundary=None))
+        mid = self.store.messages(self.aid,self.cid)["items"][0]["message_id"]
+        data = picture()
+        value = dict(status="available",mime_type="image/gif",data_base64=base64.b64encode(data).decode(),quality="original")
+        self.store.image(self.aid,self.cid,mid,value)
+        self.store.close(); self.store = Store(self.path)
+        self.assertEqual(base64.b64decode(self.store.image(self.aid,self.cid,mid)["data_base64"]),data)
+        self.assertEqual(self.store.messages(self.aid,self.cid)["items"][0]["type"],"sticker")
+        self.store.image_limit = len(data)
+        self.ingest([2])
+        other = self.store.messages(self.aid,self.cid)["items"][-1]["message_id"]
+        self.store.image(self.aid,self.cid,other,value)
+        self.assertTrue(self.store.image(self.aid,self.cid,mid)["needs_sync"])
+        self.assertEqual(self.store.image(self.aid,self.cid,other)["status"],"available")
+
     def test_change_feed_drains_batches_low_sort_arrivals_and_edits(self):
         self.ingest([500])
         initial = self.store.messages(self.aid,self.cid)

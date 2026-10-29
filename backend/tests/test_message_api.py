@@ -65,6 +65,41 @@ class MessageApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIsNotNone(response.json()["page"])
 
+    def test_sticker_json_cache_and_offline_errors(self):
+        import base64
+        from test_stickers import picture
+        item = message()
+        item.update(type="sticker", content=dict(description="表情"))
+        self.reader.messages.return_value.update(items=[item])
+        page = self.completed(self.history()).json()["page"]
+        mid = page["items"][0]["message_id"]
+        data = picture()
+        self.reader.message_image.return_value = dict(status="available", reason=None, mime_type="image/gif",
+            data_base64=base64.b64encode(data).decode(), quality="original")
+        body = dict(conversation_id=self.conversation, message_id=mid)
+        image = self.completed(self.post("message-image-reads", **body)).json()["image"]
+        self.assertEqual(base64.b64decode(image["data_base64"]), data)
+        self.app.state.bridge.discovery.live_accounts.clear()
+        self.app.state.store.set_state(self.ids[0], "offline")
+        self.reader.message_image.reset_mock()
+        cached = self.post("message-images/query", **body)
+        self.assertEqual(cached.json()["data_base64"], image["data_base64"])
+        self.assertEqual(cached.headers["content-type"], "application/json")
+        self.assertFalse(cached.json()["needs_sync"])
+        self.assertEqual(self.completed(self.post("message-image-reads", **body)).json()["image"], cached.json())
+        self.reader.message_image.assert_not_called()
+        self.assertEqual(self.post("message-images/query", self.ids[1], **body).status_code, 404)
+        self.assertEqual(self.post("message-image-reads", **body, url="https://emoji.qpic.cn/x").status_code, 422)
+
+    def test_uncached_sticker_offline_does_not_attempt_network_or_source(self):
+        page = self.completed(self.history()).json()["page"]
+        mid = page["items"][0]["message_id"]
+        self.app.state.bridge.discovery.live_accounts.clear()
+        self.app.state.store.set_state(self.ids[0], "offline")
+        task = self.completed(self.post("message-image-reads", conversation_id=self.conversation, message_id=mid)).json()
+        self.assertEqual(task["error"], "source_offline")
+        self.reader.message_image.assert_not_called()
+
     def test_pending_reuse_health_and_failure_not_empty_page(self):
         release = threading.Event()
         def slow(*args):

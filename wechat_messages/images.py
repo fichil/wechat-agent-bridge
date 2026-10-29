@@ -60,7 +60,7 @@ def decrypt_image(data, keys):
     raise ProbeError("image_format_unsupported")
 
 
-def verified_image(data):
+def verified_image(data, *, check=lambda: None, all_frames=False):
     from PIL import Image
     if len(data) > MAX_IMAGE:
         raise ProbeError("image_size_limit")
@@ -75,7 +75,18 @@ def verified_image(data):
                     raise ProbeError("image_dimensions_limit")
                 img.verify()
             with Image.open(io.BytesIO(data)) as img:
-                img.load()
+                pixels = 0
+                for frame in range(501 if all_frames else 1):
+                    check()
+                    try:
+                        img.seek(frame)
+                    except EOFError:
+                        break
+                    pixels += img.width * img.height
+                    if frame == 500 or pixels > 100000000:
+                        raise ProbeError("image_animation_limit")
+                    img.load()
+                check()
         return mime
     except ProbeError:
         raise

@@ -178,4 +178,49 @@ describe("persistent history lifecycle", () => {
     expect(store.items).toHaveLength(2);
     expect(store.error).toContain("过期");
   });
+  it("skips queued media after it leaves the viewport and preserves source error codes", async () => {
+    const store = useMessagesStore();
+    store.activate("one", "chat");
+    await flushPromises();
+    let visible = true;
+    store.loadImage("message-2", false, () => visible);
+    visible = false;
+    await flushPromises();
+    expect(api.cachedImage).not.toHaveBeenCalled();
+    expect(store.loadingImages["message-2"]).toBeUndefined();
+    vi.mocked(api.readMessageImage).mockRejectedValue(
+      new ApiFailure("source_offline", ""),
+    );
+    store.loadImage("message-2");
+    await flushPromises();
+    expect(store.images["message-2"]?.reason).toBe("source_offline");
+    store.loadImage("message-2");
+    await flushPromises();
+    expect(api.readMessageImage).toHaveBeenCalledTimes(1);
+  });
+  it("does not apply a previous account's late media response", async () => {
+    const store = useMessagesStore();
+    store.activate("one", "chat");
+    await flushPromises();
+    let release!: (value: Awaited<ReturnType<typeof api.cachedImage>>) => void;
+    vi.mocked(api.cachedImage).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    store.loadImage("message-2");
+    await flushPromises();
+    store.activate("two", "another");
+    release({
+      message_id: "message-2",
+      status: "available",
+      mime_type: "image/gif",
+      data_base64: "R0lGODlh",
+      needs_sync: false,
+    });
+    await flushPromises();
+    expect(store.images["message-2"]).toBeUndefined();
+    expect(api.readMessageImage).not.toHaveBeenCalled();
+  });
 });

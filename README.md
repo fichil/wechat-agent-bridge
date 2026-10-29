@@ -1,7 +1,7 @@
 # 微信 Agent Bridge
 
 Windows 本机微信工作台：Vue 3 / TypeScript 前端，Python 3.12 / FastAPI 后端。
-账号、会话、聊天历史和按需读取的图片保存到本地 SQLite。页面和 API 优先读取数据库，微信退出、后端重启后仍能查询已保存历史。
+账号、会话、聊天历史和按需读取的图片、静态表情及 GIF 保存到本地 SQLite。页面和 API 优先读取数据库，微信退出、后端重启后仍能查询已保存历史。
 
 ## 启动
 
@@ -41,7 +41,9 @@ npm run dev
 - 按需历史：打开会话先显示数据库结果；缺失的最新窗口、更早历史通过后台任务补录。尚未完整缓存的区间明确标为部分覆盖。
 - 轻量检查：每十秒检查文件元数据和已缓存的少量账号身份指针。没有变化时不解密、不查询微信消息正文。有变化才处理相关来源，单批最多 100 条，重任务共用一个队列。
 - 更新通知：事务提交后通过 WebSocket 发送 JSON 变更通知，前端随后从 SQLite 获取变化；断线重连重新查询。前端不再定时重读微信。
-- 图片：只缓存实际请求且成功读取的图片，单图最多 8 MiB，按最近使用时间淘汰，总有效图片数据最多 512 MiB；头像不占此限额。SQLite 空闲页及 WAL 可能使文件占用高于有效图片容量。
+- 图片和表情：只缓存实际请求且成功读取的资源，单图最多 8 MiB，共享 512 MiB LRU 配额；头像不占此限额。SQLite 空闲页及 WAL 可能使文件占用高于有效图片容量。
+- 表情读取：优先查询本地归档缓存，未命中时只读对应微信消息 XML；缺少原图地址则按 MD5 精确补查当前账号的 `emoticon.db`。后端按需从微信 CDN 下载，返回含 `mime_type` 和 `data_base64` 的 JSON。GIF 原字节保存，不抽帧、不转码；原图不可用时才降级缩略图并标注。缓存命中不访问微信或网络；未缓存资源首次获取需要微信在线。
+- 表情仅在页面可见且进入可视区域时获取，离开可视区域或隐藏页面会卸载图片节点、保留布局；重新显示复用缓存。前端图片和表情共享 32 MiB Base64／64 项限额，失败仅手动重试，不全量预下载历史。
 - 语音：仅保存微信已有的转写，不触发识别或调用外部服务。其他附件仅保存已解析的说明，不自动下载。
 - 删除与撤回：本地归档保留已经获取的历史，不跟随源库删除；新系统消息和近期变化按增量读取保存。
 
@@ -49,6 +51,8 @@ npm run dev
 已捕获并验证的快照不会因为解密期间发生后续写入而被丢弃；后续检查继续追上新提交。
 工作进程无窗口、低优先级，文件/内存读取限速 32 MiB/s；沿用 384 MiB 解密缓存、单库/WAL 256 MiB、单分片 60 秒及消息任务 180 秒上限。
 这些是处理预算，不代表进程总内存上限。不操作窗口、焦点、鼠标、键盘、剪贴板，不注入、不自动提权、不发送消息或标记已读。
+
+表情下载只接受来自绑定消息或同账号表情库的地址，不接受 API 调用方提供 URL。允许 `qpic.cn` 及其子域，另精确允许本机 4.1.15.56 样本实际使用的 `vweixinf.tc.qq.com`。每次跳转都重新检查域名及 DNS 公网地址，并将连接固定至已验证 IP；不使用系统代理或改变代理设置，不携带 Cookie。最多两次跳转，网络总预算 20 秒、限速 1 MiB/s，仍受单媒体任务 60 秒预算约束。表情校验最多 500 帧、累计解码 1 亿像素；超限、未知加密格式、下载失败均返回独立原因，不把静态缩略图当作完整动画。
 
 旧 `.local/conversation-settings.json` 首次迁入数据库并保留原文件；以后设置以数据库为准。损坏的旧文件不自动覆盖。
 数据库损坏、版本过高、磁盘写入失败或其他进程占用时返回明确错误，不清空或自动重建归档。
@@ -71,8 +75,8 @@ npm run dev
 | `/conversation-refreshes/query` | `{"account_id":"…","refresh_id":"…"}` | 刷新任务状态 |
 | `/messages/query` | `{"account_id":"…","conversation_id":"…","cursor":null,"page_size":50}` | 数据库历史或变更分页，不访问微信 |
 | `/message-reads` | 同上，可加 `"refresh":true` | 缺失历史补录；强制刷新用于复核已有窗口 |
-| `/message-images/query` | `{"account_id":"…","conversation_id":"…","message_id":"…"}` | 图片缓存；未命中 `needs_sync=true` |
-| `/message-image-reads` | 同上 | 读取本机已有图片并缓存 |
+| `/message-images/query` | `{"account_id":"…","conversation_id":"…","message_id":"…"}` | 图片／表情缓存；未命中 `needs_sync=true` |
+| `/message-image-reads` | 同上 | 读取本机已有图片，或按需获取表情并缓存 |
 | `/message-read-tasks/query` | `{"account_id":"…","task_id":"…"}` | 消息或图片任务结果 |
 | `/conversation-settings/query` | `{"account_id":"…"}` | 七项过滤设置 |
 | `/conversation-settings/update` | 账号和完整 `exclusions` 对象 | 保存账号级设置 |
@@ -111,6 +115,8 @@ Pop-Location
 .\.venv-backend\Scripts\python.exe -B -X utf8 scripts\verify_archive_performance.py
 # 显式真实验收：需先停止使用同一数据库的后端；验证后台读取及重启后的离线访问
 .\.venv-backend\Scripts\python.exe -B -X utf8 scripts\verify_archive_live.py --run
+# 真实表情验收：当前服务须在线；使用归档的隔离副本，不停止服务或微信
+.\.venv-backend\Scripts\python.exe -B -X utf8 scripts\verify_stickers_live.py --run
 ```
 
 真实验收会将选中会话的数据保存至本地归档，报告只保存计数、耗时、原因码、资源指标和被动焦点观察，位于 `.local/archive-acceptance/`。
@@ -119,6 +125,8 @@ Pop-Location
 
 主要实现：`backend/app/storage.py` 管理数据库，`runtime.py` 管理共享队列与十秒调度，`events.py` 管理通知，`wechat_messages/incremental.py` 管理来源基线与增量。
 前端类型由 Pydantic/OpenAPI 生成，变更契约必须重新导出和运行 `check:api`。
+
+静态表情与 GIF 的实现及验收见 [2026-10-29 表情验收记录](docs/acceptance-stickers-2026-10-29.md)。参考 [wx4auto 媒体说明](https://wx4auto.lightisle.cn/docs/multimodal/)、[WeFlow 表情解析和缓存流程](https://github.com/hicccc77/WeFlow/blob/main/electron/services/chatService.ts)、[微信 4.x 表情库字段](https://github.com/Rikkkum/wx_emoji_windows/blob/main/scripts/export/wxemoticon-js.mjs)；本项目独立实现受限下载与原有读取链路集成，没有引入上述客户端库或复制其实现。
 
 ## 独立账号识别模块
 

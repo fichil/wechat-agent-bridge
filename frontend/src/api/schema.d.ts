@@ -572,7 +572,10 @@ export interface components {
              */
             api_version: "v1";
         };
-        /** ImageRequest */
+        /**
+         * ImageRequest
+         * @description Read image or sticker bytes by an archived message identity; no caller URLs.
+         */
         ImageRequest: {
             /** Account Id */
             account_id: string;
@@ -648,7 +651,10 @@ export interface components {
             /** Image Status */
             image_status?: "not_loaded" | null;
         };
-        /** MessageImage */
+        /**
+         * MessageImage
+         * @description Original image/sticker bytes as standard base64 JSON; GIF animation is preserved.
+         */
         MessageImage: {
             /**
              * Needs Sync

@@ -167,10 +167,14 @@ class ContentTests(unittest.TestCase):
         name = b"a"*32
         self.assertEqual(image_names(dict(packed_info_data=b"\x1a\x20"+name)), ["a"*32])
 
-    def test_runtime_has_no_ui_injection_or_network_fallbacks(self):
+    def test_runtime_has_no_ui_injection_and_network_is_sticker_only(self):
         source = "\n".join(p.read_text(encoding="utf-8") for p in (Path(__file__).resolve().parents[2]/"wechat_messages").glob("*.py"))
         for forbidden in ("SetForegroundWindow", "SetCursorPos", "SendInput", "WriteProcessMemory", "CreateRemoteThread", "SetClipboardData", "pyautogui", "uiautomation", "frida", "requests.", "httpx."):
             self.assertNotIn(forbidden, source)
+        for path in (Path(__file__).resolve().parents[2]/"wechat_messages").glob("*.py"):
+            if path.name != "sticker_download.py":
+                for forbidden in ("import socket", "import http.client", "urllib.request"):
+                    self.assertNotIn(forbidden, path.read_text(encoding="utf-8"))
 
     def test_local_images_prefer_original_then_fallback_with_explicit_failures(self):
         output = io.BytesIO(); Image.new("RGB", (2, 2), "green").save(output, format="PNG")

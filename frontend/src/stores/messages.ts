@@ -272,9 +272,10 @@ export const useMessagesStore = defineStore("messages", () => {
       }
     }
   }
-  function loadImage(messageId: string, retry = false) {
+  function loadImage(messageId: string, retry = false, isVisible = () => true) {
     if (
       !enabled ||
+      !isVisible() ||
       loadingImages.value[messageId] ||
       (!retry && images.value[messageId])
     )
@@ -284,12 +285,13 @@ export const useMessagesStore = defineStore("messages", () => {
       conversation = conversationId.value!;
     loadingImages.value[messageId] = true;
     imageQueue = imageQueue.then(async () => {
-      if (!valid(ticket)) return;
       try {
+        if (!valid(ticket) || !isVisible()) return;
         const cached = await api.cachedImage(account, conversation, messageId);
         if (!valid(ticket)) return;
         let result = cached;
         if (cached.needs_sync) {
+          if (!isVisible()) return;
           const task = await api.readMessageImage(
             account,
             conversation,
@@ -321,7 +323,8 @@ export const useMessagesStore = defineStore("messages", () => {
           images.value[messageId] = {
             message_id: messageId,
             status: "unavailable",
-            reason: "image_read_failed",
+            reason:
+              cause instanceof ApiFailure ? cause.code : "image_read_failed",
             needs_sync: true,
           };
       } finally {

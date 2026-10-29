@@ -20,6 +20,8 @@ async function mockConversations(page: Page) {
     allFiltered: false,
     imageAvailable: false,
     historyFail: false,
+    stickers: false,
+    mediaReads: 0,
   };
   const messageTasks = new Map();
   const second = {
@@ -109,6 +111,18 @@ async function mockConversations(page: Page) {
               },
             ];
       if (state.extraMessage && body.cursor !== "older") items.push(message(6));
+      if (state.stickers && body.cursor !== "older") {
+        items[4] = {
+          ...message(5, true),
+          type: "sticker",
+          content: { image_status: "not_loaded" },
+        };
+        items.push({
+          ...message(7),
+          type: "sticker",
+          content: { image_status: "not_loaded" },
+        });
+      }
       const task = messageTask(
         messagePage(
           id,
@@ -129,6 +143,8 @@ async function mockConversations(page: Page) {
       return route.fulfill({ status: 202, json: task });
     }
     if (path.endsWith("/message-image-reads")) {
+      state.mediaReads++;
+      const gif = state.stickers && body.message_id === "message-7";
       const task = {
         ...messageTask(messagePage(id, body.conversation_id)),
         task_id: `image:${body.message_id}`,
@@ -139,10 +155,11 @@ async function mockConversations(page: Page) {
               message_id: body.message_id,
               status: "available",
               reason: null,
-              quality: "thumbnail",
-              mime_type: "image/png",
-              data_base64:
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+              quality: state.stickers ? "original" : "thumbnail",
+              mime_type: gif ? "image/gif" : "image/png",
+              data_base64: gif
+                ? "R0lGODlhEAAQAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQAFAAAACwAAAAAEAAQAAAIHQABCBxIsKDBgwgTKlzIsKHDhxAjSpxIsaLFgQEBACH5BAEUAAEALAAAAAAQABAAgQAA/wAAAAAAAAAAAAgdAAEIHEiwoMGDCBMqXMiwocOHECNKnEixosWBAQEAOw=="
+                : "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
             }
           : {
               message_id: body.message_id,
@@ -339,6 +356,81 @@ test("base64 image renders and a failed manual refresh preserves visible history
   await page.screenshot({
     path: "../.local/framework-acceptance/message-history-synthetic.png",
     fullPage: true,
+  });
+});
+
+test("static stickers and GIF animate from JSON and suspend outside visible content", async ({
+  page,
+}) => {
+  const { state } = await mockConversations(page);
+  state.stickers = state.imageAvailable = true;
+  const remoteImages: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.resourceType() === "image" &&
+      request.url().startsWith("http") &&
+      !request.url().startsWith("http://127.0.0.1")
+    )
+      remoteImages.push(request.url());
+  });
+  await page.goto("/workspace/synthetic-account-1/conversations");
+  await page.getByRole("button", { name: /合成会话 0 / }).click();
+  const gif = page.getByRole("img", { name: "动态表情", exact: true });
+  await page.locator('[data-message-id="message-7"]').scrollIntoViewIfNeeded();
+  await expect(gif).toBeVisible();
+  await expect(gif).toHaveAttribute("src", /^data:image\/gif;base64,/);
+  await expect(
+    page.getByRole("img", { name: "表情", exact: true }),
+  ).toHaveAttribute("src", /^data:image\/png;base64,/);
+  const frames = new Set<string>();
+  await expect
+    .poll(
+      async () => {
+        frames.add(
+          (await gif.screenshot({ animations: "allow" })).toString("base64"),
+        );
+        return frames.size;
+      },
+      { intervals: [70, 130, 190], timeout: 3000 },
+    )
+    .toBeGreaterThan(1);
+  const reads = state.mediaReads;
+  const height = await page
+    .locator('[data-message-id="message-7"]')
+    .evaluate((node) => node.getBoundingClientRect().height);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(gif).toHaveCount(0);
+  expect(
+    await page
+      .locator('[data-message-id="message-7"]')
+      .evaluate((node) => node.getBoundingClientRect().height),
+  ).toBeCloseTo(height, 0);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: false,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(gif).toBeVisible();
+  expect(state.mediaReads).toBe(reads);
+  await page.locator(".message-scroll").evaluate((node) => {
+    (node as HTMLElement).style.height = "100px";
+    node.scrollTop = 0;
+  });
+  await expect(gif).toHaveCount(0);
+  await page.locator('[data-message-id="message-7"]').scrollIntoViewIfNeeded();
+  await expect(gif).toBeVisible();
+  expect(state.mediaReads).toBe(reads);
+  expect(remoteImages).toEqual([]);
+  await page.screenshot({
+    path: "../.local/sticker-acceptance/stickers-synthetic.png",
   });
 });
 

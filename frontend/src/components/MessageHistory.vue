@@ -196,8 +196,9 @@ onBeforeUnmount(() => {
             </div>
             <div class="message-bubble">
               <MessageImage
-                v-if="message.type === 'image'"
+                v-if="message.type === 'image' || message.type === 'sticker'"
                 :message-id="message.message_id"
+                :sticker="message.type === 'sticker'"
               />
               <template v-else-if="message.type === 'voice'"
                 ><small

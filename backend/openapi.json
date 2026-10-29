@@ -2309,7 +2309,8 @@
           "conversation_id",
           "message_id"
         ],
-        "title": "ImageRequest"
+        "title": "ImageRequest",
+        "description": "Read image or sticker bytes by an archived message identity; no caller URLs."
       },
       "Instance": {
         "properties": {
@@ -2628,7 +2629,8 @@
           "message_id",
           "status"
         ],
-        "title": "MessageImage"
+        "title": "MessageImage",
+        "description": "Original image/sticker bytes as standard base64 JSON; GIF animation is preserved."
       },
       "MessagePage": {
         "properties": {
