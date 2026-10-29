@@ -129,6 +129,10 @@ class ArchiveTests(unittest.TestCase):
         with closing(sqlite3.connect(self.path)) as db:
             db.execute("DROP INDEX message_pending_transcripts")
             db.execute("DELETE FROM schema_migrations WHERE version=2")
+            db.execute("DROP TABLE conversation_preferences")
+            db.execute("DROP TABLE role_cards")
+            db.execute("DROP INDEX conversation_owner")
+            db.execute("DELETE FROM schema_migrations WHERE version=3")
             db.execute("PRAGMA user_version=1")
             db.execute("CREATE TRIGGER fail_migration BEFORE INSERT ON schema_migrations WHEN new.version=2 BEGIN SELECT RAISE(ABORT,'synthetic'); END")
             db.commit()

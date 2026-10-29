@@ -221,6 +221,8 @@ async function mockConversations(page: Page) {
                       : `合成会话 ${index}`;
             return {
               conversation_id: `${id}-${index}`,
+              ai_enabled: false,
+              preferences_revision: 0,
               name,
               category,
               is_container: [

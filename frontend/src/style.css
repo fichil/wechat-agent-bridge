@@ -160,7 +160,7 @@ h3 {
 }
 .conversation-layout {
   display: grid;
-  grid-template-columns: minmax(260px, 360px) minmax(180px, 1fr);
+  grid-template-columns: minmax(300px, 410px) minmax(180px, 1fr);
   border: 1px solid #e5ebe3;
   border-radius: 12px;
   overflow: hidden;
@@ -179,14 +179,63 @@ h3 {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 14px;
+  padding: 0 12px 0 0;
   border: 0;
   border-bottom: 1px solid #f0f3ee;
   background: white;
   text-align: left;
   color: #334b39;
   font: inherit;
+}
+.conversation-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  align-self: stretch;
+  border: 0;
+  background: transparent;
+  padding: 16px 0 16px 14px;
+  color: inherit;
+  text-align: left;
+  font: inherit;
   cursor: pointer;
+}
+.conversation-open:focus-visible,
+.conversation-settings-button:focus-visible {
+  outline: 2px solid #398355;
+  outline-offset: 2px;
+}
+.conversation-controls {
+  flex: 0 0 80px;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  padding: 6px 0;
+  gap: 1px;
+}
+.conversation-controls small {
+  font-size: 10px;
+  color: #65756a;
+  white-space: nowrap;
+}
+.conversation-settings-button {
+  border: 0;
+  background: transparent;
+  color: #46674c;
+  padding: 4px;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.ai-placeholder-note {
+  color: #7c8a7c;
+  font-size: 12px;
+  margin: 0 0 14px;
 }
 .conversation-row:hover {
   background: #f6f9f3;
@@ -1164,5 +1213,246 @@ h3 {
     gap: 4px;
     margin-top: 20px;
     padding-top: 16px;
+  }
+}
+
+/* Shared role-card and conversation preference editors. */
+.role-toolbar,
+.preferences-heading,
+.editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.role-toolbar {
+  margin-bottom: 22px;
+}
+.role-toolbar h2,
+.preferences-heading h3,
+.role-editor-heading h3 {
+  margin: 0 0 6px;
+}
+.editor-actions {
+  justify-content: flex-start;
+}
+.editor-actions .el-button + .el-button {
+  margin-left: 0;
+}
+.role-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  border: 1px solid #e5ebe3;
+  border-radius: 12px;
+  overflow: hidden;
+  min-height: 480px;
+}
+.role-list {
+  padding: 18px;
+  background: #f8faf6;
+  border-right: 1px solid #e5ebe3;
+  max-height: 76vh;
+  overflow-y: auto;
+}
+.role-list > input {
+  margin-bottom: 16px;
+}
+.role-list-item {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  color: #334b39;
+  padding: 15px 12px;
+  margin: 0 0 8px;
+  background: white;
+  border: 1px solid #e5ebe3;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+}
+.role-list-item.selected {
+  background: #e5f0e3;
+  border-color: #76a57e;
+}
+.role-list-item strong {
+  overflow-wrap: anywhere;
+}
+.role-list-item code,
+.role-editor-heading code {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  color: #6d7c70;
+}
+.role-list-item small {
+  font-size: 11px;
+  color: #7c8a7c;
+}
+.role-editor,
+.conversation-preferences {
+  padding: 24px;
+  min-width: 0;
+  background: #fff;
+}
+.role-editor-heading {
+  margin-bottom: 20px;
+}
+.editor-tabs {
+  border-bottom: 1px solid #e5ebe3;
+  margin: 18px 0 22px;
+  gap: 18px;
+}
+.editor-tabs button {
+  color: #6d7c70;
+  background: transparent;
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font: inherit;
+}
+.editor-tabs button[aria-pressed="true"] {
+  color: #398355;
+  border-bottom-color: #398355;
+}
+.editor-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.editor-field {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  color: #334b39;
+}
+.editor-field > span {
+  font-weight: 600;
+}
+.editor-field small {
+  font-weight: 400;
+  color: #7c8a7c;
+  margin-left: 8px;
+}
+.editor-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid #d9e3d7;
+  border-radius: 7px;
+  padding: 10px 12px;
+  background: white;
+  color: #334b39;
+  font: inherit;
+  line-height: 1.65;
+}
+.editor-input:focus {
+  outline: 2px solid #82ae88;
+  outline-offset: 1px;
+}
+textarea.editor-input {
+  resize: vertical;
+}
+.json-editor {
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  tab-size: 2;
+  min-height: 380px;
+  white-space: pre;
+}
+.array-field {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.editor-field > .el-button {
+  justify-self: start;
+}
+.editor-savebar {
+  padding-bottom: 16px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #e5ebe3;
+}
+.editor-empty {
+  color: #7c8a7c;
+  padding: 70px 0;
+  text-align: center;
+}
+.unsaved-label {
+  font-size: 11px;
+  color: #9a773a;
+  margin-left: 10px;
+  font-weight: 400;
+}
+.save-notice {
+  font-size: 12px;
+  color: #398355;
+}
+.preferences-heading {
+  align-items: flex-start;
+}
+.preferences-heading > div {
+  min-width: 0;
+  flex: 1;
+}
+.preferences-heading h3 {
+  overflow-wrap: anywhere;
+}
+.conversation-preferences > .settings-note {
+  margin-bottom: 28px;
+  line-height: 1.8;
+}
+.role-select {
+  width: 100%;
+  margin: -8px 0 24px;
+}
+.memory-editor {
+  min-height: 260px;
+}
+.el-select-dropdown__item {
+  max-width: min(680px, 90vw);
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+@media (max-width: 800px) {
+  .role-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .role-list {
+    max-height: 280px;
+    border-right: 0;
+    border-bottom: 1px solid #e5ebe3;
+  }
+  .role-editor,
+  .conversation-preferences {
+    padding: 18px;
+  }
+}
+@media (max-width: 500px) {
+  .conversation-row {
+    padding: 0 8px 0 0;
+    gap: 8px;
+  }
+  .conversation-open {
+    gap: 8px;
+    padding-left: 10px;
+  }
+  .conversation-controls {
+    flex-basis: 70px;
+  }
+  .role-toolbar .editor-actions {
+    width: 100%;
   }
 }

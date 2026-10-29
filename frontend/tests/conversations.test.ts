@@ -43,6 +43,8 @@ function page(id = "one", next: string | null = null): ConversationPage {
     items: [
       {
         conversation_id: "conversation-" + id,
+        ai_enabled: false,
+        preferences_revision: 0,
         name: "合成好友",
         category: "contact",
         is_container: false,

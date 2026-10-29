@@ -13,6 +13,8 @@ SQLite 位于 `.local/bridge.sqlite3`。数据只存于本机，按当前 Window
 | history_ranges | (account_id, conversation_id, lower_key, upper_key) 主键；经过完整源读取证明的连续排序区间 |
 | media_cache | cache_key 主键；头像/图片的 BLOB、MIME、SHA-256、字节数、质量和最近使用时间 |
 | conversation_settings | 稳定账号指纹主键；完整七项布尔设置 JSON |
+| role_cards | 全局 `card_code` 主键；名称、完整 V2 JSON、修订号和创建／更新时间 |
+| conversation_preferences | `(account_id, conversation_id)` 主键；AI 开关、角色卡外键、长文本记忆和独立修订号 |
 | sync_jobs | task_id 主键；状态和小型结果引用，完成任务最多保留 256 个且不超过一天 |
 | cursors | 不透明 token 主键；账号/会话/操作绑定、边界和有效期，数量有界 |
 | metadata、schema_migrations | 一次性设置迁移标记、来源状态及 schema 版本 |
@@ -21,6 +23,10 @@ SQLite 位于 `.local/bridge.sqlite3`。数据只存于本机，按当前 Window
 源文件身份或盐改变、local_id 回退时使来源代次变化，避免把新记录覆盖到旧历史。WAL checkpoint 本身不改变逻辑代次。
 
 `message_order(account_id,conversation_id,sort_key,message_id)` 支持复合游标深分页；`message_changes(account_id,conversation_id,change_seq,message_id)` 支持增量变更；变更流与消息显示顺序分开，避免低排序值迟到消息丢失。
+
+版本 3 新增角色卡和会话配置，不修改已有微信来源资料。角色卡没有账号归属；会话配置通过复合外键验证账号与会话归属，角色卡外键使用 `ON DELETE RESTRICT`，引用索引支持统计和删除检查。会话列表批量读取开关和配置修订号，长文本记忆仅在配置详情接口读取。来源同步刷新 `conversations.payload` 不会触及配置表，归档会话暂不活跃或被过滤时也保留配置和角色引用。
+
+角色修改、删除和会话配置写入在数据库所有者线程使用事务串行执行。客户端提交 `expected_revision`，冲突返回 409，既有数据不变；配置更新只合并显式提交的字段。删除在事务内检查引用数量，不提供级联删除。提交成功后才发送全局角色卡通知或按账号和会话限定的配置通知，不在通知或日志中包含正文。版本 3 迁移失败会回滚新增表、索引和版本号，原库仍可重试迁移。
 文本正文、发送者和解析结果以 JSON 保存，排序、来源、编号、代次另有索引列。图片采用 BLOB，不在任务表重复保存 Base64。
 
 ## 事务与覆盖语义

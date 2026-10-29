@@ -1,12 +1,74 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useConversationsStore } from "../stores/conversations";
 import AccountAvatar from "./AccountAvatar.vue";
 import MessageHistory from "./MessageHistory.vue";
+import ConversationPreferencesPanel from "./ConversationPreferencesPanel.vue";
+import { api, type Conversation, type ConversationPreferences } from "../api";
+import { settingsError } from "../role-cards";
 import { formatTime } from "../reasons";
 
 const props = defineProps<{ accountId: string }>();
 const store = useConversationsStore();
+const settingsConversation = ref<Conversation | null>(null);
+const preferencesPanel =
+  ref<InstanceType<typeof ConversationPreferencesPanel>>();
+const toggling = ref(new Set<string>());
+const actionError = ref("");
+let actionGeneration = 0;
+watch(
+  () => props.accountId,
+  () => {
+    actionGeneration++;
+    settingsConversation.value = null;
+    toggling.value = new Set();
+    actionError.value = "";
+  },
+);
+async function show(item: Conversation, settings = false) {
+  const ticket = actionGeneration;
+  if (preferencesPanel.value && !(await preferencesPanel.value.beforeLeave()))
+    return;
+  if (ticket !== actionGeneration) return;
+  store.selectedId = item.conversation_id;
+  settingsConversation.value = settings ? item : null;
+}
+async function back() {
+  if (settingsConversation.value) await show(settingsConversation.value);
+}
+function saved(value: ConversationPreferences) {
+  if (value.account_id !== props.accountId) return;
+  const item = store.items.find(
+    (c) => c.conversation_id === value.conversation_id,
+  );
+  if (item && (item.preferences_revision ?? 0) <= value.revision) {
+    item.ai_enabled = value.ai_enabled;
+    item.preferences_revision = value.revision;
+  }
+}
+async function toggle(item: Conversation, enabled: boolean) {
+  if (toggling.value.has(item.conversation_id)) return;
+  const ticket = actionGeneration;
+  toggling.value.add(item.conversation_id);
+  actionError.value = "";
+  try {
+    const result = await api.savePreferences({
+      account_id: props.accountId,
+      conversation_id: item.conversation_id,
+      expected_revision: item.preferences_revision ?? 0,
+      ai_enabled: enabled,
+    });
+    if (ticket === actionGeneration) saved(result);
+  } catch (cause) {
+    if (ticket === actionGeneration) {
+      actionError.value = settingsError(cause);
+      void store.refresh(false);
+    }
+  } finally {
+    if (ticket === actionGeneration)
+      toggling.value.delete(item.conversation_id);
+  }
+}
 const selected = computed(() =>
   store.items.find((item) => item.conversation_id === store.selectedId),
 );
@@ -19,6 +81,7 @@ function activate() {
 watch(() => props.accountId, activate, { immediate: true });
 document.addEventListener("visibilitychange", activate);
 onBeforeUnmount(() => {
+  actionGeneration++;
   document.removeEventListener("visibilitychange", activate);
   store.stop();
 });
@@ -64,6 +127,10 @@ function messageTime(value: string | null) {
       >刷新会话</ElButton
     >
   </div>
+  <p class="ai-placeholder-note">当前仅保存配置，自动回复暂未接入</p>
+  <p v-if="actionError" class="conversation-alert" role="alert">
+    {{ actionError }}
+  </p>
   <div v-if="store.error" class="conversation-alert" role="alert">
     {{ store.error }}<span v-if="store.page"> 当前显示上次读取结果。</span>
     <RouterLink v-if="store.accountLost" to="/accounts"
@@ -112,44 +179,68 @@ function messageTime(value: string | null) {
           ></template
         >
       </div>
-      <button
+      <div
         v-for="item in store.items"
         :key="item.conversation_id"
-        type="button"
         class="conversation-row"
         :class="{ selected: store.selectedId === item.conversation_id }"
-        :aria-pressed="store.selectedId === item.conversation_id"
-        @click="store.selectedId = item.conversation_id"
       >
-        <AccountAvatar
-          :account="{ nickname: item.name, avatar: item.avatar }"
-          :size="42"
-        />
-        <span class="conversation-copy"
-          ><span class="conversation-top"
-            ><strong>{{ item.name }}</strong>
-            <time :datetime="item.last_message_at || undefined">{{
-              messageTime(item.last_message_at)
-            }}</time></span
-          >
-          <span class="conversation-bottom"
-            ><span>{{ item.summary || "暂无消息摘要" }}</span>
-            <span
-              v-if="item.unread_count === null"
-              class="unread-badge"
-              aria-label="未读数未知"
-              >?</span
+        <button
+          type="button"
+          class="conversation-open"
+          :aria-pressed="store.selectedId === item.conversation_id"
+          @click="show(item)"
+        >
+          <AccountAvatar
+            :account="{ nickname: item.name, avatar: item.avatar }"
+            :size="42"
+          />
+          <span class="conversation-copy"
+            ><span class="conversation-top"
+              ><strong>{{ item.name }}</strong>
+              <time :datetime="item.last_message_at || undefined">{{
+                messageTime(item.last_message_at)
+              }}</time></span
             >
-            <span
-              v-else-if="item.unread_count > 0"
-              class="unread-badge"
-              :aria-label="`${item.unread_count} 条未读`"
-              >{{ item.unread_count > 99 ? "99+" : item.unread_count }}</span
+            <span class="conversation-bottom"
+              ><span>{{ item.summary || "暂无消息摘要" }}</span>
+              <span
+                v-if="item.unread_count === null"
+                class="unread-badge"
+                aria-label="未读数未知"
+                >?</span
+              >
+              <span
+                v-else-if="item.unread_count > 0"
+                class="unread-badge"
+                :aria-label="`${item.unread_count} 条未读`"
+                >{{ item.unread_count > 99 ? "99+" : item.unread_count }}</span
+              >
+            </span>
+            <span v-if="item.is_container" class="container-label"
+              >分类入口</span
             >
           </span>
-          <span v-if="item.is_container" class="container-label">分类入口</span>
-        </span>
-      </button>
+        </button>
+        <div class="conversation-controls">
+          <ElSwitch
+            :model-value="item.ai_enabled ?? false"
+            :loading="toggling.has(item.conversation_id)"
+            :aria-label="`${item.name} AI 接入`"
+            @update:model-value="toggle(item, $event === true)"
+          />
+          <small>{{ item.ai_enabled ? "接入 AI" : "关闭 AI 接入" }}</small>
+          <button
+            type="button"
+            class="conversation-settings-button"
+            :aria-label="`会话设置：${item.name}`"
+            title="会话设置"
+            @click="show(item, true)"
+          >
+            <span aria-hidden="true">⚙</span><span>设置</span>
+          </button>
+        </div>
+      </div>
       <ElButton
         v-if="store.page?.next_cursor"
         class="load-more"
@@ -159,6 +250,14 @@ function messageTime(value: string | null) {
         >加载更多</ElButton
       >
     </section>
-    <MessageHistory :account-id="accountId" :conversation="selected" />
+    <ConversationPreferencesPanel
+      v-if="settingsConversation"
+      ref="preferencesPanel"
+      :account-id="accountId"
+      :conversation="settingsConversation"
+      @back="back"
+      @saved="saved"
+    />
+    <MessageHistory v-else :account-id="accountId" :conversation="selected" />
   </div>
 </template>

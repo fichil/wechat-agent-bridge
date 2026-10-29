@@ -6,9 +6,8 @@ defineProps<{ workspace?: boolean }>();
 const accounts = useAccountsStore();
 const router = useRouter();
 
-function switchAccount() {
-  accounts.select(null);
-  void router.push("/accounts");
+async function switchAccount() {
+  if (!(await router.push("/accounts"))) accounts.select(null);
 }
 </script>
 

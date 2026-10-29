@@ -59,6 +59,16 @@ npm run dev
 数据库设计、事务边界和恢复方式见 [数据库说明](docs/database.md)。
 本机测试结果和当前服务切换步骤见 [2026-10-28 验收记录](docs/acceptance-2026-10-28.md)。
 
+## 角色卡与会话配置
+
+工作台侧栏“会话”下方的“角色卡”由所有微信账号共用。支持新增、编辑、删除及 Character Card V2 JSON 文件导入导出；每次新增／导入保存生成不可修改的 `RC_<UUID>` 编码，名称可以重复。中文表单与高级 JSON 共用草稿，角色书和未知扩展字段在表单编辑后仍保留。导入只建立草稿，不覆盖已有卡；导出仅包含 V2 文档。PNG、V1 和 V3 暂不支持。使用中的角色卡不能删除，必须先在相关会话中取消或更换角色卡。
+
+每条会话右侧可切换 AI 开关或打开设置。设置占用右侧聊天详情区域，选择器只显示角色名称和编码；记忆是可随时修改的长文本，初始为空。开关立即保存，角色选择和记忆通过“保存会话设置”提交；关闭 AI、更换或取消角色卡均保留记忆。离开未保存的编辑时可保存、放弃或关闭提示继续编辑。
+
+这些功能仅管理本地配置，当前不调用模型、不自动回复、不生成记忆。会话配置按账号和会话隔离，微信退出或服务重启后仍保留；微信同步不会覆盖配置。角色卡修改对全部引用会话生效。多页面编辑使用修订号避免覆盖，冲突时保留草稿并提示重新加载。
+
+数据保存在 `.local/bridge.sqlite3`，数据库版本升级至 3，和聊天归档一样不进入源码备份。升级前备份方式见 [数据库说明](docs/database.md)。实现参考 [Character Card V2 规范](https://github.com/malfoyslastname/character-card-spec-v2/blob/main/spec_v2.md)及 [SillyTavern 可编辑会话记忆](https://docs.sillytavern.app/extensions/summarize/)，本项目仅实现配置存储和编辑，不执行规范中的模型提示或开场白行为。
+
 ## JSON 接口
 
 业务接口统一前缀 `/api/v1`，使用 `POST` 和 `Content-Type: application/json`。只有无入参健康检查保留 `GET /health`。
@@ -80,6 +90,17 @@ npm run dev
 | `/message-read-tasks/query` | `{"account_id":"…","task_id":"…"}` | 消息或图片任务结果 |
 | `/conversation-settings/query` | `{"account_id":"…"}` | 七项过滤设置 |
 | `/conversation-settings/update` | 账号和完整 `exclusions` 对象 | 保存账号级设置 |
+| `/role-cards/query` | `{}` | 全局卡片摘要，含名称、编码、引用数和修订号 |
+| `/role-cards/get` | `{"card_code":"RC_…"}` | 完整 V2 `card` 和本地元数据 |
+| `/role-cards/create` | `{"card":{"spec":"chara_card_v2","spec_version":"2.0","data":{…}}}` | 创建角色卡，201；返回自动生成的编码 |
+| `/role-cards/update` | `card_code`、`expected_revision`、完整 `card` | 保存完整角色卡；保留未知字段 |
+| `/role-cards/delete` | `card_code`、`expected_revision` | 删除未被引用的卡片，返回 JSON 结果 |
+| `/conversation-preferences/query` | `account_id`、`conversation_id` | 当前会话的开关、角色编码、记忆和修订号 |
+| `/conversation-preferences/update` | 身份、`expected_revision`、待修改字段 | 保存会话配置，不修改省略的字段 |
+
+会话列表额外返回 `ai_enabled` 和 `preferences_revision`，不携带记忆。配置未保存时返回 `ai_enabled=false`、`role_card_code=null`、`memory=""`、`revision=0`。更新可提交 `ai_enabled`、`role_card_code` 和 `memory` 中一项或多项；`role_card_code=null` 取消角色选择，`memory=""` 明确清空记忆，其余字段不能用 `null` 清空。未变化的配置保存不递增修订号。
+
+新增错误包括 `409 revision_conflict`、`409 role_card_in_use` 和 `404 role_card_not_found`。输入不合法继续返回 `422 invalid_request`。角色卡通知使用全局 `resources=["role_cards"]`；配置通知包含账号、会话 ID 和 `conversation_preferences/conversations` 资源名，不包含角色正文或记忆。重连重新读取，正在编辑的草稿不会被通知覆盖。
 
 每页 1–100 条，默认 50。分页游标不透明、绑定账号和会话、24 小时有效；过滤条件变化或游标过期返回 `409 cursor_expired`。
 消息 `older_cursor` 用于历史，`newer_cursor` 用于 SQLite 中的变更流，后者可捕获低排序值迟到插入及已存在消息的内容更新；`has_more=true` 时继续排空该变更批次。

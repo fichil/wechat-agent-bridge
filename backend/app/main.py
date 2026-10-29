@@ -13,6 +13,8 @@ from .conversation_models import (ConversationAccountRequest, RefreshQuery, Conv
 from .conversation_settings import ConversationSettingsStore, SettingsError
 from .conversations import ConversationError
 from .message_models import MessageRequest, ImageRequest, MessageTaskQuery, MessageReadTask, MessagePage, MessageImage
+from .role_models import (JsonRequest, CardQuery, CardCreate, CardUpdate, CardDelete, CardList,
+                          RoleCard, CardDeleted, PreferencesQuery, PreferencesUpdate, ConversationPreferences)
 
 ALLOWED_ORIGINS = {"http://127.0.0.1:5173", "http://localhost:5173",
                    "http://127.0.0.1:8765", "http://localhost:8765"}
@@ -163,6 +165,35 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
     def update_conversation_settings(body: SettingsUpdate, request: Request):
         return ConversationSettings(account_id=body.account_id, exclusions=
             request.app.state.conversations.save_settings(body.account_id, body.exclusions))
+
+    @app.post("/api/v1/role-cards/query", response_model=CardList, responses=failures)
+    def role_cards(_body: JsonRequest, request: Request):
+        return request.app.state.store.role_cards()
+
+    @app.post("/api/v1/role-cards/get", response_model=RoleCard, responses=failures)
+    def role_card(body: CardQuery, request: Request):
+        return request.app.state.store.role_card(body.card_code)
+
+    @app.post("/api/v1/role-cards/create", response_model=RoleCard, responses=failures, status_code=201)
+    def create_role_card(body: CardCreate, request: Request):
+        return request.app.state.store.save_role_card(body.card.model_dump(exclude_unset=True))
+
+    @app.post("/api/v1/role-cards/update", response_model=RoleCard, responses=failures)
+    def update_role_card(body: CardUpdate, request: Request):
+        return request.app.state.store.save_role_card(body.card.model_dump(exclude_unset=True), body.card_code, body.expected_revision)
+
+    @app.post("/api/v1/role-cards/delete", response_model=CardDeleted, responses=failures)
+    def delete_role_card(body: CardDelete, request: Request):
+        return request.app.state.store.delete_role_card(body.card_code, body.expected_revision)
+
+    @app.post("/api/v1/conversation-preferences/query", response_model=ConversationPreferences, responses=failures)
+    def preferences(body: PreferencesQuery, request: Request):
+        return request.app.state.store.preferences(body.account_id, body.conversation_id)
+
+    @app.post("/api/v1/conversation-preferences/update", response_model=ConversationPreferences, responses=failures)
+    def update_preferences(body: PreferencesUpdate, request: Request):
+        patch = body.model_dump(exclude_unset=True, include={"ai_enabled", "role_card_code", "memory"})
+        return request.app.state.store.save_preferences(body.account_id, body.conversation_id, body.expected_revision, patch)
 
     return app
 

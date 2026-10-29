@@ -10,6 +10,7 @@ import time
 from uuid import uuid4
 
 from .conversations import ConversationError
+from .role_storage import RoleStoreMixin, ROLE_SCHEMA
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / ".local" / "bridge.sqlite3"
@@ -74,7 +75,7 @@ CREATE TABLE cursors(token TEXT PRIMARY KEY, account_id TEXT NOT NULL, conversat
 """
 
 
-class Store:
+class Store(RoleStoreMixin):
     def __init__(self, path=DEFAULT_PATH, settings=None, image_limit=IMAGE_LIMIT):
         self.path, self.image_limit = Path(path) if str(path) != ":memory:" else path, image_limit
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="archive-db")
@@ -124,7 +125,7 @@ class Store:
         self.db.execute("PRAGMA temp_store=MEMORY")
         self.db.execute("PRAGMA cache_size=-16384")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2):
+        if version not in (0, 1, 2, 3):
             self.db.close()
             raise ConversationError("storage_version_unsupported", "数据库版本高于当前程序，请使用匹配版本。", 503)
         if not version:
@@ -145,6 +146,13 @@ class Store:
                     "WHERE json_extract(payload,'$.type')='voice' AND json_extract(payload,'$.content.transcript') IS NULL")
                 self.db.execute("INSERT INTO schema_migrations VALUES(2,?)", (now(),))
                 self.db.execute("PRAGMA user_version=2")
+        if version < 3:
+            with self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                for statement in ROLE_SCHEMA:
+                    self.db.execute(statement)
+                self.db.execute("INSERT INTO schema_migrations VALUES(3,?)", (now(),))
+                self.db.execute("PRAGMA user_version=3")
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             self.db.close()
             raise ConversationError("storage_corrupt", "数据库校验失败，请保留原文件后恢复备份。", 503)
@@ -366,10 +374,16 @@ class Store:
                 total_raw = anchor["raw"]
             start = anchor.get("offset", 0)
             items = []
+            preferences = {r["conversation_id"]: r for r in self.db.execute(
+                "SELECT conversation_id,ai_enabled,revision FROM conversation_preferences WHERE account_id=? AND conversation_id IN ("
+                + ",".join("?" for _ in ids[start:start+size]) + ")", (aid, *ids[start:start+size])).fetchall()}
             for cid in ids[start:start+size]:
                 row = self._conversation(aid, cid)
                 item = json.loads(row["payload"])
                 item["avatar"] = self._get_avatar("conversation:"+cid)
+                preference = preferences.get(cid)
+                item["ai_enabled"] = bool(preference["ai_enabled"]) if preference else False
+                item["preferences_revision"] = preference["revision"] if preference else 0
                 items.append(item)
             with self.db:
                 next_cursor = self._cursor(aid, None, "conversations", dict(ids=ids, offset=start+size, rules=rules, raw=total_raw, revision=anchor.get("revision", account["revision"]))) if start+size < len(ids) else None

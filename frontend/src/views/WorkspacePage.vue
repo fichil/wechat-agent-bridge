@@ -5,6 +5,7 @@ import AccountAvatar from "../components/AccountAvatar.vue";
 import BrandHeader from "../components/BrandHeader.vue";
 import ConversationsPanel from "../components/ConversationsPanel.vue";
 import ConversationSettingsPanel from "../components/ConversationSettingsPanel.vue";
+import RoleCardsPanel from "../components/RoleCardsPanel.vue";
 import { useAccountsStore } from "../stores/accounts";
 import { formatTime, reasonText } from "../reasons";
 const route = useRoute();
@@ -17,6 +18,7 @@ const section = computed(() => route.params.section || "overview");
 const entries = [
   { key: "overview", label: "账号概览", icon: "◫" },
   { key: "conversations", label: "会话", icon: "◌" },
+  { key: "role-cards", label: "角色卡", icon: "▤" },
   { key: "agents", label: "Agent", icon: "◇" },
   { key: "settings", label: "设置", icon: "⚙" },
 ];
@@ -63,7 +65,9 @@ watch(
               }}<span v-if="entry.key === 'agents'" class="soon-dot"
             /></RouterLink>
           </nav>
-          <div class="sidebar-note">每个账号<br />一个独立的工作空间</div>
+          <div class="sidebar-note">
+            会话与记忆按账号独立<br />角色卡由所有账号共用
+          </div>
         </template>
       </aside>
       <div
@@ -155,6 +159,7 @@ watch(
           v-else-if="section === 'conversations' && account.account_id"
           :account-id="account.account_id"
         />
+        <RoleCardsPanel v-else-if="section === 'role-cards'" />
         <ConversationSettingsPanel
           v-else-if="section === 'settings' && account.account_id"
           :account-id="account.account_id"

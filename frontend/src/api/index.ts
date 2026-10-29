@@ -14,6 +14,12 @@ export type MessageReadTask = components["schemas"]["MessageReadTask"];
 export type Exclusions = components["schemas"]["Exclusions"];
 export type ConversationSettings =
   components["schemas"]["ConversationSettings"];
+export type CharacterCard = components["schemas"]["CharacterCard"];
+export type RoleCard = components["schemas"]["RoleCard"];
+export type CardSummary = components["schemas"]["CardSummary"];
+export type ConversationPreferences =
+  components["schemas"]["ConversationPreferences"];
+export type PreferencesUpdate = components["schemas"]["PreferencesUpdate"];
 
 export class ApiFailure extends Error {
   constructor(
@@ -43,6 +49,49 @@ function value<T>(result: {
 }
 
 export const api = {
+  async roleCards() {
+    return value(await client.POST("/api/v1/role-cards/query", { body: {} }));
+  },
+  async roleCard(card_code: string) {
+    return value(
+      await client.POST("/api/v1/role-cards/get", { body: { card_code } }),
+    );
+  },
+  async createRoleCard(card: CharacterCard) {
+    return value(
+      await client.POST("/api/v1/role-cards/create", { body: { card } }),
+    );
+  },
+  async updateRoleCard(
+    card_code: string,
+    expected_revision: number,
+    card: CharacterCard,
+  ) {
+    return value(
+      await client.POST("/api/v1/role-cards/update", {
+        body: { card_code, expected_revision, card },
+      }),
+    );
+  },
+  async deleteRoleCard(card_code: string, expected_revision: number) {
+    return value(
+      await client.POST("/api/v1/role-cards/delete", {
+        body: { card_code, expected_revision },
+      }),
+    );
+  },
+  async preferences(account_id: string, conversation_id: string) {
+    return value(
+      await client.POST("/api/v1/conversation-preferences/query", {
+        body: { account_id, conversation_id },
+      }),
+    );
+  },
+  async savePreferences(body: PreferencesUpdate) {
+    return value(
+      await client.POST("/api/v1/conversation-preferences/update", { body }),
+    );
+  },
   async messages(
     accountId: string,
     conversationId: string,

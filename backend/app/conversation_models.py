@@ -48,6 +48,8 @@ class ConversationSettings(BaseModel):
 
 
 class Conversation(BaseModel):
+    ai_enabled: bool = False
+    preferences_revision: int = 0
     conversation_id: str
     name: str
     category: Literal["contact", "group", "system", "unknown", "service_accounts",
