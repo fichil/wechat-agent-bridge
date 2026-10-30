@@ -10369,7 +10369,7 @@
           "new_password": {
             "type": "string",
             "maxLength": 128,
-            "minLength": 12,
+            "minLength": 4,
             "format": "password",
             "title": "New Password",
             "writeOnly": true

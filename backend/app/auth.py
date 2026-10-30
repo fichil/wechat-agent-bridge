@@ -103,7 +103,7 @@ class Login(BaseModel):
 class PasswordChange(BaseModel):
     model_config = ConfigDict(extra="forbid")
     current_password: SecretStr = Field(min_length=1, max_length=128)
-    new_password: SecretStr = Field(min_length=12, max_length=128)
+    new_password: SecretStr = Field(min_length=4, max_length=128)
 
 
 class AuthSession(BaseModel):
@@ -164,8 +164,8 @@ class AuthStore:
             return self.db.execute("SELECT 1 FROM administrator").fetchone() is not None
 
     def set_password(self, password, *, username="admin", reset=False):
-        if not 12 <= len(password) <= 128 or not 1 <= len(username) <= 64 or username.strip() != username:
-            raise ValueError("Username must be 1–64 characters; password must be 12–128 characters")
+        if not 4 <= len(password) <= 128 or not 1 <= len(username) <= 64 or username.strip() != username:
+            raise ValueError("Username must be 1–64 characters; password must be 4–128 characters")
         encoded = HASHER.hash(password)
         with self.transaction():
             existing = self.db.execute("SELECT * FROM administrator").fetchone()

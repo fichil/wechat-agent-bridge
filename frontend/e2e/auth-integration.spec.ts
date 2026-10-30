@@ -28,7 +28,7 @@ async function signIn(page: Page) {
   await page.getByLabel("后台用户名").fill("admin");
   await page.getByLabel("密码", { exact: true }).fill(password);
   await page.getByRole("button", { name: "登录", exact: true }).click();
-  await expect(page).toHaveURL(/\/accounts/);
+  await expect(page).toHaveURL(new URL("/accounts", page.url()).href);
 }
 
 test("unauthenticated page never requests business data; wrong password and refresh login", async ({
@@ -208,7 +208,7 @@ test("password change logs out both devices and accepts only the new password", 
   const second = await device.newPage();
   await second.goto("/login");
   await signIn(second);
-  const replacement = password + "-changed";
+  const replacement = "test"; // The administrator-selected minimum is four characters.
   try {
     await page.getByRole("button", { name: "修改密码" }).click();
     await page.getByLabel("当前密码", { exact: true }).fill(password);
@@ -222,7 +222,7 @@ test("password change logs out both devices and accepts only the new password", 
     await expect(page.getByRole("alert")).toHaveText("用户名或密码不正确。");
     await page.getByLabel("密码", { exact: true }).fill(replacement);
     await page.getByRole("button", { name: "登录", exact: true }).click();
-    await expect(page).toHaveURL(/\/accounts/);
+    await expect(page).toHaveURL(new URL("/accounts", page.url()).href);
   } finally {
     const login = await page.request.post(service + "/api/v1/auth/login", {
       data: { username: "admin", password: replacement },

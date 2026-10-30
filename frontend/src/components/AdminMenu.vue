@@ -71,7 +71,7 @@ async function save() {
                 type="password"
                 autocomplete="new-password"
                 required
-                minlength="12"
+                minlength="4"
                 maxlength="128"
             /></label>
             <label
@@ -80,10 +80,10 @@ async function save() {
                 type="password"
                 autocomplete="new-password"
                 required
-                minlength="12"
+                minlength="4"
                 maxlength="128"
             /></label>
-            <small>密码长度为12–128个字符。</small>
+            <small>密码长度为4–128个字符。</small>
             <p v-if="error" role="alert" class="password-error">{{ error }}</p>
             <div class="password-actions">
               <button type="button" :disabled="busy" @click="close">取消</button

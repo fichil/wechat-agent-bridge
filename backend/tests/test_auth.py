@@ -14,6 +14,18 @@ ORIGIN = 'https://bridge.example.test'
 
 
 class AuthStoreTests(unittest.TestCase):
+    def test_password_policy_accepts_4_and_128_characters(self):
+        store = AuthStore(':memory:')
+        try:
+            for value in ('abc', 'x'*129):
+                with self.assertRaises(ValueError): store.set_password(value)
+            store.set_password('test')
+            self.assertIsNotNone(store.login('admin', 'test', 'short')[1])
+            store.set_password('x'*128, reset=True)
+            self.assertIsNotNone(store.login('admin', 'x'*128, 'long')[1])
+        finally:
+            store.close()
+
     def test_persistence_hashes_expiry_and_reset(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'auth.sqlite3'
@@ -122,6 +134,16 @@ class AuthApiTests(unittest.TestCase):
         self.assertIsNone(self.app.state.auth.session(second))
         self.assertFalse(bridge.stopped.is_set())
         self.assertFalse(self.app.state.ai.stopped.is_set())
+
+    def test_change_password_uses_the_same_4_to_128_policy(self):
+        self.login()
+        for value in ('abc', 'x'*129):
+            self.assertEqual(self.client.post('/api/v1/auth/change-password', json={
+                'current_password': PASSWORD, 'new_password': value}).status_code, 422)
+        self.assertEqual(self.client.post('/api/v1/auth/change-password', json={
+            'current_password': PASSWORD, 'new_password': 'test'}).status_code, 200)
+        self.assertEqual(self.client.post('/api/v1/auth/login', json={
+            'username': 'admin', 'password': 'test'}).status_code, 200)
 
     def test_websocket_rejected_without_login_and_stops_on_revoke(self):
         with self.assertRaises(WebSocketDisconnect):

@@ -14,7 +14,7 @@ def main():
     args = parser.parse_args()
     if not sys.stdin.isatty():
         parser.error("An interactive terminal is required; passwords must not be piped or passed as arguments")
-    password = getpass("New password (12–128 characters): ")
+    password = getpass("New password (4–128 characters): ")
     if password != getpass("Confirm password: "):
         parser.error("Passwords do not match")
     store = AuthStore(args.auth_database)
