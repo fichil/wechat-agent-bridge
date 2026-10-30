@@ -1,5 +1,6 @@
 """Independent per-account sender; model work and SQLite never execute native code."""
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 import json
 import os
 import subprocess
@@ -8,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 from .conversations import ConversationError
+from .diagnostics import record_source
 
 MESSAGES = {
     'ready': '原生发送已通过本机验收。',
@@ -52,6 +54,7 @@ class DeliveryExecution:
         self.store,self.bridge=store,bridge
         self.transport=transport or NativeTransport()
         self.stop=threading.Event(); self.lock=threading.RLock(); self.pending=set(); self.cache={}
+        self.wake=threading.Event(); self.retry_after={}
         self.executor=ThreadPoolExecutor(max_workers=2,thread_name_prefix='wechat-send')
         self.thread=None
         if automatic:
@@ -79,6 +82,7 @@ class DeliveryExecution:
 
     def perform(self, candidate):
         job=None
+        retry=True
         try:
             if self.stop.is_set(): return
             aid=candidate['account_id']
@@ -86,30 +90,45 @@ class DeliveryExecution:
             binding=self.binding(aid)
             job=self.store.claim_delivery(candidate['run_id'],candidate['part_index'])
             if job is None: return
+            queued_ms=max(0,(time.time()-datetime.fromisoformat(job['created_at']).timestamp())*1000)
+            started=time.monotonic()
             result=self.transport.send(binding,job)
             self.store.finish_delivery(job,result)
-            if result.get('status')!='sent':
+            record_source(self.store,"delivery",dict(part_index=job['part_index'],timings_ms=dict(queue_to_claim=round(queued_ms,3))),result,
+                          aid=aid,cid=job['conversation_id'],task_id=job['run_id'],automatic=True,elapsed=time.monotonic()-started)
+            retry=result.get('status')!='sent'
+            if retry:
                 with self.lock: self.cache.clear()
         except Exception:
             if job:
                 self.store.finish_delivery(job,dict(status='unknown',code='native_result_uncertain'))
         finally:
-            with self.lock: self.pending.discard(candidate['account_id'])
+            with self.lock:
+                self.pending.discard(candidate['account_id'])
+                self.retry_after[candidate['account_id']]=time.monotonic()+1 if retry else 0
+            self.wake.set()
 
     def tick(self):
         for job in self.store.delivery_candidates():
             with self.lock:
                 if self.stop.is_set() or len(self.pending)>=2: return
-                if job['account_id'] in self.pending: continue
+                if job['account_id'] in self.pending or time.monotonic()<self.retry_after.get(job['account_id'],0): continue
                 self.pending.add(job['account_id'])
                 self.executor.submit(self.perform,job)
 
+    def notify(self, event):
+        if set(event.get("resources", ())) & {"ai_runs", "conversation_preferences", "accounts"}:
+            self.wake.set()
+
     def loop(self):
-        while not self.stop.wait(1):
+        while not self.stop.is_set():
+            self.wake.clear()
             try: self.tick()
             except Exception: pass
+            self.wake.wait(1)
 
     def close(self):
         self.stop.set()
+        self.wake.set()
         if self.thread: self.thread.join(timeout=3)
         self.executor.shutdown(wait=True)

@@ -54,6 +54,14 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         app.state.ai = AiExecution(store, bridge, ai_provider, enabled if ai_auto is None else ai_auto)
         from .delivery import DeliveryExecution
         app.state.sender = DeliveryExecution(store,bridge,send_transport,enabled if send_auto is None else send_auto)
+        def notify(event):
+            app.state.events.publish(event)
+            bridge.scheduler.notify(event)
+            app.state.ai.notify(event)
+            app.state.sender.notify(event)
+        store.notify = notify
+        app.state.ai.wake.set()
+        app.state.sender.wake.set()
         try:
             yield
         finally:

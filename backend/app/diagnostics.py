@@ -109,7 +109,7 @@ def record_delta_groups(store, aid, inputs, result, elapsed):
             cid = identities.get(group.get("source_id"))
             if cid:
                 checkpoints = [s for s in inputs if s.get("source_id") == group.get("source_id")]
-                record_source(store,"changes",dict(checkpoints=checkpoints),group,aid=aid,cid=cid,automatic=True,elapsed=elapsed)
+                record_source(store,"changes",dict(checkpoints=checkpoints, lane=result.get("lane"), timings_ms=result.get("timings_ms", {})),group,aid=aid,cid=cid,automatic=True,elapsed=elapsed)
     except Exception:
         store.log_warning = "增量同步日志记录异常，同步结果不受影响。"
 
@@ -127,6 +127,7 @@ class Capture:
             self.details = sanitize(dict(input_snapshot=envelope, request_json=json.loads(body), endpoint=url,
                 response_json=None, response_text=None, parsed_result=None,
                 snapshot_versions={k:metadata.get(k) for k in ("memory_revision", "role_revision", "settings_revision")}), (key,))
+            self.details["timings_ms"] = metadata.get("timings_ms", {})
             summary = dict(metadata, category="ai", operation=metadata.get("operation", "conversation"),
                 request_id=envelope.get("request_id"), profile_id=profile.get("profile_id") or metadata.get("profile_id"),
                 profile_name=profile["name"], provider=profile["provider"], model=profile["model"], protocol=profile["protocol"],
@@ -161,6 +162,12 @@ class Capture:
         self.store.log_write(dict(log_id=self.log_id, http_status=response.status_code,
             provider_request_id=sanitize(response.headers.get("x-request-id") or response.headers.get("request-id") or
                 ((data.get("request_id") or data.get("responseId") or data.get("id")) if isinstance(data, dict) else None), (self.key,))), self.details)
+
+    @diagnostic_safe
+    def network_error(self, kind, phase, response_timeout):
+        if self.log_id:
+            # Only fixed classifications; never persist raw exception text or headers.
+            self.details["network_error"] = dict(kind=kind, phase=phase, response_timeout_seconds=response_timeout)
 
     @diagnostic_safe
     def finish(self, result=None, error=None):

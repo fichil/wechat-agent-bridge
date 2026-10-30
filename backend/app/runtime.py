@@ -1,5 +1,6 @@
-"""One shared source-work queue; persistent reads never enter that queue."""
+"""Separate realtime and background source lanes; cache reads bypass both."""
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
 import threading
@@ -17,15 +18,18 @@ from .storage import now, dump
 from .diagnostics import record_source, record_delta_groups
 
 
+QUEUE_WAIT = ContextVar("source_queue_wait", default=0)
+
+
 class WorkQueue:
-    def __init__(self, store):
+    def __init__(self, store, workers=1, name="source-background"):
         self.store = store
-        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="source-sync")
+        self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=name)
         self.lock = threading.RLock()
         self.pending = {}
         self.closed = False
 
-    def submit(self, key, task, kind, work):
+    def submit(self, key, task, kind, work, *, completed=None):
         with self.lock:
             if self.closed:
                 raise ConversationError("service_stopping", "服务正在停止。", 503)
@@ -37,13 +41,14 @@ class WorkQueue:
             self.store.job(tid, task, kind)
             self.pending[key] = tid
             try:
-                self.executor.submit(self.run, key, tid, task, kind, work)
+                self.executor.submit(self.run, key, tid, task, kind, work, time.monotonic(), completed)
             except Exception:
                 self.pending.pop(key, None)
                 raise
             return dict(task)
 
-    def run(self, key, tid, task, kind, work):
+    def run(self, key, tid, task, kind, work, queued_at, completed=None):
+        token = QUEUE_WAIT.set((time.monotonic()-queued_at)*1000)
         task = dict(task, status="running")
         try:
             self.store.job(tid, task, kind)
@@ -63,6 +68,9 @@ class WorkQueue:
             finally:
                 with self.lock:
                     self.pending.pop(key, None)
+                QUEUE_WAIT.reset(token)
+                if completed:
+                    completed(task)
 
     def query(self, tid, aid=None):
         task = self.store.job(tid)
@@ -214,8 +222,9 @@ class Messages:
             if kind == "history":
                 cached = self.page(request)
                 if cached.needs_sync or request.refresh:
-                    result = self.bridge.source(aid, lambda a: self.reader.messages(a, body), "messages", body, cid=cid, task_id=task["task_id"])
-                    self.bridge.store.save_history(aid, cid, result, body)
+                    with self.bridge.store.source_snapshot(aid) as read_revision:
+                        result = self.bridge.source(aid, lambda a: self.reader.messages(a, body), "messages", body, cid=cid, task_id=task["task_id"])
+                        self.bridge.store.save_history(aid, cid, result, body, read_revision=read_revision)
                 else:
                     record_source(self.bridge.store,"messages",body,cached.model_dump(mode="json"),aid=aid,cid=cid,task_id=task["task_id"],source="cache")
                 return dict(page=self.page(request).model_dump(mode="json"))
@@ -244,6 +253,7 @@ class Bridge:
     def __init__(self, store, probe, reader, *, message_reader=None, monitor=False, interval=10):
         self.store, self.reader, self.interval = store, reader, interval
         self.queue = WorkQueue(store)
+        self.realtime_queue = WorkQueue(store, workers=3, name="source-realtime")
         self.discovery = Discovery(self, probe)
         self.conversations = Conversations(self)
         self.messages = Messages(self, message_reader)
@@ -251,6 +261,8 @@ class Bridge:
         self.thread = None
         self.process_signature = None
         self.failures = {}
+        from .sync_scheduler import SyncScheduler
+        self.scheduler = SyncScheduler(self)
         if monitor:
             self.discovery.start()
             self.thread = threading.Thread(target=self.loop, daemon=True, name="change-timer")
@@ -290,32 +302,34 @@ class Bridge:
         for account in list(self.discovery.live_accounts.values()):
             if self.stopped.is_set():
                 return
-            aid = account.account_id
-            try:
-                states = self.store.states(aid)
-                started = time.monotonic()
-                result = self.source(aid, lambda a: self.reader.changes(a, states), "changes", dict(checkpoints=states), automatic=True)
-                if result.get("conversations"):
-                    self.store.save_conversations(aid, result["conversations"])
-                self.store.save_delta(aid, result)
-                record_delta_groups(self.store, aid, states, result, time.monotonic()-started)
-                self.failures.pop(aid, None)
-            except (ProbeError, ConversationError) as exc:
-                self.failures[aid] = exc.code if isinstance(exc, ConversationError) else str(exc)
-                # Keep committed history and checkpoints; the next tick retries only unfinished work.
+            self.sync_account(account.account_id)
+
+    def sync_account(self, aid, *, lane=None, source_ids=None):
+        with self.store.source_snapshot(aid) as read_revision:
+            states = self.store.states(aid)
+            started = time.monotonic()
+            options = dict(lane=lane, source_ids=source_ids) if lane else {}
+            result = self.source(aid, lambda a: self.reader.changes(a, states, **options),
+                                 "changes", dict(checkpoints=states, **options), automatic=True)
+            read_done = time.monotonic()
+            if lane:
+                result["lane"] = lane
+            if result.get("conversations"):
+                self.store.save_conversations(aid, result["conversations"])
+            self.store.save_delta(aid, result, read_revision=read_revision)
+            result["timings_ms"] = dict(queue_wait=round(QUEUE_WAIT.get(), 3), source_read=round((read_done-started)*1000, 3), archive_commit=round((time.monotonic()-read_done)*1000, 3))
+            record_delta_groups(self.store, aid, states, result, time.monotonic()-started)
+            return result
 
     def loop(self):
-        while not self.stopped.wait(self.interval):
-            with self.queue.lock:
-                if self.queue.pending or self.queue.closed:
-                    continue
-                task = dict(task_id=uuid4().hex, status="queued", started_at=now())
-                self.queue.submit("monitor", task, "monitor", self.tick)
+        self.scheduler.loop()
 
     def close(self):
         self.stopped.set()
+        self.scheduler.wake.set()
         if self.thread:
             self.thread.join(timeout=2)
+        self.realtime_queue.close()
         self.queue.close()
         self.reader.close()
         self.store.close()

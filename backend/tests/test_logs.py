@@ -92,6 +92,8 @@ class LogTests(RoleTestCase):
             with self.assertRaises(ConversationError):Provider(httpx.MockTransport(timeout)).generate(profile,key,envelope,"schema")
         row=next(r for r in self.query()["items"] if r["task_id"]=="timeout")
         self.assertEqual(row["error"],"ai_network_error")
+        network=self.log(row["log_id"]).json()["details"]["network_error"]
+        self.assertEqual(network,dict(kind="ReadTimeout",phase="read",response_timeout_seconds=90))
         content=self.store.call(lambda:"".join(r[0] for r in self.store.db.execute("SELECT payload FROM diagnostic_details")))
         self.assertNotIn(key,content)
 

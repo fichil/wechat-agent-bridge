@@ -19,6 +19,7 @@ class AiExecution:
         self.pending = set()
         self.conversation_locks = {}
         self.stopped = threading.Event()
+        self.wake = threading.Event()
         self.image_attempts = {}
         self.thread = None
         if automatic:
@@ -38,6 +39,7 @@ class AiExecution:
             finally:
                 with self.lock:
                     self.pending.discard(key)
+                self.wake.set()
         self.executor.submit(run)
 
     def start_profile(self, fields=None, key=None, identity=None, expected=None):
@@ -98,11 +100,13 @@ class AiExecution:
         return self.start(aid, cid, request_id, "retry")
 
     def request_images(self, aid, cid):
-        for mid in self.store.ai_missing_images(aid, cid):
-            # Retry unreadable source images no more than once a minute; source queue deduplicates.
-            if time.monotonic()-self.image_attempts.get(mid, -1000) < 60:
-                continue
-            self.image_attempts[mid] = time.monotonic()
+        with self.lock:
+            current = time.monotonic()
+            self.image_attempts = {mid:at for mid,at in self.image_attempts.items() if current-at < 60}
+            mids = self.store.ai_missing_images(aid, cid, exclude=tuple(self.image_attempts))
+            for mid in mids:
+                self.image_attempts[mid] = current
+        for mid in mids:
             try:
                 self.bridge.messages.start(ImageRequest(account_id=aid, conversation_id=cid, message_id=mid), "image", automatic=True)
             except ConversationError:
@@ -142,7 +146,9 @@ class AiExecution:
             if not self.store.mark_ai_attempt(aid, cid, rid):
                 return
             run = self.store.ai_run(aid, cid, rid)
-            with log_context(self.store, account_id=aid, conversation_id=cid, task_id=rid,
+            trigger_at = self.store.call(lambda: self.store.db.execute("SELECT last_trigger_at FROM delivery_sessions WHERE account_id=? AND conversation_id=?", (aid,cid)).fetchone())
+            timings = dict(trigger_to_request=max(0, round((time.time()-trigger_at[0])*1000, 3))) if reply_ids and trigger_at and trigger_at[0] else {}
+            with log_context(self.store, timings_ms=timings, account_id=aid, conversation_id=cid, task_id=rid,
                 operation="conversation", trigger=run["trigger"], memory_revision=run["memory_revision"],
                 role_revision=run["role_revision"], settings_revision=run["settings_revision"]):
                 result = self.provider.generate(profile, key, envelope, mode)
@@ -168,15 +174,24 @@ class AiExecution:
             except ConversationError:
                 pass  # Missing/unverified configuration remains visible; never invokes a model.
 
+    def notify(self, event):
+        if set(event.get("resources", ())) & {"messages", "conversation_preferences", "ai_runs", "api_profiles", "ai_defaults", "role_cards", "ai_settings"}:
+            self.wake.set()
+
     def loop(self):
-        while not self.stopped.wait(3):
+        while not self.stopped.is_set():
+            self.wake.clear()
+            delay = 3
             try:
                 self.tick()
+                delay = self.store.ai_schedule_delay()
             except Exception:
                 pass  # No secret-bearing exception objects go to logs.
+            self.wake.wait(delay)
 
     def close(self):
         self.stopped.set()
+        self.wake.set()
         if self.thread:
             self.thread.join(timeout=4)
         self.executor.shutdown(wait=True)

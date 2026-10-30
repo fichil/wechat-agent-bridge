@@ -1,6 +1,6 @@
 """Local archive. All SQL, transactions and checkpoints belong to one thread."""
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 import base64
 import hashlib
@@ -86,6 +86,8 @@ class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMix
         self.path, self.image_limit = Path(path) if str(path) != ":memory:" else path, image_limit
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="archive-db")
         self.notify = lambda event: None
+        self.source_reads = {}
+        self.source_versions = {}
         try:
             self.call(self._open, settings)
         except Exception:
@@ -103,6 +105,28 @@ class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMix
             return self.executor.submit(method, *args).result()
         except sqlite3.Error:
             raise ConversationError("storage_unavailable", "本地数据库暂不可用，已有数据未被清空。", 503) from None
+
+    @contextmanager
+    def source_snapshot(self, aid):
+        token = uuid4().hex
+        def begin():
+            revision = self._account(aid)["revision"]
+            self.source_reads[token] = aid, revision
+            return revision
+        revision = self.call(begin)
+        try:
+            yield revision
+        finally:
+            def end():
+                self.source_reads.pop(token, None)
+                oldest = min((rev for account,rev in self.source_reads.values() if account == aid), default=float("inf"))
+                self.source_versions = {key:rev for key,rev in self.source_versions.items() if key[0] != aid or rev > oldest}
+            self.call(end)
+
+    def _source_committed(self, updates):
+        # Transient conflict protection only while reads overlap. Never a schema change.
+        active = {aid for aid,_ in self.source_reads.values()}
+        self.source_versions.update({key:rev for key,rev in updates.items() if key[0] in active})
 
     def _open(self, settings):
         if self.path != ":memory:":
@@ -456,7 +480,7 @@ class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMix
                 needs_sync=not bool(meta), revision=account["revision"], **extra)
         return self.call(query)
 
-    def _upsert_message(self, aid, cid, item, generation="legacy", incremental=False):
+    def _upsert_message(self, aid, cid, item, generation="legacy", incremental=False, read_revision=None, source_updates=None):
         row = dict(item)
         ref, key = row.pop("_ref"), row.pop("_key")
         generation = ref.get("generation", generation)
@@ -468,18 +492,28 @@ class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMix
         valid_sid = sid.isdecimal() and int(sid) > 0
         identity = "s:"+sid if valid_sid else dump([generation, ref["shard"], ref["local_id"]])
         old = self.db.execute("SELECT message_id,payload,source_ref FROM messages WHERE account_id=? AND conversation_id=? AND identity_key=?", (aid, cid, identity)).fetchone()
+        if old and read_revision is not None and self.source_versions.get((aid,old[0]), 0) > read_revision:
+            # A newer source read won the race; retain its content but grant live eligibility.
+            eligible = bool(self._delivery_note_message(aid, cid, json.loads(old[1]), json.loads(old[2]), incremental))
+            if eligible:
+                self.db.execute("UPDATE messages SET change_seq=(SELECT revision+1 FROM accounts WHERE account_id=?) WHERE message_id=?", (aid,old[0]))
+            return eligible
         mid = old[0] if old else uuid4().hex
         row.update(message_id=mid, sort_key=order_key(key))
         payload = dump(row)
         if old and old[1] == payload and old[2] == dump(ref):
-            self._delivery_note_message(aid, cid, row, ref, incremental)
+            eligible = bool(self._delivery_note_message(aid, cid, row, ref, incremental))
+            if eligible:
+                self.db.execute("UPDATE messages SET change_seq=(SELECT revision+1 FROM accounts WHERE account_id=?) WHERE message_id=?", (aid,mid))
             # Rotate pending transcript checks without emitting a content change.
             self.db.execute("UPDATE messages SET updated_at=? WHERE message_id=?", (now(), mid))
-            return False
+            return eligible
         revision = self.db.execute("SELECT revision+1 FROM accounts WHERE account_id=?",(aid,)).fetchone()[0]
         self.db.execute("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,conversation_id,identity_key) DO UPDATE SET "
             "shard=excluded.shard,generation=excluded.generation,local_id=excluded.local_id,sort_key=excluded.sort_key,payload=excluded.payload,source_ref=excluded.source_ref,source_key=excluded.source_key,updated_at=excluded.updated_at,change_seq=excluded.change_seq",
             (mid, aid, cid, identity, sid, ref["shard"], generation, ref["local_id"], row["sort_key"], payload, dump(ref), dump(key), now(),revision))
+        if source_updates is not None:
+            source_updates[(aid,mid)] = revision
         self._ai_note_message(aid, cid, row)
         self._delivery_note_message(aid, cid, row, ref, incremental)
         return True
@@ -499,13 +533,14 @@ class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMix
             return dict(source_id=source, page_size=size, direction="older" if boundary else "latest", boundary=boundary, upper=None)
         return self.call(query)
 
-    def save_history(self, aid, cid, result, body):
+    def save_history(self, aid, cid, result, body, *, read_revision=None):
         def write():
             changed = False
+            source_updates = {}
             with self.db:
                 for item in result["items"]:
-                    changed |= self._upsert_message(aid, cid, item)
-                if not result.get("retry_required", bool(result.get("issues"))):
+                    changed |= self._upsert_message(aid, cid, item, read_revision=read_revision, source_updates=source_updates)
+                if not result.get("retry_required", bool(result.get("issues"))) and (read_revision is None or self._account(aid)["revision"] <= read_revision):
                     keys = [order_key(i["_key"]) for i in result["items"]]
                     lower = min(keys) if keys and result["has_more"] else ""
                     upper = order_key(body["boundary"]) if body.get("boundary") else "~"
@@ -513,6 +548,7 @@ class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMix
                 self.db.execute("UPDATE conversations SET last_synced_at=? WHERE conversation_id=?", (now(), cid))
                 self.db.execute("INSERT OR REPLACE INTO metadata VALUES(?,?)", ("history:"+cid, dump(dict(issues=result["issues"], status=result["status"]))))
                 event = self._changed(aid, ["messages"], [cid])
+            self._source_committed(source_updates)
             self.notify(event)
         self.call(write)
 
@@ -605,6 +641,14 @@ class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMix
             return dict(message_id=mid, status="available", mime_type=row["mime_type"], data_base64=base64.b64encode(row["data"]).decode(), quality=row["quality"], needs_sync=False)
         return self.call(query)
 
+    def sync_targets(self):
+        def query():
+            targets = {}
+            for row in self.db.execute("SELECT c.account_id,c.source_id FROM conversations c JOIN conversation_preferences p USING(account_id,conversation_id) JOIN ai_sessions s USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.paused=0"):
+                targets.setdefault(row["account_id"], []).append(row["source_id"])
+            return targets
+        return self.call(query)
+
     def states(self, aid):
         def query():
             values = [dict(r) for r in self.db.execute("SELECT * FROM sync_state WHERE account_id=?", (aid,)).fetchall()]
@@ -619,11 +663,12 @@ class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMix
             return values
         return self.call(query)
 
-    def save_delta(self, aid, result):
+    def save_delta(self, aid, result, *, read_revision=None):
         if result.get("unchanged"):
             return
         def write():
             changed = set()
+            source_updates = {}
             before = self._account(aid)
             with self.db:
                 for group in result.get("groups", []):
@@ -635,7 +680,7 @@ class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMix
                     for item in group.get("items", []):
                         previous = self.db.execute('SELECT last_id,generation FROM sync_state WHERE account_id=? AND shard=? AND table_name=?', (aid,group['shard'],group['table_name'])).fetchone()
                         fresh = (not group.get('reset') and item['_ref']['local_id'] > (previous['last_id'] if previous and previous['generation']==group['generation'] else group.get('baseline_id',0)))
-                        if cid and self._upsert_message(aid, cid, item, group["generation"], incremental=fresh):
+                        if cid and self._upsert_message(aid, cid, item, group["generation"], incremental=fresh, read_revision=read_revision, source_updates=source_updates):
                             changed.add(cid)
                     if cid and group.get("items"):
                         self.db.execute("UPDATE conversations SET last_synced_at=? WHERE conversation_id=?", (now(), cid))
@@ -643,13 +688,19 @@ class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMix
                         "generation=excluded.generation,source_id=excluded.source_id,last_id=excluded.last_id,upper_id=excluded.upper_id,signature=excluded.signature,baseline_id=excluded.baseline_id",
                         (aid,group["shard"],group["table_name"],group["generation"],source,group["last_id"],group.get("upper_id"),dump(group.get("signature")),now(),group.get("baseline_id",0)))
                 if not result.get("unchanged"):
-                    self.db.execute("INSERT OR REPLACE INTO metadata VALUES(?,?)", ("monitor_status:"+aid,dump(result.get("issues",[]))))
+                    issues = result.get("issues", [])
+                    lane = result.get("lane")
+                    if lane:
+                        self.db.execute("INSERT OR REPLACE INTO metadata VALUES(?,?)", ("monitor_status:"+aid+":"+lane, dump(issues)))
+                        issues = sorted({issue for row in self.db.execute("SELECT value FROM metadata WHERE key IN (?,?)", ("monitor_status:"+aid+":realtime", "monitor_status:"+aid+":background")) for issue in json.loads(row[0])})
+                    self.db.execute("INSERT OR REPLACE INTO metadata VALUES(?,?)", ("monitor_status:"+aid,dump(issues)))
                 if result.get("groups"):
                     self.db.execute("UPDATE accounts SET last_synced_at=? WHERE account_id=?", (now(), aid))
                 after = self._account(aid)
                 state_changed = any(before[k]!=after[k] for k in ("monitoring_started_at","sync_pending","sync_issues"))
                 resources = (["messages", "conversations"] if changed else [])+(["accounts"] if state_changed else [])
                 event = self._changed(aid, resources, sorted(changed)) if resources else None
+            self._source_committed(source_updates)
             if event:
                 self.notify(event)
         self.call(write)

@@ -44,3 +44,4 @@ static uintptr_t core_address(uintptr_t base, uintptr_t legacy) {
  if (!rva) RaiseException(ERROR_INVALID_DATA,0,0,nullptr);
  return base+rva;
 }
+

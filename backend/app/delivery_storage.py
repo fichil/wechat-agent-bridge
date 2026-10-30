@@ -102,6 +102,8 @@ class DeliveryStoreMixin:
             self.db.execute("UPDATE ai_message_state SET status='pending',memorized_at=NULL WHERE message_id=? AND status='memorized'",(item['message_id'],))
             self.db.execute('UPDATE ai_sessions SET auto_pending=1 WHERE account_id=? AND conversation_id=?',(aid,cid))
 
+        return bool(inserted)
+
     def _delivery_reopen_pending(self, aid, cid):
         # Eligibility discovered during a memory-only model call belongs to its next round.
         self.db.execute("UPDATE ai_message_state SET status='pending',memorized_at=NULL WHERE status='memorized' AND message_id IN (SELECT message_id FROM reply_triggers WHERE account_id=? AND conversation_id=? AND epoch=? AND consumed_run_id IS NULL)",(aid,cid,self._ai_session(aid,cid)['epoch']))
@@ -116,7 +118,7 @@ class DeliveryStoreMixin:
 
     def _delivery_debouncing(self, aid, cid):
         row=self.db.execute('SELECT last_trigger_at FROM delivery_sessions WHERE account_id=? AND conversation_id=?',(aid,cid)).fetchone()
-        return bool(row and row[0]>time.time()-3)
+        return bool(row and row[0]>time.time()-1)
 
     def _delivery_public(self, rid):
         parts=[dict(index=r['part_index'],status=r['status'],attempts=r['attempts'],code=r['code'],
@@ -147,7 +149,7 @@ class DeliveryStoreMixin:
 
     def delivery_candidates(self):
         def query():
-            return [dict(r) for r in self.db.execute("SELECT d.* FROM deliveries d JOIN conversation_preferences p USING(account_id,conversation_id) WHERE d.status='queued' AND p.ai_enabled=1 AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.account_id=d.account_id AND x.conversation_id=d.conversation_id AND x.status IN ('sending','unknown','failed')) AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.run_id=d.run_id AND x.part_index<d.part_index AND x.status<>'sent') ORDER BY d.rowid LIMIT 100")]
+            return [dict(r) for r in self.db.execute("SELECT d.* FROM deliveries d JOIN conversation_preferences p USING(account_id,conversation_id) JOIN ai_sessions s USING(account_id,conversation_id) WHERE d.status='queued' AND p.ai_enabled=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.account_id=d.account_id AND x.conversation_id=d.conversation_id AND x.status IN ('sending','unknown','failed')) AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.run_id=d.run_id AND x.part_index<d.part_index AND x.status<>'sent') ORDER BY d.rowid LIMIT 100")]
         return self.call(query)
 
     def claim_delivery(self, rid, part):
@@ -158,6 +160,7 @@ class DeliveryStoreMixin:
                 aid,cid=row['account_id'],row['conversation_id']
                 if not self._preferences(aid,cid)['ai_enabled'] or self._ai_session(aid,cid)['epoch']!=row['epoch']:
                     self.db.execute("UPDATE deliveries SET status='cancelled',code='ai_disabled' WHERE run_id=? AND part_index=?",(rid,part)); return None
+                if self._ai_session(aid,cid)['paused']: return None
                 if self.db.execute("SELECT 1 FROM deliveries WHERE account_id=? AND conversation_id=? AND status IN ('sending','unknown','failed')",(aid,cid)).fetchone(): return None
                 if self.db.execute("SELECT 1 FROM deliveries WHERE run_id=? AND part_index<? AND status<>'sent'",(rid,part)).fetchone(): return None
                 attempt=uuid4().hex

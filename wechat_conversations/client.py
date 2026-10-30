@@ -1,4 +1,4 @@
-"""Own only hidden child workers; serialize expensive reads across accounts."""
+"""Own only hidden child workers; isolate expensive reads by account and lane."""
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -91,9 +91,12 @@ class Worker:
 
 
 class LocalConversationReader:
+    LIMITS = {"realtime": 3, "background": 1}
+
     def __init__(self):
-        self._lock = threading.Lock()
+        self._condition = threading.Condition()
         self._workers = {}
+        self._busy = set()
         self._closed = threading.Event()
         self._reaper = threading.Thread(target=self._reap, daemon=True, name="conversation-idle-cleanup")
         self._reaper.start()
@@ -103,49 +106,79 @@ class LocalConversationReader:
             self._reap_idle()
 
     def _reap_idle(self):
-        if not self._lock.acquire(blocking=False):
-            return
-        try:
+        retired = []
+        with self._condition:
             for key, worker in list(self._workers.items()):
-                if worker.process.poll() is not None or time.monotonic() - worker.used_at >= 60:
-                    worker.close()
-                    del self._workers[key]
-        finally:
-            self._lock.release()
+                if key not in self._busy and (worker.process.poll() is not None or time.monotonic()-worker.used_at >= 60):
+                    self._busy.add(key)
+                    retired.append((key, worker))
+        for key, worker in retired:
+            try:
+                worker.close()
+            finally:
+                with self._condition:
+                    self._workers.pop(key, None)
+                    self._busy.discard(key)
+                    self._condition.notify_all()
 
-    def _call(self, account, command, data=None):
+    def _reserve(self, key, deadline):
+        retired = None
+        with self._condition:
+            while True:
+                if self._closed.is_set():
+                    raise ProbeError("service_stopping")
+                occupied = set(self._workers) | self._busy
+                lane_keys = [k for k in occupied if k[1] == key[1]]
+                if key not in self._busy:
+                    if key in self._workers or len(lane_keys) < self.LIMITS[key[1]]:
+                        break
+                    idle = [k for k in lane_keys if k not in self._busy]
+                    if idle:
+                        victim = min(idle, key=lambda k: self._workers[k].used_at)
+                        retired = self._workers.pop(victim)
+                        break
+                remaining = deadline-time.monotonic()
+                if remaining <= 0:
+                    raise ProbeError("conversation_busy")
+                self._condition.wait(remaining)
+            self._busy.add(key)
+            worker = self._workers.get(key)
+        return worker, retired
+
+    def _call(self, account, command, data=None, *, lane="background"):
+        if lane not in self.LIMITS:
+            raise ProbeError("worker_protocol_invalid")
         heavy = command in ("read", "messages", "message_image", "changes")
         timeout = 180 if command in ("messages", "changes") else 60 if heavy else 10
-        # A cached list must not block behind a cold scan or bypass identity validation.
-        if not self._lock.acquire(timeout=timeout if heavy else 0.1):
-            raise ProbeError("conversation_busy")
-        worker = None
+        if not account.instances or not account.wxid:
+            raise ProbeError("account_not_found")
+        source = sorted(account.instances, key=lambda i: (i.session_id, i.pid))[0]
+        instance = Instance(source.pid, int(source.created), source.session_id, source.version)
+        key = account.account_id, lane
+        worker, retired = self._reserve(key, time.monotonic()+(timeout if heavy else .1))
         try:
-            if self._closed.is_set():
-                raise ProbeError("service_stopping")
-            if not account.instances or not account.wxid:
-                raise ProbeError("account_not_found")
-            # Deterministic instance binding, never silently switch instances on failure.
-            source = sorted(account.instances, key=lambda i: (i.session_id, i.pid))[0]
-            instance = Instance(source.pid, int(source.created), source.session_id, source.version)
-            key = account.account_id
-            worker = self._workers.get(key)
-            if worker and (worker.instance != instance or worker.wxid != account.wxid or
-                           worker.process.poll() is not None):
+            if retired:
+                retired.close()
+            if worker and (worker.instance != instance or worker.wxid != account.wxid or worker.process.poll() is not None):
                 worker.close()
-                del self._workers[key]
+                with self._condition:
+                    self._workers.pop(key, None)
                 worker = None
             if worker is None:
                 worker = Worker(instance, account.wxid)
-                self._workers[key] = worker
+                with self._condition:
+                    self._workers[key] = worker
             return worker.call(command, timeout, data) if data is not None else worker.call(command, timeout)
         except Exception:
             if worker:
+                with self._condition:
+                    self._workers.pop(key, None)
                 worker.close()
-                self._workers.pop(account.account_id, None)
             raise
         finally:
-            self._lock.release()
+            with self._condition:
+                self._busy.discard(key)
+                self._condition.notify_all()
 
     def read(self, account):
         return self._call(account, "read")
@@ -159,13 +192,20 @@ class LocalConversationReader:
     def message_image(self, account, request):
         return self._call(account, "message_image", request)
 
-    def changes(self, account, states):
-        return self._call(account, "changes", {"states": states})
+    def changes(self, account, states, *, lane=None, source_ids=None):
+        request = {"states": states}
+        if lane:
+            request.update(lane=lane, source_ids=source_ids or [])
+        return self._call(account, "changes", request, lane=lane or "background")
 
     def close(self):
         self._closed.set()
-        with self._lock:
-            for worker in self._workers.values():
-                worker.close()
+        with self._condition:
+            self._condition.notify_all()
+            while self._busy:
+                self._condition.wait()
+            workers = list(self._workers.values())
             self._workers.clear()
+        for worker in workers:
+            worker.close()
         self._reaper.join(timeout=2)

@@ -8,6 +8,7 @@ from uuid import uuid4
 import httpx
 from .conversations import ConversationError
 from .diagnostics import Capture, CONTEXT, log_context
+from .ai_timeouts import CONNECT_SECONDS, DEFAULT_RESPONSE_SECONDS, response_seconds
 
 TEXT_LIMIT = 64 * 1024
 BODY_LIMIT = 20 * 1024 * 1024
@@ -185,15 +186,19 @@ class Provider:
 
     def _request(self, profile, url, headers, body, capture):
         started = time.monotonic()
+        response_timeout = response_seconds(profile)
         response, chunks = None, []
         try:
-            with httpx.Client(transport=self.transport, timeout=httpx.Timeout(90, connect=10), follow_redirects=False) as client:
+            with httpx.Client(transport=self.transport,
+                              timeout=httpx.Timeout(DEFAULT_RESPONSE_SECONDS, connect=CONNECT_SECONDS, read=response_timeout),
+                              follow_redirects=False) as client:
                 with client.stream("POST", url, headers=headers, content=body) as response:
                     chunks, size = [], 0
                     for chunk in response.iter_bytes():
-                        if time.monotonic()-started > 90:
+                        if time.monotonic()-started > response_timeout:
                             capture.response(response, b"".join(chunks), True)
-                            raise failure("ai_network_error", "AI 响应超时，记忆未更新，请手动重试。")
+                            capture.network_error("ResponseDeadlineExceeded", "response", response_timeout)
+                            raise failure("ai_network_error", f"AI 响应超过 {response_timeout} 秒等待预算；记忆未更新，请手动重试。")
                         size += len(chunk)
                         if size > 2 * 1024 * 1024:
                             capture.response(response, (b"".join(chunks)+chunk)[:2*1024*1024], True)
@@ -212,10 +217,25 @@ class Provider:
                         names = {401: "认证失败，请检查密钥", 403: "无模型访问权限", 404: "地址或模型不存在", 429: "额度不足或请求受到限流"}
                         raise failure("ai_provider_error", names.get(response.status_code, "AI 服务拒绝请求或暂不可用")+f"（HTTP {response.status_code}）。")
             return parse_response(profile["protocol"], json.loads(raw))
-        except (httpx.HTTPError, OSError):
+        except (httpx.HTTPError, OSError) as exc:
             if response is not None:
                 capture.response(response, b"".join(chunks), True)
-            raise failure("ai_network_error", "AI 请求超时或网络连接失败；不会自动重复调用，请手动重试。") from None
+            kind, phase, reason = "HTTPError", "transport", "AI 网络传输失败"
+            for cls, stage, description in (
+                (httpx.ConnectTimeout, "connect", "AI 连接建立超时"),
+                (httpx.ReadTimeout, "read", f"等待 AI 响应超时（读取上限 {response_timeout} 秒）"),
+                (httpx.WriteTimeout, "write", "发送 AI 请求超时"),
+                (httpx.PoolTimeout, "pool", "等待 AI 连接资源超时"),
+                (httpx.ProxyError, "proxy", "AI 代理连接失败"),
+                (httpx.ConnectError, "connect", "AI 网络或 TLS 连接失败"),
+                (httpx.RemoteProtocolError, "response", "AI 服务连接中断或响应协议异常"),
+                (OSError, "transport", "AI 网络系统调用失败"),
+            ):
+                if isinstance(exc, cls):
+                    kind, phase, reason = cls.__name__, stage, description
+                    break
+            capture.network_error(kind, phase, response_timeout)
+            raise failure("ai_network_error", reason + "；记忆未更新，不会自动重复调用，请手动重试。") from None
         except (ValueError, UnicodeError):
             raise failure("ai_response_invalid", "AI 返回的内容不是有效 JSON；记忆未更新。") from None
 

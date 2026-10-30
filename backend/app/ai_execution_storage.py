@@ -3,6 +3,7 @@ import base64
 from datetime import datetime, timezone
 import hashlib
 import json
+import time
 from uuid import uuid4
 from .ai_execution_models import DEFAULT_INSTRUCTIONS
 from .conversations import ConversationError
@@ -203,7 +204,14 @@ class AiExecutionStoreMixin:
         return self.call(query)
 
     def ai_candidates(self):
-        return self.call(lambda: [dict(row) for row in self.db.execute("SELECT s.account_id,s.conversation_id FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.auto_pending=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM ai_runs r WHERE r.account_id=s.account_id AND r.conversation_id=s.conversation_id AND r.status IN ('queued','running'))") if not self._delivery_blocked(row['account_id'],row['conversation_id']) and not self._delivery_debouncing(row['account_id'],row['conversation_id'])])
+        return self.call(lambda: [dict(row) for row in self.db.execute("SELECT s.account_id,s.conversation_id FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.auto_pending=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM ai_runs r WHERE r.account_id=s.account_id AND r.conversation_id=s.conversation_id AND r.status IN ('queued','running')) ORDER BY EXISTS(SELECT 1 FROM reply_triggers t WHERE t.account_id=s.account_id AND t.conversation_id=s.conversation_id AND t.epoch=s.epoch AND t.consumed_run_id IS NULL) DESC,s.rowid") if not self._delivery_blocked(row['account_id'],row['conversation_id']) and not self._delivery_debouncing(row['account_id'],row['conversation_id'])])
+
+    def ai_schedule_delay(self):
+        def query():
+            current = time.time()
+            deadlines = [row[2]+1-current for row in self.db.execute("SELECT s.account_id,s.conversation_id,d.last_trigger_at FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) JOIN delivery_sessions d USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.paused=0 AND s.auto_pending=1 AND NOT EXISTS(SELECT 1 FROM ai_runs r WHERE r.account_id=s.account_id AND r.conversation_id=s.conversation_id AND r.status IN ('queued','running'))") if row[2]+1>current and not self._delivery_blocked(row[0],row[1])]
+            return max(.01, min([3]+deadlines))
+        return self.call(query)
 
     def ai_enabled_sessions(self):
         return self.call(lambda: [dict(row) for row in self.db.execute("SELECT s.account_id,s.conversation_id FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.paused=0")])
@@ -350,9 +358,10 @@ class AiExecutionStoreMixin:
             return run
         return self.call(write)
 
-    def ai_missing_images(self, aid, cid):
+    def ai_missing_images(self, aid, cid, exclude=()):
         def query():
             if not self._ai_vision(aid, cid):
                 return []
-            return [r[0] for r in self.db.execute("SELECT m.message_id FROM messages m LEFT JOIN media_cache c ON c.cache_key='image:'||m.message_id WHERE m.account_id=? AND m.conversation_id=? AND json_extract(m.payload,'$.type') IN ('image','sticker') AND c.cache_key IS NULL AND NOT EXISTS(SELECT 1 FROM ai_message_state s WHERE s.message_id=m.message_id AND s.status='memorized') ORDER BY m.sort_key LIMIT 4", (aid, cid))]
+            exclusion = " AND m.message_id NOT IN ("+",".join("?" for _ in exclude)+")" if exclude else ""
+            return [r[0] for r in self.db.execute("SELECT m.message_id FROM messages m LEFT JOIN media_cache c ON c.cache_key='image:'||m.message_id WHERE m.account_id=? AND m.conversation_id=? AND json_extract(m.payload,'$.type') IN ('image','sticker') AND c.cache_key IS NULL AND NOT EXISTS(SELECT 1 FROM ai_message_state s WHERE s.message_id=m.message_id AND s.status='memorized') "+exclusion+" ORDER BY m.sort_key LIMIT 4", (aid, cid, *exclude))]
         return self.call(query)

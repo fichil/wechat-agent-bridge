@@ -15,6 +15,8 @@ from uuid import uuid4
 import webbrowser
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from backend.app.ai_timeouts import AI_SHUTDOWN_GRACE_SECONDS
 
 
 def stop():
@@ -144,7 +146,7 @@ def main():
         if children and children[0].poll() is None:
             stop_file.write_text("stop\n", encoding="utf-8")
             try:
-                children[0].wait(timeout=210)
+                children[0].wait(timeout=AI_SHUTDOWN_GRACE_SECONDS)
             except subprocess.TimeoutExpired:
                 print("Backend graceful-stop deadline exceeded; the owned job will close.", file=sys.stderr)
         job.close()
