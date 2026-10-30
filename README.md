@@ -5,6 +5,7 @@ Windows 本机微信工作台：Vue 3 / TypeScript 前端，Python 3.12 / FastAP
 
 本机与远程访问均需独立的后台管理员登录。登录保持 7 天；退出只注销当前浏览器会话，修改或重置密码会注销所有设备。退出网页不停止消息同步、AI 处理或已启用的自动回复。
 云服务器使用 Caddy 提供 HTTPS 和生产静态文件，完整步骤见 [后台认证与 Windows 部署](docs/auth-and-deployment.md)。
+本地已于 2026-10-30 合并并启用登录，密码长度按用户选择为 4–128 字符；运行验收与回退见 [本地切换记录](docs/deployment-auth-local-2026-10-30.md)。
 
 ## 启动
 
