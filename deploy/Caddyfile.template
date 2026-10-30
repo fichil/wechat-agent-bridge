@@ -4,6 +4,7 @@
 }
 
 @@SITE@@ {
+    @@BIND@@
     encode zstd gzip
     header {
         X-Content-Type-Options nosniff
@@ -15,7 +16,7 @@
         reverse_proxy 127.0.0.1:8765 {
             header_up Host @@HOST@@
             header_up X-Forwarded-For {remote_host}
-            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-Proto @@SCHEME@@
         }
     }
     handle {

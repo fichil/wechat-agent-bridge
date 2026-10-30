@@ -23,6 +23,7 @@ from .ai_execution_models import (AiSettings, AiSettingsUpdate, TaskQuery, Profi
 from .log_models import (LogAccount, LogQuery, LogGet, LogClear, LogPage, LogDetail, LogDeleted,
                          SessionPage, RunMessagesQuery, RunMessagesPage)
 from .delivery_models import Delivery, DeliveryAction, DeliveryResolve, SendCapability
+from .compatibility import CompatibilitySnapshot, CompatibilityResume
 from .auth import AuthConfig, AuthStore, AuthError, Login, PasswordChange, AuthSession, AuthOk, DEFAULT_AUTH_PATH, SESSION_SECONDS
 
 def error(code: str, message: str, status: int):
@@ -45,7 +46,10 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         store = Store(path, settings)
         store.notify = app.state.events.publish
         enabled = (probe is discover_local_accounts and os.environ.get('BRIDGE_DISABLE_MONITOR') != '1') if monitor is None else monitor
-        bridge = Bridge(store, probe, conversation_reader or LocalConversationReader(), message_reader=message_reader, monitor=enabled)
+        from bridge_paths import migration_pending
+        store.migration_hold = migration_pending() and str(path) != ':memory:'
+        bridge = Bridge(store, probe, conversation_reader or LocalConversationReader(), message_reader=message_reader,
+                        monitor=enabled, compatibility_enabled=probe is discover_local_accounts)
         app.state.bridge, app.state.store = bridge, store
         app.state.discovery, app.state.conversations, app.state.messages = bridge.discovery, bridge.conversations, bridge.messages
         from .ai_execution import AiExecution
@@ -54,6 +58,7 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         app.state.ai = AiExecution(store, bridge, ai_provider, False if migration_hold else enabled if ai_auto is None else ai_auto)
         from .delivery import DeliveryExecution
         app.state.sender = DeliveryExecution(store,bridge,send_transport,False if migration_hold else enabled if send_auto is None else send_auto)
+        bridge.compatibility.sender = app.state.sender
         def notify(event):
             app.state.events.publish(event)
             bridge.scheduler.notify(event)
@@ -384,6 +389,14 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
     def update_defaults(body: DefaultsUpdate, request: Request):
         return request.app.state.store.save_ai_defaults(body.expected_revision,
             body.model_dump(exclude_unset=True, include={"role_card_code", "api_profile_id"}))
+
+    @app.post('/api/v1/compatibility/query', response_model=CompatibilitySnapshot, responses=failures)
+    def compatibility_query(_body: JsonRequest, request: Request):
+        return request.app.state.bridge.compatibility.query()
+
+    @app.post('/api/v1/compatibility/resume', response_model=CompatibilitySnapshot, responses=failures)
+    def compatibility_resume(body: CompatibilityResume, request: Request):
+        return request.app.state.bridge.compatibility.resume(body.account_id, body.expected_revision)
 
     generate_openapi = app.openapi
     def authenticated_openapi():

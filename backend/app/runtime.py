@@ -101,6 +101,7 @@ class Discovery:
             # Validate before persisting any result from a reader.
             checked = AccountSnapshot.model_validate(dict(result, scan_id=uuid4().hex, scanned_at=now()))
             result = self.bridge.store.save_accounts(checked.model_dump(mode="json"))
+            self.bridge.compatibility.observe(result)
             for item in result["accounts"]:
                 if item.get("account_id"):
                     record_source(self.bridge.store,"accounts",{},item,aid=item["account_id"],automatic=automatic,elapsed=time.monotonic()-started)
@@ -112,6 +113,7 @@ class Discovery:
                 self.bridge.process_signature = tuple(sorted((i["pid"],int(i["created"])) for i in result.get("client_instances",[])))
             return dict(summary=result["summary"], exit_code=result["exit_code"], error=result.get("error"))
         except Exception:
+            self.bridge.store.compatibility_hold('probe_failed')
             record_source(self.bridge.store,"accounts",{},None,automatic=automatic,elapsed=time.monotonic()-started,error="probe_failed")
             from wechat_account_probe.models import failure_result
             result = failure_result("probe_failed")
@@ -250,11 +252,13 @@ class Messages:
 
 
 class Bridge:
-    def __init__(self, store, probe, reader, *, message_reader=None, monitor=False, interval=10):
+    def __init__(self, store, probe, reader, *, message_reader=None, monitor=False, interval=10, compatibility_enabled=False):
         self.store, self.reader, self.interval = store, reader, interval
         self.queue = WorkQueue(store)
         self.realtime_queue = WorkQueue(store, workers=3, name="source-realtime")
         self.discovery = Discovery(self, probe)
+        from .compatibility import Compatibility
+        self.compatibility = Compatibility(self, compatibility_enabled)
         self.conversations = Conversations(self)
         self.messages = Messages(self, message_reader)
         self.stopped = threading.Event()
@@ -282,6 +286,8 @@ class Bridge:
             record_source(self.store,kind,inputs or {},None,aid=aid,cid=cid,automatic=automatic,task_id=task_id,elapsed=time.monotonic()-started,error=str(exc))
             self.store.sync_error(aid, str(exc))
             if str(exc) in IDENTITY_ERRORS:
+                if self.compatibility.enabled:
+                    self.store.compatibility_pause(aid, str(exc))
                 with self.discovery.lock:
                     self.discovery.live_accounts.pop(aid, None)
                 self.store.set_state(aid, "offline")

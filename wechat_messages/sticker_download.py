@@ -14,8 +14,8 @@ from .images import MAX_IMAGE
 NETWORK_SECONDS = 20
 BYTES_PER_SECOND = 1024 * 1024
 CHUNK = 64 * 1024
-# Observed in authenticated 4.1.15.56 message XML, alongside emoji.qpic.cn.
-EXACT_CDN_HOSTS = {"vweixinf.tc.qq.com"}
+# Exact hosts observed in authenticated 4.1.15.56 / 4.2.0.9 message XML.
+EXACT_CDN_HOSTS = {"vweixinf.tc.qq.com", "snsvideo.c2c.wechat.com"}
 
 
 def cdn_url(value):

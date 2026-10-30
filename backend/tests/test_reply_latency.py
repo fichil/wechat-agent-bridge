@@ -42,7 +42,10 @@ class ReplyWakeTests(RoleTestCase):
             self.assertEqual([c['account_id'] for c in self.store.ai_candidates()], [self.ids[0]])
         with patch('backend.app.delivery_storage.time.time', return_value=first+1.001):
             self.assertEqual([c['account_id'] for c in self.store.ai_candidates()], [self.ids[1], self.ids[0]])
-        self.delta(2, account=1)
+        # Windows wall-clock samples can be identical for fast successive writes.
+        # Advance the synthetic clock explicitly to test the trailing window.
+        with patch('backend.app.delivery_storage.time.time', return_value=first+.25):
+            self.delta(2, account=1)
         second = self.store.call(lambda: self.store.db.execute('SELECT last_trigger_at FROM delivery_sessions WHERE account_id=?', (self.ids[1],)).fetchone()[0])
         self.assertGreater(second, first)
         with patch('backend.app.delivery_storage.time.time', return_value=second+.999):

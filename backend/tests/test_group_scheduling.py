@@ -261,7 +261,7 @@ class GroupSchedulingTests(RoleTestCase):
             self.assertEqual((prefs['scan_interval_seconds'], prefs['group_proactive_message_threshold']), (2, 0))
             self.assertEqual(store.call(lambda: store.db.execute('SELECT count(*) FROM group_message_eligibility').fetchone()[0]), 0)
             self.assertEqual(store.ai_candidates(), [])
-        backups = list((self.path.parent/'migration-backups').glob('before-v8-*.sqlite3'))
+        backups = list((self.path.parent/'migration-backups').glob('before-v9-*.sqlite3'))
         self.assertTrue(backups)
         with closing(sqlite3.connect(backups[0])) as db:
             self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0], 'ok')

@@ -11,7 +11,8 @@ from unittest.mock import Mock, patch
 from PIL import Image
 import zstandard
 
-from wechat_account_probe.models import ProbeError
+from wechat_account_probe.models import ProbeError, Instance
+from wechat_compatibility import registry
 from wechat_messages.images import MAX_IMAGE, verified_image
 from wechat_messages.sticker_download import StickerDownload, cdn_url
 from wechat_messages.stickers import database_reference, read_sticker, sticker_reference
@@ -68,6 +69,8 @@ class StickerTests(unittest.TestCase):
     def test_reader_accepts_archived_sticker_ref_and_revalidates_identity(self):
         data = picture()
         reader = MessageReader(Mock(wxid="self", cache=None))
+        profile = registry()['profiles'][0]
+        reader.session.instance = Instance(1,2,3,profile['version'],profile['builds'][0]['sha256'])
         content = zstandard.ZstdCompressor().compress(('other:\n'+row(data)["message_content"]).encode())
         reader.cache = MemoryCache({"message/message_0.db": shard_image("chat", [
             (1, 9, 47, 1, 2, 1780000000, None, content, None)], [(2, "other")])})
@@ -79,6 +82,13 @@ class StickerTests(unittest.TestCase):
             request["reference"]["server_id"] = "10"
             with self.assertRaisesRegex(ProbeError, "message_not_found"):
                 reader.image(request, time.monotonic()+5)
+            request['reference']['server_id'] = '9'
+            unknown = Instance(1,2,3,profile['version'],'0'*64)
+            reader.session.instance = unknown
+            downloader.reset_mock()
+            with self.assertRaisesRegex(ProbeError, 'client_version_unsupported'):
+                reader.image(request, time.monotonic()+5)
+            downloader.assert_not_called()
 
     def test_database_fallback_is_exact_and_account_local(self):
         db = sqlite3.connect(":memory:")
@@ -140,6 +150,9 @@ class DownloadTests(unittest.TestCase):
 
     def test_disallowed_urls_and_private_dns_never_connect(self):
         self.assertEqual(cdn_url("http://vweixinf.tc.qq.com/110/20401/stodownload?m=x")[1], "vweixinf.tc.qq.com")
+        self.assertEqual(cdn_url('http://snsvideo.c2c.wechat.com/test')[1], 'snsvideo.c2c.wechat.com')
+        for url in ('https://snsvideo.c2c.wechat.com.evil.test/x', 'https://other.wechat.com/x'):
+            with self.assertRaises(ProbeError): cdn_url(url)
         for url in ("file:///x", "http://127.0.0.1/x", "https://qpic.cn.evil.test/x", "https://vweixinf.tc.qq.com.evil.test/x", "https://other.tc.qq.com/x", "https://user@emoji.qpic.cn/x", "https://emoji.qpic.cn:444/x", "https://emoji.qpic.cn/x\r\nHost: x"):
             with self.assertRaisesRegex(ProbeError, "sticker_url_not_allowed"):
                 cdn_url(url)

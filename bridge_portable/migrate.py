@@ -59,8 +59,12 @@ def validate_db(path, name):
         required = {'accounts', 'messages', 'conversation_preferences', 'ai_sessions', 'deliveries'} if name == FILES[0] else {'administrator', 'sessions', 'attempts'}
         if not required <= tables:
             raise ValueError('不是有效的 Bridge 数据库：' + name)
-        if name == FILES[0] and db.execute('PRAGMA user_version').fetchone()[0] != 8:
-            raise ValueError('迁移包仅支持数据库版本 8；请先使用匹配版本升级。')
+        version = db.execute('PRAGMA user_version').fetchone()[0]
+        if name == FILES[0] and version not in (8, 9):
+            raise ValueError('迁移包仅支持数据库版本 8 或 9；请使用匹配版本升级。')
+        if name == FILES[0] and version == 9 and 'compatibility_state' not in tables:
+            raise ValueError('兼容状态表缺失。')
+        return version
 
 
 def snapshot(source, target):
@@ -81,7 +85,7 @@ def export_data(data, output):
                 raise ValueError('源数据不完整，缺少 ' + name)
             snapshot(data / name, temp / name)
             validate_db(temp / name, name)
-        manifest = dict(format='wechat-agent-bridge-migration', version=1, database_version=8,
+        manifest = dict(format='wechat-agent-bridge-migration', version=1, database_version=validate_db(temp/FILES[0], FILES[0]),
                         created_at=datetime.now(timezone.utc).isoformat(),
                         files={name: dict(sha256=sha(temp/name), size=(temp/name).stat().st_size) for name in FILES})
         archive = temp / 'migration.zip'
@@ -95,7 +99,7 @@ def export_data(data, output):
     return dict(path=str(output), sha256=sha(output), size=output.stat().st_size)
 
 
-def quarantine(db):
+def quarantine(db, reset_compatibility=False):
     """Preserve history/config, invalidate live eligibility and unfinished work."""
     timestamp = datetime.now(timezone.utc).isoformat()
     with db:
@@ -104,7 +108,8 @@ def quarantine(db):
             value.update(status='failed', error='ai_interrupted', message='数据已迁移，旧任务未自动恢复。', completed_at=timestamp)
             db.execute("UPDATE ai_runs SET status='failed',payload=? WHERE run_id=?", (json.dumps(value, ensure_ascii=False), rid))
         db.execute("UPDATE ai_message_state SET status='failed' WHERE status='processing'")
-        db.execute('UPDATE ai_sessions SET epoch=epoch+1,auto_pending=0,paused=1')
+        # The persistent migration marker is a separate hold. Keep user pauses.
+        db.execute('UPDATE ai_sessions SET epoch=epoch+1,auto_pending=0')
         db.execute("UPDATE deliveries SET status='cancelled',code='migration_cancelled' WHERE status IN ('queued','failed')")
         db.execute("UPDATE deliveries SET status='unknown',code='send_interrupted' WHERE status='sending'")
         db.execute("UPDATE delivery_attempts SET status='unknown',code='send_interrupted',completed_at=? WHERE status='sending'", (timestamp,))
@@ -113,9 +118,17 @@ def quarantine(db):
             db.execute("UPDATE group_rounds SET status='cancelled',payload=? WHERE round_id=?", (json.dumps(value, ensure_ascii=False), rid))
         db.execute("UPDATE accounts SET source_state='unknown'")
         db.execute('DELETE FROM cursors')
+        if reset_compatibility and db.execute('PRAGMA user_version').fetchone()[0] == 9:
+            db.execute('DELETE FROM compatibility_state')
 
 
 def import_data(archive, data):
+    with zipfile.ZipFile(archive) as source:
+        if source.getinfo('manifest.json').file_size > 16384:
+            raise ValueError('迁移包清单超过大小限制。')
+        if json.loads(source.read('manifest.json')).get('format') == 'wechat-agent-bridge-configuration':
+            from .configuration import import_configuration
+            return import_configuration(archive, data)
     data = Path(data).resolve()
     data.mkdir(parents=True, exist_ok=True)
     with offline(data), tempfile.TemporaryDirectory(prefix='import-', dir=data) as temporary:
@@ -127,7 +140,7 @@ def import_data(archive, data):
             if sum(i.file_size for i in infos) > MAX_BYTES or zin.getinfo('manifest.json').file_size > 16384:
                 raise ValueError('迁移包超过大小限制。')
             manifest = json.loads(zin.read('manifest.json'))
-            if manifest.get('format') != 'wechat-agent-bridge-migration' or manifest.get('version') != 1 or manifest.get('database_version') != 8 or set(manifest.get('files', {})) != set(FILES):
+            if manifest.get('format') != 'wechat-agent-bridge-migration' or manifest.get('version') != 1 or manifest.get('database_version') not in (8,9) or set(manifest.get('files', {})) != set(FILES):
                 raise ValueError('迁移包格式或版本不支持。')
             for name in FILES:
                 with zin.open(name) as source, (temp/name).open('xb') as target:
@@ -135,9 +148,13 @@ def import_data(archive, data):
                 expected = manifest['files'][name]
                 if (temp/name).stat().st_size != expected['size'] or sha(temp/name) != expected['sha256']:
                     raise ValueError('迁移包校验失败：' + name)
-                validate_db(temp/name, name)
+                version = validate_db(temp/name, name)
+                if name == FILES[0] and version != manifest['database_version']:
+                    raise ValueError('数据库版本与清单不一致。')
         with closing(sqlite3.connect(temp / FILES[0])) as db:
-            quarantine(db)
+            from backend.app.compatibility_storage import upgrade_v9
+            upgrade_v9(db)
+            quarantine(db, reset_compatibility=True)
         with closing(sqlite3.connect(temp / FILES[1])) as db:
             with db:
                 db.execute('DELETE FROM sessions'); db.execute('DELETE FROM attempts')
@@ -185,18 +202,22 @@ def resume_data(data, ready_accounts):
                              for r in db.execute('SELECT * FROM sync_state WHERE account_id=? AND source_id=(SELECT source_id FROM conversations WHERE conversation_id=?)',(aid,cid))}
                     db.execute('INSERT OR REPLACE INTO delivery_sessions VALUES(?,?,?,?,0)',
                                (aid,cid,datetime.now(timezone.utc).isoformat(),json.dumps(marks)))
-                db.execute('UPDATE ai_sessions SET paused=0,auto_pending=0')
+                db.execute('UPDATE ai_sessions SET auto_pending=0')
+                if db.execute('PRAGMA user_version').fetchone()[0] == 9:
+                    db.executemany("UPDATE compatibility_state SET held=0,reason='',revision=revision+1 WHERE scope=?", ((aid,) for aid in ready_accounts))
         (data/'migration-pending.json').unlink()
 
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['export', 'import'])
+    parser.add_argument('action', choices=['export', 'export-config', 'import'])
     parser.add_argument('--data', required=True)
     parser.add_argument('--file', required=True)
     args = parser.parse_args()
-    result = export_data(args.data,args.file) if args.action=='export' else import_data(args.file,args.data)
+    from .configuration import export_configuration
+    result = (export_data(args.data,args.file) if args.action=='export' else
+              export_configuration(args.data,args.file) if args.action=='export-config' else import_data(args.file,args.data))
     print(json.dumps(result, ensure_ascii=False))
 
 

@@ -104,12 +104,18 @@ def pe_exports(path):
 
 def code_windows(path):
     """Code entry signatures for all borrowed native calls, read from the verified file."""
+    from wechat_compatibility import file_identity, profile_for_hash
+    profile = profile_for_hash(file_identity(path)['core_sha256'])
+    if not profile or not profile['capabilities']['send_text']:
+        raise ValueError('native_version_unsupported')
+    native = profile['native']
     with Path(path).open('rb') as stream:
         head=stream.read(4096); pe=struct.unpack_from('<I',head,60)[0]
         count=struct.unpack_from('<H',head,pe+6)[0]; optional=struct.unpack_from('<H',head,pe+20)[0]
         sections=[struct.unpack_from('<8sIIII',head,pe+24+optional+i*40) for i in range(count)]
         result={}
-        for rva in (0x45d10,0x469a0,0x47310,0x30f450,0x3855c0,0x55f0380,0x754bcdc,0x754bd20):
+        for rva in (native['app_entry'], *(native['rvas'][n] for n in
+                    ('app_get','scheduler_get','schedule','context_get','text_builder','allocate','free'))):
             for _,vs,va,rs,rp in sections:
                 if va<=rva<va+max(vs,rs):
                     stream.seek(rp+rva-va);result[rva]=stream.read(32);break
@@ -128,9 +134,12 @@ def inspect(request):
         if DLL.name.lower() in loaded_modules: raise ValueError('native_busy')
         core=loaded_modules.get('weixin.dll')
         if not core: raise ValueError('source_offline')
-        core_hash=digest(core[1])
-        if Path(core[1]).stat().st_size!=204305968 or core_hash not in CORE_HASHES:
+        from wechat_compatibility import file_identity, profile_for_hash, profile_digest
+        core_hash=file_identity(core[1])['core_sha256']
+        profile=profile_for_hash(core_hash)
+        if not profile or not profile['capabilities']['send_text']:
             raise ValueError('native_version_unsupported')
+        rvas, fields = profile['native']['rvas'], profile['layout']
         def read(address,size):
             data=c.create_string_buffer(size); n=c.c_size_t()
             check(K.ReadProcessMemory(process,address,data,size,c.byref(n)))
@@ -140,22 +149,24 @@ def inspect(request):
         base=core[0]
         for rva,signature in code_windows(core[1]).items():
             if read(base+rva,len(signature))!=signature: raise ValueError('native_code_changed')
-        app=ptr(base+0xbb92fa0); context=ptr(app+0x68)
-        if ptr(app)!=base+0x8f514e8 or ptr(context)!=base+0x8fd1468:
+        app=ptr(base+rvas['application']); context=ptr(app+fields['app_context'])
+        if ptr(app)!=base+rvas['app_vtable'] or ptr(context)!=base+rvas['context_vtable']:
             raise ValueError('identity_unavailable')
-        if ptr(base+0x8f514e8+0x60)!=base+0x469a0 or ptr(base+0x8fd1468+0x18)!=base+0x3855c0:
+        if ptr(base+rvas['app_vtable']+fields['app_get_slot'])!=base+rvas['app_get'] or ptr(base+rvas['context_vtable']+fields['context_get_slot'])!=base+rvas['context_get']:
             raise ValueError('identity_unavailable')
-        if read(base+0x3855c0,5)!=b'\x48\x8d\x41\x48\xc3': raise ValueError('identity_unavailable')
-        header=read(context+0x48,32); length,capacity=struct.unpack_from('<QQ',header,16)
+        if read(base+rvas['context_get'],5)!=b'\x48\x8d\x41'+bytes([fields['account_string']])+b'\xc3': raise ValueError('identity_unavailable')
+        header=read(context+fields['account_string'],32); length,capacity=struct.unpack_from('<QQ',header,16)
         if not 1<=length<=127 or capacity<length or not (capacity==15 or 16<=capacity<=1048576):
             raise ValueError('identity_unavailable')
-        address=context+0x48 if capacity==15 else struct.unpack_from('<Q',header)[0]
+        address=context+fields['account_string'] if capacity==15 else struct.unpack_from('<Q',header)[0]
         body=read(address,length)
-        if (body.decode('ascii')!=account or read(context+0x48,32)!=header or read(address,length)!=body
-                or ptr(base+0xbb92fa0)!=app or ptr(app+0x68)!=context):
+        if (body.decode('ascii')!=account or read(context+fields['account_string'],32)!=header or read(address,length)!=body
+                or ptr(base+rvas['application'])!=app or ptr(app+fields['app_context'])!=context):
             raise ValueError('source_identity_changed')
         dll_hash=build_identity()
-        return dict(core_sha256=core_hash,dll_sha256=dll_hash,ready=accepted(account,core_hash,dll_hash))
+        return dict(core_sha256=core_hash,dll_sha256=dll_hash,profile_id=profile['id'],
+                    profile_digest=profile_digest(profile),native_profile_id=profile['native']['id'],
+                    ready=accepted(account,core_hash,dll_hash))
     finally: K.CloseHandle(process)
 
 
@@ -207,7 +218,7 @@ def send(request):
             if not loaded: raise ValueError('native_load_failed')
             module_owned=True
         if call(loaded[0]+exports['WxWaitForTasks'],0)!=0: raise ValueError('native_busy')
-        if call(loaded[0]+exports['WxInspectCoreVersion'],0)!=2: raise ValueError('native_version_unsupported')
+        if call(loaded[0]+exports['WxInspectCoreVersion'],0)!=identity['native_profile_id']: raise ValueError('native_version_unsupported')
         config=Config(); config.size=c.sizeof(config); config.pid=pid; config.created=created
         config.log_path=str(report); config.text=encoded; config.target=target.encode('ascii')
         config.account=request['account'].encode('ascii'); config.token=token.encode('ascii')

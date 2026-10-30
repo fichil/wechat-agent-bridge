@@ -15,12 +15,16 @@ def probe_instance(instance, deadline):
     from .sqlcipher import stable_snapshot, decrypt_snapshot, read_own_row
     from .avatar import load_avatar, AVATAR_SOURCE
     result = instance_result(instance)
-    if not instance.version.startswith('4.1.'):
+    from wechat_compatibility import require_profile, bind_memory
+    try:
+        require_profile(instance, 'account')
+    except ProbeError:
         result['reason'] = 'client_version_unsupported'
         return result
     memory = ProcessMemory(instance, deadline)
     try:
         paths = memory.mapped_paths()
+        bind_memory(memory, paths)
         wxid = current_account(memory, paths)
         if not wxid:
             if mapped_account_directories(paths):

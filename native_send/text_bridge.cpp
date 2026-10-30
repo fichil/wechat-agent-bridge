@@ -122,7 +122,7 @@ static bool set_native_string(SmallString* string, const char* text) {
     if (length < 16) return set_inline(string, text);
     if (length > 1023 || string->capacity != 15 || string->length != 0) return false;
     using Allocate = void* (__fastcall*)(size_t);
-    char* buffer = static_cast<char*>(reinterpret_cast<Allocate>(core_address(core_base, 0x74ab89c))(length + 1));
+    char* buffer = static_cast<char*>(reinterpret_cast<Allocate>(core_address(core_base, CoreField::allocate))(length + 1));
     if (!buffer) return false;
     std::memcpy(buffer, text, length + 1);
     std::memcpy(string->data, &buffer, sizeof(buffer));
@@ -134,7 +134,7 @@ static void free_native_string(SmallString* string) {
     if (string->capacity > 15) {
         void* allocation = *reinterpret_cast<void**>(string->data);
         using Free = void (__fastcall*)(void*, size_t);
-        reinterpret_cast<Free>(core_address(core_base, 0x74ab8e0))(allocation, string->capacity + 1);
+        reinterpret_cast<Free>(core_address(core_base, CoreField::free))(allocation, string->capacity + 1);
     }
     *string = {};
     string->capacity = 15;
@@ -163,14 +163,15 @@ static bool identity_matches(const TestConfig& config) {
   FILETIME c{}, e{}, k{}, u{};
   if (config.pid != GetCurrentProcessId() || !GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u) ||
       ((static_cast<uint64_t>(c.dwHighDateTime)<<32)|c.dwLowDateTime) != config.created) return false;
-  const auto app = *reinterpret_cast<uintptr_t*>(core_base + 0xbb92fa0);
-  if (!app || *reinterpret_cast<uintptr_t*>(app) != core_base + 0x8f514e8) return false;
-  if (*reinterpret_cast<uintptr_t*>(core_base + 0x8f514e8 + 0x60) != core_base + 0x469a0) return false;
-  const auto context = *reinterpret_cast<uintptr_t*>(app + 0x68);
-  if (!context || *reinterpret_cast<uintptr_t*>(context) != core_base + 0x8fd1468 ||
-      *reinterpret_cast<uintptr_t*>(core_base + 0x8fd1468 + 0x18) != core_base + 0x3855c0 ||
-      std::memcmp(reinterpret_cast<void*>(core_base + 0x3855c0), "\x48\x8d\x41\x48\xc3", 5)) return false;
-  const auto s = reinterpret_cast<SmallString*>(context + 0x48);
+  const auto app = *reinterpret_cast<uintptr_t*>(core_address(core_base, CoreField::application));
+  if (!app || *reinterpret_cast<uintptr_t*>(app) != core_address(core_base, CoreField::app_vtable)) return false;
+  if (*reinterpret_cast<uintptr_t*>(core_address(core_base, CoreField::app_vtable) + core_offset(CoreField::app_get_slot)) != core_address(core_base, CoreField::app_get)) return false;
+  const auto context = *reinterpret_cast<uintptr_t*>(app + core_offset(CoreField::app_context));
+  const unsigned char context_code[] = {0x48, 0x8d, 0x41, static_cast<unsigned char>(core_offset(CoreField::account_string)), 0xc3};
+  if (!context || *reinterpret_cast<uintptr_t*>(context) != core_address(core_base, CoreField::context_vtable) ||
+      *reinterpret_cast<uintptr_t*>(core_address(core_base, CoreField::context_vtable) + core_offset(CoreField::context_get_slot)) != core_address(core_base, CoreField::context_get) ||
+      std::memcmp(reinterpret_cast<void*>(core_address(core_base, CoreField::context_get)), context_code, sizeof(context_code))) return false;
+  const auto s = reinterpret_cast<SmallString*>(context + core_offset(CoreField::account_string));
   const size_t length = strnlen_s(config.account, 128);
   if (!length || length >= 128 || s->length != length || s->capacity < length ||
       !(s->capacity == 15 || (s->capacity >= 16 && s->capacity <= 1048576))) return false;
@@ -191,12 +192,12 @@ static DWORD schedule_task(const TestConfig& config, std::function<void()>* call
             // its owned scheduler. These helpers do not require a task-local TLS.
             using App = void* (__fastcall*)();
             using Scheduler = SharedMessage* (__fastcall*)(void*, SharedMessage*);
-            void* app = reinterpret_cast<App>(core_address(core_base, 0x45d10))();
+            void* app = reinterpret_cast<App>(core_address(core_base, CoreField::app_entry))();
             if (!app) return ERROR_NOT_READY;
-            reinterpret_cast<Scheduler>(core_address(core_base, 0x47310))(app, &scheduler);
+            reinterpret_cast<Scheduler>(core_address(core_base, CoreField::scheduler_get))(app, &scheduler);
             if (!scheduler.object || !scheduler.control) return ERROR_NOT_READY;
             using Schedule = SharedMessage* (__fastcall*)(void*, SharedMessage*, Location*, std::function<void()>*, uint32_t);
-            reinterpret_cast<Schedule>(core_address(core_base, 0x2fb010))(scheduler.object, &future, &location, callable, 1);
+            reinterpret_cast<Schedule>(core_address(core_base, CoreField::schedule))(scheduler.object, &future, &location, callable, 1);
         } __finally {
             guarded_release_shared(&future, &error);
             guarded_release_shared(&scheduler, &error);
@@ -265,7 +266,7 @@ static DWORD send_text_on_task(const TextConfig* config) {
     }
     __try {
         using Builder = void (__fastcall*)(void*, TextRequest*, SmallString*, TextCompletion**);
-        reinterpret_cast<Builder>(core_address(core_base, 0x54b02f0))(nullptr, &request, &description, &completion);
+        reinterpret_cast<Builder>(core_address(core_base, CoreField::text_builder))(nullptr, &request, &description, &completion);
         report.stage = 20;
     } __except (record_exception(GetExceptionInformation(), &report)) {
         write_report(config->base, report, "WXBOT_TEXT_SEND_EXCEPTION");

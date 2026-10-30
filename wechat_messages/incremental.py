@@ -107,8 +107,12 @@ def changes(reader, request, deadline):
         complete = True
         try:
             with reader.cache.database(shard) as db:
+                tables = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'") if TABLE.fullmatch(r[0])]
+                if len(tables) > 20000:
+                    raise ProbeError("monitor_table_limit")
                 # Name2Id also retains removed/hidden chats absent from contacts and sessions.
-                for row in ([] if lane == "realtime" else db.execute("SELECT user_name FROM Name2Id LIMIT 100001")):
+                # A newly created empty WCDB shard has no Name2Id table yet.
+                for row in ([] if lane == "realtime" or not tables else db.execute("SELECT user_name FROM Name2Id LIMIT 100001")):
                     if isinstance(row[0], str) and 0<len(row[0])<=256 and "\0" not in row[0]:
                         sources[reader.table(row[0])] = row[0]
                 if len(sources)>100000:
@@ -116,9 +120,6 @@ def changes(reader, request, deadline):
                 entry = reader.cache.entries.get(shard)
                 identity = [stamp[0][:2], entry.salt.hex() if entry else "synthetic"]
                 base_generation = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
-                tables = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'") if TABLE.fullmatch(r[0])]
-                if len(tables) > 20000:
-                    raise ProbeError("monitor_table_limit")
                 cursor = reader.table_cursors.get(shard, "")
                 tables.sort(key=lambda table: (table <= cursor, table))
                 for table in tables:

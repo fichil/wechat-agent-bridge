@@ -20,6 +20,7 @@ def remove_v7(db):
 
 
 def remove_v8(db):
+    remove_v9(db)
     for table in ('group_round_messages', 'group_rounds', 'group_message_eligibility'):
         db.execute('DROP TABLE IF EXISTS '+table)
     columns = {r[1] for r in db.execute('PRAGMA table_info(conversation_preferences)')}
@@ -27,3 +28,8 @@ def remove_v8(db):
         if column in columns:
             db.execute('ALTER TABLE conversation_preferences DROP COLUMN '+column)
     db.execute('DELETE FROM schema_migrations WHERE version=8')
+
+
+def remove_v9(db):
+    db.execute('DROP TABLE IF EXISTS compatibility_state')
+    db.execute('DELETE FROM schema_migrations WHERE version=9')

@@ -32,6 +32,7 @@ class SyncScheduler:
         current = time.monotonic()
         if current >= self.probe_due:
             self.probe_due = current + min(2, bridge.interval)
+            bridge.compatibility.check_processes()
             from wechat_account_probe.native import enumerate_instances
             instances, _ = enumerate_instances()
             signature = tuple(sorted((i.pid, int(i.created)) for i in instances))

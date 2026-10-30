@@ -202,6 +202,8 @@ class MessageReader:
                 raise ProbeError("message_not_found")
             row = dict(row)
         # Release the message snapshot before the optional emoticon lookup/network wait.
+        from wechat_compatibility import require_profile
+        require_profile(self.session.instance, 'images' if row['local_type'] & 0xffffffff == 3 else 'stickers')
         result = read_image(self, request["source_id"], row) if row["local_type"] & 0xffffffff == 3 else read_sticker(self, row)
         self.session.bind(deadline)
         return result

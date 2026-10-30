@@ -17,12 +17,15 @@ V1 = b"\x07\x08\x05\x56\x02\x05"
 
 def image_keys(session):
     from wechat_account_probe.memory import pointer, remote_string
+    from wechat_compatibility import layout, require_profile
+    require_profile(session.instance, 'images')
+    fields = layout(session.memory)
     candidates = set()
     for address in getattr(session.memory, "configuration_anchors", ()):
-        owner = pointer(session.memory, address + 16 - 0x138)
-        cfg = pointer(session.memory, owner + 0x68) if owner else 0
-        if cfg and remote_string(session.memory, cfg + 0x48) == session.wxid:
-            value = session.memory.read(cfg + 0x40, 4)
+        owner = pointer(session.memory, address - fields['anchor_owner_back'])
+        cfg = pointer(session.memory, owner + fields['app_context']) if owner else 0
+        if cfg and remote_string(session.memory, cfg + fields['account_string']) == session.wxid:
+            value = session.memory.read(cfg + fields['image_seed'], 4)
             if len(value) == 4:
                 number = struct.unpack("<I", value)[0]
                 candidates.add((hashlib.md5((str(number)+session.wxid).encode()).hexdigest()[:16].encode(), number & 255))

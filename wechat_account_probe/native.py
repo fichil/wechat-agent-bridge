@@ -131,11 +131,15 @@ def enumerate_instances():
             session = W.DWORD()
             if not k.ProcessIdToSessionId(pid, C.byref(session)):
                 raise ProbeError('session_unreadable')
+            from wechat_compatibility.windows import core_path
+            from wechat_compatibility import file_identity
+            core = core_path(pid)
+            identity = file_identity(core) if core else {}
             result.append(Instance(pid, creation_time(k, handle), session.value,
-                                   file_version(process.exe())))
+                                   file_version(process.exe()), identity.get('core_sha256',''), identity.get('profile_id')))
         except psutil.NoSuchProcess:
             issues.append(dict(pid=pid, reason='process_exited_during_enumeration'))
-        except (psutil.AccessDenied, OSError):
+        except (psutil.AccessDenied, OSError, ValueError):
             issues.append(dict(pid=pid, reason='process_metadata_access_denied'))
         except ProbeError as exc:
             issues.append(dict(pid=pid, reason=str(exc)))

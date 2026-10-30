@@ -79,6 +79,8 @@ class DeliveryStoreMixin:
             return
         if not incremental or item.get('is_self') is not False or item.get('type') not in ('text','image','sticker','voice'):
             return
+        if self._compatibility_blocked(aid):
+            return
         prefs=self._preferences(aid,cid)
         if not prefs['ai_enabled']: return
         session=self.db.execute('SELECT * FROM delivery_sessions WHERE account_id=? AND conversation_id=?',(aid,cid)).fetchone()
@@ -139,6 +141,9 @@ class DeliveryStoreMixin:
 
     def _queue_delivery(self, run):
         aid,cid,rid=run['account_id'],run['conversation_id'],run['run_id']
+        if self._compatibility_blocked(aid):
+            run['reply']=''
+            return
         mids=[r[0] for r in self.db.execute('SELECT message_id FROM ai_run_messages WHERE run_id=?',(rid,))]
         group_round = bool(run.get('round_id'))
         if group_round:
@@ -160,7 +165,7 @@ class DeliveryStoreMixin:
 
     def delivery_candidates(self):
         def query():
-            return [dict(r) for r in self.db.execute("SELECT d.* FROM deliveries d JOIN conversation_preferences p USING(account_id,conversation_id) JOIN ai_sessions s USING(account_id,conversation_id) WHERE d.status='queued' AND p.ai_enabled=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.account_id=d.account_id AND x.conversation_id=d.conversation_id AND x.status IN ('sending','unknown','failed')) AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.run_id=d.run_id AND x.part_index<d.part_index AND x.status<>'sent') ORDER BY d.rowid LIMIT 100")]
+            return [dict(r) for r in self.db.execute("SELECT d.* FROM deliveries d JOIN conversation_preferences p USING(account_id,conversation_id) JOIN ai_sessions s USING(account_id,conversation_id) WHERE d.status='queued' AND p.ai_enabled=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.account_id=d.account_id AND x.conversation_id=d.conversation_id AND x.status IN ('sending','unknown','failed')) AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.run_id=d.run_id AND x.part_index<d.part_index AND x.status<>'sent') ORDER BY d.rowid LIMIT 100") if not self._compatibility_blocked(r["account_id"])]
         return self.call(query)
 
     def claim_delivery(self, rid, part):
@@ -169,6 +174,7 @@ class DeliveryStoreMixin:
                 row=self.db.execute('SELECT * FROM deliveries WHERE run_id=? AND part_index=?',(rid,part)).fetchone()
                 if not row or row['status']!='queued': return None
                 aid,cid=row['account_id'],row['conversation_id']
+                if self._compatibility_blocked(aid): return None
                 if not self._preferences(aid,cid)['ai_enabled'] or self._ai_session(aid,cid)['epoch']!=row['epoch']:
                     self.db.execute("UPDATE deliveries SET status='cancelled',code='ai_disabled' WHERE run_id=? AND part_index=?",(rid,part)); return None
                 run = json.loads(self.db.execute('SELECT payload FROM ai_runs WHERE run_id=?',(rid,)).fetchone()[0])
@@ -207,6 +213,7 @@ class DeliveryStoreMixin:
                     raise ConversationError('ai_run_not_found','AI 任务不存在。',404)
                 status=self._delivery_public(rid)['status']
                 if resolution is None:
+                    self._compatibility_require(aid)
                     if status!='failed' or not self._preferences(aid,cid)['ai_enabled']:
                         raise ConversationError('delivery_retry_invalid','只能重试明确未发送的失败项，并且需要开启 AI。',409)
                     self.db.execute("UPDATE deliveries SET status='queued',code=NULL WHERE run_id=? AND status='failed'",(rid,))

@@ -38,13 +38,16 @@ class AuthConfig:
         if any(ord(char) <= 32 or ord(char) == 127 for char in self.origin):
             raise ValueError("Invalid authentication origin configuration")
         value = urlsplit(self.origin)
-        if self.mode not in ("production", "development") or value.username or value.password or value.query or value.fragment or value.path not in ("", "/"):
+        if self.mode not in ("production", "development", "private") or value.username or value.password or value.query or value.fragment or value.path not in ("", "/"):
             raise ValueError("Invalid authentication origin configuration")
         if self.mode == "production":
             if value.scheme != "https" or not value.hostname or value.hostname in ("localhost", "127.0.0.1", "::1"):
                 raise ValueError("Production requires BRIDGE_PUBLIC_ORIGIN=https://your-domain")
             if self.extra_dev_origins:
                 raise ValueError("Development origins are forbidden in production")
+        elif self.mode == 'private':
+            if self.origin != 'http://127.0.0.1:18765' or self.extra_dev_origins:
+                raise ValueError('Private access requires the fixed loopback origin without extra origins')
         elif value.scheme != "http" or value.hostname not in ("127.0.0.1", "localhost"):
             raise ValueError("Development HTTP is restricted to loopback")
         for origin in self.extra_dev_origins:
@@ -66,7 +69,7 @@ class AuthConfig:
 
     @property
     def cookie(self):
-        return "__Host-bridge_session" if self.secure else "bridge_dev_session"
+        return "__Host-bridge_session" if self.secure else 'bridge_private_session' if self.mode == 'private' else "bridge_dev_session"
 
     @property
     def hosts(self):

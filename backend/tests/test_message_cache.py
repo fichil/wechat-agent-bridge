@@ -1,4 +1,5 @@
 from pathlib import Path
+import struct
 import tempfile
 import time
 import unittest
@@ -41,7 +42,9 @@ class CacheTests(unittest.TestCase):
             cache = DatabaseCache(session, maximum=4*4096)
             with patch("wechat_account_probe.memory.database_key", return_value=(KEY, SALT)):
                 cache.image("a.db"); cache.image("b.db")
-                wal_path.write_bytes(wal([(2, 2, page), (3, 3, bytes(4096))]))
+                header = bytearray(plain_database()[:4096])
+                struct.pack_into('>I', header, 28, 3)
+                wal_path.write_bytes(wal([(2, 2, page), (1, 0, header), (3, 3, bytes(4096))]))
                 self.assertEqual(len(cache.image("a.db")), 3*4096)
                 self.assertEqual(list(cache.entries), ["a.db"])
                 self.assertLessEqual(sum(len(e.image) for e in cache.entries.values()), cache.maximum)

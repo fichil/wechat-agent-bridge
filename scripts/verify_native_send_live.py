@@ -89,8 +89,11 @@ def _run(accounts, api):
         identity=transport.inspect(binding)
         if identity.get('core_sha256') not in CORE_HASHES: raise RuntimeError('Native compatibility failed: '+str(identity.get('code')))
         core=Path(modules(i['pid'])['weixin.dll'][1]); backup=core.with_name(core.name+'.h.bak')
-        if identity['core_sha256'] != 'e0428a7b691853de496532523c2c09aa095f90941c37c9f4cfb3f137f3c66556':
-            if not backup.exists() or digest(backup)!='e0428a7b691853de496532523c2c09aa095f90941c37c9f4cfb3f137f3c66556':
+        from wechat_compatibility import profile_for_hash
+        profile = profile_for_hash(identity['core_sha256'])
+        build = next(b for b in profile['builds'] if b['sha256'] == identity['core_sha256'])
+        if build.get('original_sha256'):
+            if not backup.exists() or digest(backup)!=build['original_sha256']:
                 raise RuntimeError('Verified original backup required for patched-build acceptance')
             if code_windows(core)!=code_windows(backup): raise RuntimeError('Borrowed code entries differ from original')
         marker=f'BRIDGE_TEST_{stamp}_{index}_{uuid4().hex[:8]} 无感发送验证 🙂'
@@ -126,7 +129,8 @@ def _run(accounts, api):
     summary.update(drafts_before=before_drafts,drafts_after=after_drafts,
                    drafts_unchanged=(before_drafts==after_drafts) if observed==set(pids) else None,
                    draft_observation='complete' if observed==set(pids) else 'inconclusive')
-    summary['passed']=len(reports)==len(accounts) and all(r['result'].get('status')=='sent' and r['archive_match'] and r['module_unloaded'] and r['noninterference']=='passed' for r in reports)
+    summary['passed']=(summary['drafts_unchanged'] is True and len(reports)==len(accounts) and all(
+        r['result'].get('status')=='sent' and r['archive_match'] and r['module_unloaded'] and r['noninterference']=='passed' for r in reports))
     summary['core_sha256']=reports[0]['result'].get('core_sha256') if reports else None
     summary['accounts']=[a['wxid'] for a in accounts]
     # This report alone never enables the sender. All required scenarios must be reviewed first.

@@ -15,10 +15,44 @@ from wechat_account_probe.models import Instance, ProbeError, instance_result, a
 from wechat_account_probe.memory import bind_directory, remote_string
 from wechat_account_probe.sqlcipher import (decrypt_snapshot, read_own_row,
                                           committed_frames, stable_snapshot)
-from fixtures import (KEY, SALT, WXID, PAGE, plain_database, encrypted_database, wal, page)
+from fixtures import (KEY, SALT, WXID, PAGE, plain_database, encrypted_database, wal, page, encrypt_page)
+from wechat_compatibility import registry
+
+PROFILE = registry()['profiles'][0]
+CORE_HASH = PROFILE['builds'][0]['sha256']
 
 
 class CryptoTests(unittest.TestCase):
+    def test_preallocated_tail_uses_authenticated_logical_size(self):
+        encrypted = encrypted_database() + bytes(PAGE * 8)
+        image = decrypt_snapshot(encrypted, b'', KEY)
+        self.assertEqual(len(image), PAGE * 2)
+        self.assertEqual(read_own_row(image, WXID)['wxid'], WXID)
+        update = plain_database(nickname='已提交')[PAGE:]
+        image = decrypt_snapshot(encrypted, wal([(2, 10, update)]), KEY)
+        self.assertEqual(len(image), PAGE * 2)
+        self.assertEqual(read_own_row(image, WXID)['nickname'], '已提交')
+
+    def test_zero_inside_logical_size_is_not_treated_as_preallocation(self):
+        with self.assertRaisesRegex(ProbeError, 'hmac_failed'):
+            decrypt_snapshot(encrypted_database()[:PAGE] + bytes(PAGE * 9), b'', KEY)
+
+    def test_invalid_header_counter_does_not_authorize_truncation(self):
+        header = bytearray(plain_database()[:PAGE])
+        struct.pack_into('>I', header, 92, 2)
+        encrypted = encrypt_page(header, 1) + encrypted_database()[PAGE:] + bytes(PAGE)
+        with self.assertRaisesRegex(ProbeError, 'hmac_failed'):
+            decrypt_snapshot(encrypted, b'', KEY)
+
+    def test_latest_wal_header_controls_logical_size_and_is_authenticated(self):
+        header = bytearray(plain_database()[:PAGE])
+        struct.pack_into('>I', header, 28, 3)
+        frames = wal([(1, 0, header), (3, 10, bytes(PAGE))])
+        image = decrypt_snapshot(encrypted_database() + bytes(PAGE * 8), frames, KEY)
+        self.assertEqual(len(image), PAGE * 3)
+        with self.assertRaisesRegex(ProbeError, 'size_invalid'):
+            decrypt_snapshot(encrypt_page(header, 1) + encrypted_database()[PAGE:], b'', KEY)
+
     def test_fixture_is_valid_sqlite_and_selects_only_self(self):
         image = plain_database()
         with contextlib.closing(sqlite3.connect(':memory:')) as db:
@@ -88,8 +122,8 @@ class CryptoTests(unittest.TestCase):
 
 class IdentityTests(unittest.TestCase):
     def setUp(self):
-        self.a = Instance(100, 123456789012345678, 1, '4.1.15.56')
-        self.b = Instance(200, 123456789012345679, 2, '4.1.15.56')
+        self.a = Instance(100, 123456789012345678, 1, '4.1.15.56', CORE_HASH)
+        self.b = Instance(200, 123456789012345679, 2, '4.1.15.56', CORE_HASH)
 
     def test_directory_matches_current_config_not_latest_or_first(self):
         paths = {str(Path('root')/'old_zzzz'/'db_storage'/'MMKV'/'config'): 1,
@@ -135,7 +169,7 @@ class IdentityTests(unittest.TestCase):
             if address==cfg+0x48:return struct.pack('<QQQQ',data,0,len(value[0]),31)
             if address==data:return value[0].encode()
             return b''
-        memory=SimpleNamespace(configuration_anchors=(anchor,),account_module_bounds=(base,base+100000),
+        memory=SimpleNamespace(compatibility_profile=PROFILE,configuration_anchors=(anchor,),account_module_bounds=(base,base+100000),
                                read=Mock(side_effect=read),find=Mock(side_effect=AssertionError('rescan')))
         paths={str(Path('synthetic')/'Weixin.dll'):base}
         self.assertEqual(current_account(memory,paths),WXID)
@@ -170,6 +204,8 @@ class IdentityTests(unittest.TestCase):
              patch('wechat_account_probe.native.process_sid',side_effect=lambda k,pid:'other' if pid==300 else 'self'), \
              patch('wechat_account_probe.native.creation_time',side_effect=lambda k,h:h*1000), \
              patch('wechat_account_probe.native.file_version',return_value='4.1.15.56'), \
+             patch('wechat_compatibility.windows.core_path',return_value='synthetic/Weixin.dll'), \
+             patch('wechat_compatibility.file_identity',return_value=dict(core_sha256=CORE_HASH,profile_id=PROFILE['id'])), \
              patch.object(psutil,'process_iter',return_value=processes):
             instances,issues=enumerate_instances()
         self.assertEqual([(p.pid,p.session_id) for p in instances],[(100,1),(200,2)])
@@ -192,6 +228,7 @@ class IdentityTests(unittest.TestCase):
         paths = {str(Path('root')/(WXID+'_abcd')/'db_storage'/'MMKV'/'x'): 1}
         memory.mapped_paths.return_value = paths
         with patch('wechat_account_probe.native.ProcessMemory', return_value=memory), \
+             patch('wechat_compatibility.bind_memory'), \
              patch('wechat_account_probe.memory.current_account', side_effect=[WXID,'wxid_changed']), \
              patch('wechat_account_probe.memory.contact_key',return_value=(KEY,SALT)), \
              patch('wechat_account_probe.sqlcipher.stable_snapshot',return_value=(encrypted_database(),b'')):

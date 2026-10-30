@@ -16,6 +16,7 @@ from wechat_account_probe.models import Instance, ProbeError, aggregate, instanc
 from wechat_account_probe.sqlcipher import decrypt_snapshot
 from fixtures import (KEY, SALT, WXID, PAGE, avatar_database, encrypted_database,
                       encrypt_page, wal)
+from wechat_compatibility import registry
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF1kAAAAASUVORK5CYII=')
 JPEG = b'\xff\xd8\xff\xe0synthetic_jpeg\xff\xd9'
@@ -141,13 +142,14 @@ class AvatarLoadingTests(unittest.TestCase):
 class AvatarInterfaceTests(unittest.TestCase):
     def probe(self, alias='', avatar_error=False, switch=False):
         from wechat_account_probe.probe import probe_instance
-        instance=Instance(100,1,1,'4.1.15.56')
+        instance=Instance(100,1,1,'4.1.15.56',registry()['profiles'][0]['builds'][0]['sha256'])
         memory=Mock()
         paths={str(Path('own')/(WXID+'_abcd')/'db_storage/MMKV/config'):1}
         memory.mapped_paths.return_value=paths
         avatar=dict(avatar=None,avatar_status='unavailable',avatar_reason='avatar_timeout') if avatar_error else \
                dict(avatar=encode_avatar(PNG),avatar_status='available',avatar_reason='')
         with patch('wechat_account_probe.native.ProcessMemory',return_value=memory), \
+             patch('wechat_compatibility.bind_memory'), \
              patch('wechat_account_probe.memory.current_account',side_effect=[WXID,'wxid_other_owner' if switch else WXID]), \
              patch('wechat_account_probe.memory.contact_key',return_value=(KEY,SALT)), \
              patch('wechat_account_probe.sqlcipher.stable_snapshot',return_value=(encrypted_database(alias=alias),b'')), \

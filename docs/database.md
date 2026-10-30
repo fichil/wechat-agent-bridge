@@ -1,8 +1,14 @@
 # 数据库设计与恢复
 
+## v9 微信兼容暂停
+
+当前版本为 v9。新增 `compatibility_state`，分别保存当前 Windows 用户范围与各账号的构建指纹、修订号、能力快照和持久暂停原因。兼容暂停独立于用户暂停、AI 重试与迁移暂停；启动检查不会自动清除账号暂停。恢复使用修订号检查，取消旧待发送队列、保留 `unknown`、更新 epoch 与实时水位，不重放停用期间消息。
+
+升级前通过 SQLite backup API 写入 `migration-backups/before-v9-<UUID>.sqlite3`，表与版本在同一事务提交。完整迁移包接受合法 v8/v9 数据，在暂存库升级后再替换目标。回退必须同时恢复对应程序和一致数据库备份，并保留回退前数据供核对；不修改微信客户端版本。
+
 ## v8 会话频率与群聊处理轮次
 
-当前版本为 v8。`conversation_preferences` 增加 `scan_interval_seconds`（默认 2）与 `group_proactive_message_threshold`（默认 0，关闭）。迁移不修改现有 AI 开关、暂停状态、角色/API、记忆、消息或发送记录；旧归档不回填群聊实时计数。
+v8 中，`conversation_preferences` 增加 `scan_interval_seconds`（默认 2）与 `group_proactive_message_threshold`（默认 0，关闭）。迁移不修改现有 AI 开关、暂停状态、角色/API、记忆、消息或发送记录；旧归档不回填群聊实时计数。
 
 从旧版本升级前，通过 SQLite backup API 保存 `migration-backups/before-v8-<UUID>.sqlite3` 并执行完整性检查。v8 新字段、资格表、轮次表与版本标记在同一事务提交；失败回滚。群聊轮次按固定消息快照分批提交记忆与完成标记，最终回复、触发消费和发送队列原子落库。重启时未完成的模型请求标为中断并暂停；已完成批次不重做，未发起的后续批次保留。
 

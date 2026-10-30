@@ -221,5 +221,5 @@ class RoleMigrationTests(unittest.TestCase):
             store = Store(path)
             try:
                 self.assertEqual(store.preferences(aid, cid)["memory"], "")
-                self.assertEqual(store.call(lambda: store.db.execute("PRAGMA user_version").fetchone()[0]), 8)
+                self.assertEqual(store.call(lambda: store.db.execute("PRAGMA user_version").fetchone()[0]), 9)
             finally: store.close()
