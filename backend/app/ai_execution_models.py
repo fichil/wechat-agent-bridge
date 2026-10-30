@@ -58,6 +58,13 @@ class RunRetry(RunQuery):
     request_id: str = Field(min_length=1, max_length=128)
 
 class AiRun(BaseModel):
+    round_id: str | None = None
+    trigger_reason: str | None = None
+    batch_index: int | None = None
+    round_message_count: int | None = None
+    round_completed_count: int | None = None
+    round_final: bool | None = None
+    chose_silence: bool | None = None
     delivery: Delivery = Field(default_factory=Delivery)
     run_id: str
     account_id: str

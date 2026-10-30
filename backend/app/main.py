@@ -227,7 +227,7 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
 
     @app.post("/api/v1/conversation-preferences/update", response_model=ConversationPreferences, responses=failures)
     def update_preferences(body: PreferencesUpdate, request: Request):
-        patch = body.model_dump(exclude_unset=True, include={"ai_enabled", "role_card_code", "api_profile_id", "memory"})
+        patch = body.model_dump(exclude_unset=True, include={"ai_enabled", "role_card_code", "api_profile_id", "memory", "scan_interval_seconds", "group_proactive_message_threshold"})
         return request.app.state.store.save_preferences(body.account_id, body.conversation_id, body.expected_revision, patch, body.expected_memory_revision)
 
     @app.post("/api/v1/api-profiles/query", response_model=ProfileList, responses=failures)

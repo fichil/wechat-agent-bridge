@@ -94,7 +94,8 @@ class RoleStoreMixin:
         row = self.db.execute("SELECT * FROM conversation_preferences WHERE account_id=? AND conversation_id=?", (aid, cid)).fetchone()
         if row:
             return {**dict(row), "ai_enabled": bool(row["ai_enabled"])}
-        return dict(account_id=aid, conversation_id=cid, ai_enabled=False, role_card_code=None, api_profile_id=None, memory="", revision=0, memory_revision=0)
+        return dict(account_id=aid, conversation_id=cid, ai_enabled=False, role_card_code=None, api_profile_id=None, memory="", revision=0, memory_revision=0,
+                    scan_interval_seconds=2, group_proactive_message_threshold=0)
 
     def preferences(self, aid, cid):
         def query():
@@ -113,6 +114,11 @@ class RoleStoreMixin:
                 if "memory" in patch and previous["memory_revision"] != (expected_memory_revision or 0):
                     raise ConversationError("ai_memory_conflict", "记忆已更新，当前草稿保留，请重新加载后保存。", 409)
                 current = {**previous, **patch}
+                for field, low, high in (("scan_interval_seconds", 1, 3600), ("group_proactive_message_threshold", 0, 1000)):
+                    if type(current[field]) is not int or not low <= current[field] <= high:
+                        raise ConversationError("invalid_request", "扫描间隔或群聊条数设置无效。", 422)
+                if current["group_proactive_message_threshold"] and not self._is_group(aid, cid):
+                    raise ConversationError("invalid_request", "只有群聊可以设置主动调用条数。", 422)
                 if current["role_card_code"]:
                     self._card(current["role_card_code"], False)
                 if current["api_profile_id"]:
@@ -123,10 +129,10 @@ class RoleStoreMixin:
                 if current != previous:
                     current["revision"] += 1
                     current["memory_revision"] += int(current["memory"] != previous["memory"])
-                    self.db.execute("INSERT INTO conversation_preferences(account_id,conversation_id,ai_enabled,role_card_code,memory,revision,api_profile_id,memory_revision) VALUES(?,?,?,?,?,?,?,?) "
+                    self.db.execute("INSERT INTO conversation_preferences(account_id,conversation_id,ai_enabled,role_card_code,memory,revision,api_profile_id,memory_revision,scan_interval_seconds,group_proactive_message_threshold) VALUES(?,?,?,?,?,?,?,?,?,?) "
                                     "ON CONFLICT(account_id,conversation_id) DO UPDATE SET ai_enabled=excluded.ai_enabled, "
-                                    "role_card_code=excluded.role_card_code,memory=excluded.memory,revision=excluded.revision,api_profile_id=excluded.api_profile_id,memory_revision=excluded.memory_revision",
-                                    (aid, cid, current["ai_enabled"], current["role_card_code"], current["memory"], current["revision"], current["api_profile_id"], current["memory_revision"]))
+                                    "role_card_code=excluded.role_card_code,memory=excluded.memory,revision=excluded.revision,api_profile_id=excluded.api_profile_id,memory_revision=excluded.memory_revision,scan_interval_seconds=excluded.scan_interval_seconds,group_proactive_message_threshold=excluded.group_proactive_message_threshold",
+                                    (aid, cid, current["ai_enabled"], current["role_card_code"], current["memory"], current["revision"], current["api_profile_id"], current["memory_revision"], current["scan_interval_seconds"], current["group_proactive_message_threshold"]))
                     self._ai_preference_change(previous, current)
                     event = self._changed(aid, ["conversation_preferences", "conversations"], [cid])
             if event:

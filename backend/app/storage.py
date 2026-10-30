@@ -17,6 +17,7 @@ from .ai_execution_storage import AiExecutionStoreMixin, EXECUTION_SCHEMA
 from .ai_execution_models import DEFAULT_INSTRUCTIONS
 from .log_storage import LogStoreMixin, LOG_SCHEMA
 from .delivery_storage import DeliveryStoreMixin, DELIVERY_SCHEMA
+from .group_round_storage import GroupRoundStoreMixin, GROUP_SCHEMA
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / ".local" / "bridge.sqlite3"
@@ -81,7 +82,7 @@ CREATE TABLE cursors(token TEXT PRIMARY KEY, account_id TEXT NOT NULL, conversat
 """
 
 
-class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
+class Store(GroupRoundStoreMixin, DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
     def __init__(self, path=DEFAULT_PATH, settings=None, image_limit=IMAGE_LIMIT):
         self.path, self.image_limit = Path(path) if str(path) != ":memory:" else path, image_limit
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="archive-db")
@@ -155,13 +156,13 @@ class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMix
         self.db.execute("PRAGMA temp_store=MEMORY")
         self.db.execute("PRAGMA cache_size=-16384")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4, 5, 6, 7):
+        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8):
             self.db.close()
             raise ConversationError("storage_version_unsupported", "数据库版本高于当前程序，请使用匹配版本。", 503)
-        if 0 < version < 7 and str(self.path) != ':memory:':
+        if 0 < version < 8 and str(self.path) != ':memory:':
             backup_dir = self.path.parent / 'migration-backups'
             backup_dir.mkdir(exist_ok=True)
-            backup_path = backup_dir / ('before-v7-' + uuid4().hex + '.sqlite3')
+            backup_path = backup_dir / ('before-v8-' + uuid4().hex + '.sqlite3')
             with closing(sqlite3.connect(backup_path)) as backup:
                 self.db.backup(backup)
                 if backup.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
@@ -224,6 +225,13 @@ class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMix
                     self._delivery_enable(*row)
                 self.db.execute('INSERT INTO schema_migrations VALUES(7,?)', (now(),))
                 self.db.execute('PRAGMA user_version=7')
+        if version < 8:
+            with self.db:
+                self.db.execute('BEGIN IMMEDIATE')
+                for statement in GROUP_SCHEMA:
+                    self.db.execute(statement)
+                self.db.execute('INSERT INTO schema_migrations VALUES(8,?)', (now(),))
+                self.db.execute('PRAGMA user_version=8')
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             self.db.close()
             raise ConversationError("storage_corrupt", "数据库校验失败，请保留原文件后恢复备份。", 503)
@@ -644,8 +652,8 @@ class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMix
     def sync_targets(self):
         def query():
             targets = {}
-            for row in self.db.execute("SELECT c.account_id,c.source_id FROM conversations c JOIN conversation_preferences p USING(account_id,conversation_id) JOIN ai_sessions s USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.paused=0"):
-                targets.setdefault(row["account_id"], []).append(row["source_id"])
+            for row in self.db.execute("SELECT c.account_id,c.source_id,COALESCE(p.scan_interval_seconds,2) AS interval FROM conversations c LEFT JOIN conversation_preferences p USING(account_id,conversation_id) WHERE COALESCE(json_extract(c.payload,'$.is_container'),0)=0"):
+                targets.setdefault(row["account_id"], {})[row["source_id"]] = row["interval"]
             return targets
         return self.call(query)
 

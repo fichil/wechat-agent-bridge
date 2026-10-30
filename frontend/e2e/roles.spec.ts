@@ -5,7 +5,7 @@ import { defaultExclusions } from "../src/conversation-options";
 import { messagePage } from "../tests/message-fixtures";
 import type { RoleCard, ConversationPreferences } from "../src/api";
 
-async function mockWorkspace(page: Page) {
+async function mockWorkspace(page: Page, group = false) {
   const roles: RoleCard[] = [];
   const preferences = new Map<string, ConversationPreferences>();
   const state = {
@@ -33,6 +33,8 @@ async function mockWorkspace(page: Page) {
         account_id: aid,
         conversation_id: cid,
         ai_enabled: false,
+        scan_interval_seconds: 2,
+        group_proactive_message_threshold: 0,
         role_card_code: null,
         memory: "",
         memory_revision: 0,
@@ -89,7 +91,7 @@ async function mockWorkspace(page: Page) {
           items: ["一", "二"].map((suffix, i) => ({
             conversation_id: `${body.account_id}-${i}`,
             name: `合成会话${suffix}`,
-            category: "contact",
+            category: group && i === 0 ? "group" : "contact",
             is_container: false,
             summary: "新的工作安排",
             last_message_at: "2026-10-29T03:01:00Z",
@@ -195,7 +197,13 @@ async function mockWorkspace(page: Page) {
           "revision_conflict",
           "内容已在其他位置更新，请重新加载后再保存。",
         );
-      for (const key of ["ai_enabled", "role_card_code", "memory"] as const)
+      for (const key of [
+        "ai_enabled",
+        "role_card_code",
+        "memory",
+        "scan_interval_seconds",
+        "group_proactive_message_threshold",
+      ] as const)
         if (key in body) Object.assign(result, { [key]: body[key] });
       result.revision++;
       await route.fulfill({ json: result });
@@ -231,6 +239,81 @@ async function addRole(page: Page, name = "工作助手") {
     page.getByText("角色卡已保存，所有微信账号共用。", { exact: true }),
   ).toBeVisible();
 }
+
+test("private scan interval saves independently while AI is off", async ({
+  page,
+}) => {
+  const { state, pref } = await mockWorkspace(page);
+  await page.goto("/workspace/synthetic-account-1/conversations");
+  await page
+    .getByRole("button", { name: "会话设置：合成会话一", exact: true })
+    .click();
+  await expect(page.getByLabel("扫描微信频率（秒）")).toHaveValue("2");
+  await expect(page.getByText("启用群聊主动调用", { exact: true })).toHaveCount(
+    0,
+  );
+  await page.getByLabel("扫描微信频率（秒）").fill("60");
+  await page.getByRole("button", { name: "保存会话设置", exact: true }).click();
+  await expect(page.getByText("会话设置已保存", { exact: true })).toBeVisible();
+  expect(state.writes.at(-1)).toMatchObject({ scan_interval_seconds: 60 });
+  expect(state.writes.at(-1)).not.toHaveProperty(
+    "group_proactive_message_threshold",
+  );
+  expect(pref("synthetic-account-1", "synthetic-account-1-0").ai_enabled).toBe(
+    false,
+  );
+  await page.reload();
+  await page
+    .getByRole("button", { name: "会话设置：合成会话一", exact: true })
+    .click();
+  await expect(page.getByLabel("扫描微信频率（秒）")).toHaveValue("60");
+});
+
+test("group frequency supports default off, validation, persistence and disabling", async ({
+  page,
+}) => {
+  const { state } = await mockWorkspace(page, true);
+  await page.goto("/workspace/synthetic-account-1/conversations");
+  await page
+    .getByRole("button", { name: "会话设置：合成会话一", exact: true })
+    .click();
+  const enabled = page.getByRole("checkbox", { name: "启用群聊主动调用" });
+  await expect(enabled).not.toBeChecked();
+  await expect(page.getByLabel("累计消息条数")).toHaveCount(0);
+  await enabled.check();
+  await expect(page.getByLabel("累计消息条数")).toHaveValue("20");
+  await page.getByLabel("累计消息条数").fill("0");
+  await expect(
+    page.getByRole("button", { name: "保存会话设置", exact: true }),
+  ).toBeDisabled();
+  await page.getByLabel("累计消息条数").fill("20");
+  await page.getByLabel("扫描微信频率（秒）").fill("30");
+  await page.getByRole("button", { name: "保存会话设置", exact: true }).click();
+  await expect(page.getByText("会话设置已保存", { exact: true })).toBeVisible();
+  expect(state.writes.at(-1)).toMatchObject({
+    scan_interval_seconds: 30,
+    group_proactive_message_threshold: 20,
+  });
+  await page.reload();
+  await page
+    .getByRole("button", { name: "会话设置：合成会话一", exact: true })
+    .click();
+  await expect(enabled).toBeChecked();
+  await expect(page.getByLabel("累计消息条数")).toHaveValue("20");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: "../.local/conversation-frequency/group-settings-mobile.png",
+    fullPage: true,
+  });
+  await expect(page.locator("body")).toHaveJSProperty("scrollWidth", 390);
+  await enabled.uncheck();
+  await page.getByRole("button", { name: "保存会话设置", exact: true }).click();
+  await expect(page.getByText("会话设置已保存", { exact: true })).toBeVisible();
+  expect(state.writes.at(-1)).toHaveProperty(
+    "group_proactive_message_threshold",
+    0,
+  );
+});
 
 test("global V2 library edits and preserves JSON through import/export and account changes", async ({
   page,

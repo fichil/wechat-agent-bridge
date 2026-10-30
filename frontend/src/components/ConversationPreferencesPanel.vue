@@ -21,6 +21,23 @@ const original = ref<ConversationPreferences | null>(null);
 const role = ref<string | null>(null);
 const profile = ref<string | null>(null);
 const memory = ref("");
+const scanInterval = ref(2);
+const proactiveEnabled = ref(false);
+const proactiveThreshold = ref(20);
+const isGroup = computed(() => props.conversation.category === "group");
+const savedThreshold = computed(() =>
+  isGroup.value && proactiveEnabled.value ? proactiveThreshold.value : 0,
+);
+const validFrequency = computed(
+  () =>
+    Number.isInteger(scanInterval.value) &&
+    scanInterval.value >= 1 &&
+    scanInterval.value <= 3600 &&
+    (!proactiveEnabled.value ||
+      (Number.isInteger(proactiveThreshold.value) &&
+        proactiveThreshold.value >= 1 &&
+        proactiveThreshold.value <= 1000)),
+);
 const loading = ref(false);
 const saving = ref(false);
 const error = ref("");
@@ -32,7 +49,10 @@ const dirty = computed(
     !!original.value &&
     (role.value !== original.value.role_card_code ||
       profile.value !== (original.value.api_profile_id ?? null) ||
-      memory.value !== original.value.memory),
+      memory.value !== original.value.memory ||
+      scanInterval.value !== (original.value.scan_interval_seconds ?? 2) ||
+      savedThreshold.value !==
+        (original.value.group_proactive_message_threshold ?? 0)),
 );
 const beforeLeave = useUnsavedChanges(dirty, save, saving);
 let generation = 0;
@@ -52,6 +72,9 @@ async function load(preserve = false) {
     role.value = null;
     profile.value = null;
     memory.value = "";
+    scanInterval.value = 2;
+    proactiveEnabled.value = false;
+    proactiveThreshold.value = 20;
   }
   try {
     const result = await api.preferences(aid, cid);
@@ -69,6 +92,10 @@ async function load(preserve = false) {
     role.value = result.role_card_code;
     profile.value = result.api_profile_id ?? null;
     memory.value = result.memory;
+    scanInterval.value = result.scan_interval_seconds ?? 2;
+    proactiveEnabled.value =
+      (result.group_proactive_message_threshold ?? 0) > 0;
+    proactiveThreshold.value = result.group_proactive_message_threshold || 20;
     externalChange.value = false;
   } catch (cause) {
     if (ticket === generation) error.value = settingsError(cause);
@@ -91,6 +118,10 @@ watch(
 
 async function save(): Promise<boolean> {
   if (!original.value || busy.value) return false;
+  if (!validFrequency.value) {
+    error.value = "扫描间隔需为 1–3600 的整数，群聊条数需为 1–1000 的整数。";
+    return false;
+  }
   if (!dirty.value) return true;
   const ticket = generation;
   saving.value = true;
@@ -100,6 +131,13 @@ async function save(): Promise<boolean> {
       account_id: props.accountId,
       conversation_id: props.conversation.conversation_id,
       expected_revision: original.value.revision,
+      ...(scanInterval.value !== (original.value.scan_interval_seconds ?? 2)
+        ? { scan_interval_seconds: scanInterval.value }
+        : {}),
+      ...(savedThreshold.value !==
+      (original.value.group_proactive_message_threshold ?? 0)
+        ? { group_proactive_message_threshold: savedThreshold.value }
+        : {}),
       ...(role.value !== original.value.role_card_code
         ? { role_card_code: role.value }
         : {}),
@@ -118,6 +156,10 @@ async function save(): Promise<boolean> {
     role.value = result.role_card_code;
     profile.value = result.api_profile_id ?? null;
     memory.value = result.memory;
+    scanInterval.value = result.scan_interval_seconds ?? 2;
+    proactiveEnabled.value =
+      (result.group_proactive_message_threshold ?? 0) > 0;
+    proactiveThreshold.value = result.group_proactive_message_threshold || 20;
     externalChange.value = false;
     notice.value = "会话设置已保存";
     emit("saved", result);
@@ -201,7 +243,7 @@ defineExpose({ beforeLeave });
           native-type="submit"
           type="primary"
           :loading="saving"
-          :disabled="loading"
+          :disabled="loading || !validFrequency"
           >保存会话设置</ElButton
         ><span v-if="dirty" class="unsaved-label">未保存</span
         ><span v-if="notice" role="status" class="save-notice">{{
@@ -209,6 +251,51 @@ defineExpose({ beforeLeave });
         }}</span>
       </div>
       <fieldset class="editor-fields" :disabled="busy">
+        <label class="editor-field">
+          <span>扫描微信频率 <small>秒</small></span>
+          <input
+            v-model.number="scanInterval"
+            class="editor-input"
+            type="number"
+            min="1"
+            max="3600"
+            step="1"
+            required
+            aria-label="扫描微信频率（秒）"
+          />
+          <small
+            >每隔指定秒数扫描此会话，关闭 AI 后仍继续扫描和归档。被 @
+            的消息也在扫描时发现。</small
+          >
+        </label>
+        <div v-if="isGroup" class="editor-field">
+          <span>调用 API 频率</span>
+          <label
+            ><input v-model="proactiveEnabled" type="checkbox" />
+            启用群聊主动调用</label
+          >
+          <label v-if="proactiveEnabled" class="editor-field">
+            <span>每累计多少条未处理消息调用</span>
+            <input
+              v-model.number="proactiveThreshold"
+              class="editor-input"
+              type="number"
+              min="1"
+              max="1000"
+              step="1"
+              required
+              aria-label="累计消息条数"
+            />
+            <small
+              >只计其他人的实时有效消息。达到条数后调用 AI，AI
+              可以选择不发言。</small
+            >
+          </label>
+          <small
+            >关闭后普通群消息只积累上下文；被 @ 时仍会调用 AI。AI
+            总开关需保持开启。</small
+          >
+        </div>
         <label class="editor-field" for="conversation-role"
           ><span>角色卡</span></label
         >

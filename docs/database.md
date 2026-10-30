@@ -1,5 +1,15 @@
 # 数据库设计与恢复
 
+## v8 会话频率与群聊处理轮次
+
+当前版本为 v8。`conversation_preferences` 增加 `scan_interval_seconds`（默认 2）与 `group_proactive_message_threshold`（默认 0，关闭）。迁移不修改现有 AI 开关、暂停状态、角色/API、记忆、消息或发送记录；旧归档不回填群聊实时计数。
+
+从旧版本升级前，通过 SQLite backup API 保存 `migration-backups/before-v8-<UUID>.sqlite3` 并执行完整性检查。v8 新字段、资格表、轮次表与版本标记在同一事务提交；失败回滚。群聊轮次按固定消息快照分批提交记忆与完成标记，最终回复、触发消费和发送队列原子落库。重启时未完成的模型请求标为中断并暂停；已完成批次不重做，未发起的后续批次保留。
+
+群聊计数资格按启用代次隔离，重复扫描和消息修正不新增资格。等待素材的消息在就绪后才计入可处理条数；关闭后重新开启 AI 不把停用期间消息作为新发言触发。关闭主动调用只取消主动轮次与尚未提交的主动发送，不取消 @ 轮次或已提交的原生发送。
+
+回退需要正常停止服务并保留当前数据库及 WAL/SHM，再恢复一致的旧数据库备份和对应源码；不得仅降低 `user_version`。恢复旧快照会丢失快照之后的新归档和发送记录，应先核对这些差异。
+
 SQLite 位于 `.local/bridge.sqlite3`。数据只存于本机，按当前 Windows 用户访问的账号隔离；公开 ID 为持久化随机 UUID，不使用 PID 作为历史身份。
 
 ## 关系和索引
@@ -17,6 +27,9 @@ SQLite 位于 `.local/bridge.sqlite3`。数据只存于本机，按当前 Window
 | api_profiles | 全局 `profile_id` 主键；服务商、协议、基础地址、模型、DPAPI 密钥密文和修订号 |
 | ai_defaults | 单行约束；全账号共用的角色卡/API 外键和独立修订号 |
 | conversation_preferences | `(account_id, conversation_id)` 主键；AI 开关、角色卡外键、长文本记忆和独立修订号 |
+| group_message_eligibility | message_id 主键；群聊实时资格、启用代次、首次观察时间和已消费任务，重复／修正不重新计数 |
+| group_rounds | round_id 主键；固定轮次、触发原因、原始 @ 消息、批次进度，同会话最多一个 active 轮次 |
+| group_round_messages | `(round_id, message_id)` 主键；消息顺序、输入快照、内容指纹、素材指纹和处理完成状态 |
 | sync_jobs | task_id 主键；状态和小型结果引用，完成任务最多保留 256 个且不超过一天 |
 | cursors | 不透明 token 主键；账号/会话/操作绑定、边界和有效期，数量有界 |
 | metadata、schema_migrations | 一次性设置迁移标记、来源状态及 schema 版本 |

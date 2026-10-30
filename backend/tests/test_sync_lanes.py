@@ -5,10 +5,12 @@ import sqlite3
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from backend.app.runtime import Bridge
 from backend.app.storage import Store
+from backend.app.sync_scheduler import SyncScheduler
 from wechat_conversations.client import LocalConversationReader
 from wechat_account_probe.models import ProbeError
 import test_conversation_workers as worker_fixtures
@@ -207,6 +209,43 @@ class SchedulerTests(unittest.TestCase):
         self.reader.changes.assert_not_called()
         scheduled = [(self.ids[0], 'realtime'), *[(aid, 'background') for aid in self.ids]]
         self.assertTrue(all(self.bridge.scheduler.due[key] > time.monotonic() for key in scheduled))
+
+
+class ConversationIntervalTests(unittest.TestCase):
+    def test_independent_intervals_updates_and_background_ownership(self):
+        calls = []
+        targets = {'a': {'fast': 2, 'slow': 60}}
+        class Queue:
+            lock = threading.RLock()
+            pending = {}
+            def submit(self, key, task, kind, work, completed):
+                work()
+                completed(dict(task, status='completed'))
+        bridge = SimpleNamespace(interval=10, process_signature=None,
+            store=SimpleNamespace(sync_targets=lambda: targets),
+            discovery=SimpleNamespace(lock=threading.RLock(), live_accounts={'a': {}}),
+            queue=Queue(), realtime_queue=Queue(),
+            sync_account=lambda aid, **options: calls.append((aid, options)) or dict(issues=[], has_more=False))
+        scheduler = SyncScheduler(bridge)
+        scheduler.probe_due = float('inf')
+        with patch('backend.app.sync_scheduler.time.monotonic', return_value=100) as clock:
+            scheduler.step()
+            self.assertEqual(calls[0][1], dict(lane='realtime', source_ids=['fast','slow']))
+            for second in (102, 110, 120):
+                clock.return_value = second
+                scheduler.step()
+            realtime = [options['source_ids'] for _, options in calls if options['lane']=='realtime']
+            self.assertEqual(realtime, [['fast','slow'], ['fast'], ['fast'], ['fast']])
+            self.assertTrue(all(options['source_ids']==['fast','slow'] for _,options in calls if options['lane']=='background'))
+            # Settings changes apply even without any AI session or AI events.
+            targets['a']['slow'] = 25
+            scheduler.notify(dict(resources=['conversation_preferences']))
+            clock.return_value = 124
+            scheduler.step()
+            self.assertEqual(calls[-1][1]['source_ids'], ['fast'])
+            clock.return_value = 125
+            scheduler.step()
+            self.assertEqual(calls[-1][1]['source_ids'], ['slow'])
 
 
 class IncrementalLaneTests(unittest.TestCase):

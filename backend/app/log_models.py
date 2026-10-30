@@ -40,6 +40,13 @@ class LogClear(LogAccount):
     scope: Literal["account", "global"]
 
 class LogSummary(BaseModel):
+    trigger_reason: str | None = None
+    round_id: str | None = None
+    batch_index: int | None = None
+    round_message_count: int | None = None
+    round_completed_count: int | None = None
+    round_final: bool | None = None
+    chose_silence: bool | None = None
     log_id: str
     category: Literal["ai", "source"]
     operation: str

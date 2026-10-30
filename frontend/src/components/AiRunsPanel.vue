@@ -28,6 +28,7 @@ const deliveryReasons: Record<string, string> = {
   native_result_uncertain: "提交后未取得确定结果，需要核对微信",
   send_interrupted: "服务在发送结果确认前中断，需要核对微信",
   ai_disabled: "会话自动回复已关闭",
+  group_proactive_disabled: "群聊主动调用已关闭",
   user_confirmed: "已由你核对确认",
   user_abandoned: "已由你放弃后续发送",
   source_offline: "微信离线，等待恢复",
@@ -220,6 +221,13 @@ onBeforeUnmount(() => {
           {{ new Date(run.started_at).toLocaleString("zh-CN") }}
         </summary>
         <p v-if="run.message">{{ run.message }}</p>
+        <p v-if="run.round_id" class="settings-note">
+          {{ run.trigger_reason === "mention" ? "@ 触发" : "累计条数触发" }} ·
+          第 {{ run.batch_index }} 批 · 已处理
+          {{ run.round_completed_count }}/{{ run.round_message_count }} 条 ·
+          {{ run.round_final ? "最终批次" : "分批记忆处理" }}
+          <span v-if="run.chose_silence"> · AI 选择不发言</span>
+        </p>
         <p v-if="run.reply" class="ai-reply">{{ run.reply }}</p>
         <small v-if="run.status === 'completed'"
           >记忆版本 {{ run.memory_revision }} ·

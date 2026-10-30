@@ -5172,6 +5172,83 @@
       },
       "AiRun": {
         "properties": {
+          "round_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Id"
+          },
+          "trigger_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Reason"
+          },
+          "batch_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Index"
+          },
+          "round_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Message Count"
+          },
+          "round_completed_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Completed Count"
+          },
+          "round_final": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Final"
+          },
+          "chose_silence": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chose Silence"
+          },
           "delivery": {
             "$ref": "#/components/schemas/Delivery"
           },
@@ -6323,6 +6400,16 @@
             "minLength": 1,
             "title": "Conversation Id"
           },
+          "scan_interval_seconds": {
+            "type": "integer",
+            "title": "Scan Interval Seconds",
+            "default": 2
+          },
+          "group_proactive_message_threshold": {
+            "type": "integer",
+            "title": "Group Proactive Message Threshold",
+            "default": 0
+          },
           "ai_enabled": {
             "type": "boolean",
             "title": "Ai Enabled"
@@ -7022,6 +7109,83 @@
       },
       "LogDetail": {
         "properties": {
+          "trigger_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Reason"
+          },
+          "round_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Id"
+          },
+          "batch_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Index"
+          },
+          "round_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Message Count"
+          },
+          "round_completed_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Completed Count"
+          },
+          "round_final": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Final"
+          },
+          "chose_silence": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chose Silence"
+          },
           "log_id": {
             "type": "string",
             "title": "Log Id"
@@ -7503,6 +7667,83 @@
       },
       "LogSummary": {
         "properties": {
+          "trigger_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Reason"
+          },
+          "round_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Id"
+          },
+          "batch_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Index"
+          },
+          "round_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Message Count"
+          },
+          "round_completed_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Completed Count"
+          },
+          "round_final": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Final"
+          },
+          "chose_silence": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chose Silence"
+          },
           "log_id": {
             "type": "string",
             "title": "Log Id"
@@ -8461,6 +8702,32 @@
               }
             ],
             "title": "Memory"
+          },
+          "scan_interval_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 3600.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Interval Seconds"
+          },
+          "group_proactive_message_threshold": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Proactive Message Threshold"
           }
         },
         "additionalProperties": false,

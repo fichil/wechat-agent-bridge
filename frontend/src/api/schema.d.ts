@@ -911,6 +911,20 @@ export interface components {
         };
         /** AiRun */
         AiRun: {
+            /** Round Id */
+            round_id?: string | null;
+            /** Trigger Reason */
+            trigger_reason?: string | null;
+            /** Batch Index */
+            batch_index?: number | null;
+            /** Round Message Count */
+            round_message_count?: number | null;
+            /** Round Completed Count */
+            round_completed_count?: number | null;
+            /** Round Final */
+            round_final?: boolean | null;
+            /** Chose Silence */
+            chose_silence?: boolean | null;
             delivery?: components["schemas"]["Delivery"];
             /** Run Id */
             run_id: string;
@@ -1348,6 +1362,16 @@ export interface components {
             account_id: string;
             /** Conversation Id */
             conversation_id: string;
+            /**
+             * Scan Interval Seconds
+             * @default 2
+             */
+            scan_interval_seconds: number;
+            /**
+             * Group Proactive Message Threshold
+             * @default 0
+             */
+            group_proactive_message_threshold: number;
             /** Ai Enabled */
             ai_enabled: boolean;
             /** Role Card Code */
@@ -1620,6 +1644,20 @@ export interface components {
         };
         /** LogDetail */
         LogDetail: {
+            /** Trigger Reason */
+            trigger_reason?: string | null;
+            /** Round Id */
+            round_id?: string | null;
+            /** Batch Index */
+            batch_index?: number | null;
+            /** Round Message Count */
+            round_message_count?: number | null;
+            /** Round Completed Count */
+            round_completed_count?: number | null;
+            /** Round Final */
+            round_final?: boolean | null;
+            /** Chose Silence */
+            chose_silence?: boolean | null;
             /** Log Id */
             log_id: string;
             /**
@@ -1753,6 +1791,20 @@ export interface components {
         };
         /** LogSummary */
         LogSummary: {
+            /** Trigger Reason */
+            trigger_reason?: string | null;
+            /** Round Id */
+            round_id?: string | null;
+            /** Batch Index */
+            batch_index?: number | null;
+            /** Round Message Count */
+            round_message_count?: number | null;
+            /** Round Completed Count */
+            round_completed_count?: number | null;
+            /** Round Final */
+            round_final?: boolean | null;
+            /** Chose Silence */
+            chose_silence?: boolean | null;
             /** Log Id */
             log_id: string;
             /**
@@ -2040,6 +2092,10 @@ export interface components {
             api_profile_id?: string | null;
             /** Memory */
             memory?: string | null;
+            /** Scan Interval Seconds */
+            scan_interval_seconds?: number | null;
+            /** Group Proactive Message Threshold */
+            group_proactive_message_threshold?: number | null;
         };
         /** Preset */
         Preset: {

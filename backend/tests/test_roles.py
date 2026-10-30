@@ -103,7 +103,7 @@ class RoleTests(RoleTestCase):
     def test_defaults_partial_changes_preserve_memory_and_account_isolation(self):
         initial = self.preferences()
         self.assertFalse(initial.pop("effective")["ready"])
-        self.assertEqual(initial, dict(account_id=self.ids[0], conversation_id=self.cids[0], ai_enabled=False, role_card_code=None, api_profile_id=None, memory="", revision=0, memory_revision=0))
+        self.assertEqual(initial, dict(account_id=self.ids[0], conversation_id=self.cids[0], ai_enabled=False, role_card_code=None, api_profile_id=None, memory="", revision=0, memory_revision=0, scan_interval_seconds=2, group_proactive_message_threshold=0))
         self.create_api()
         role = self.create()
         memory = "  中文记忆\n\n" + "长文本\t " * 25000
@@ -222,5 +222,5 @@ class RoleMigrationTests(unittest.TestCase):
             store = Store(path)
             try:
                 self.assertEqual(store.preferences(aid, cid)["memory"], "")
-                self.assertEqual(store.call(lambda: store.db.execute("PRAGMA user_version").fetchone()[0]), 7)
+                self.assertEqual(store.call(lambda: store.db.execute("PRAGMA user_version").fetchone()[0]), 8)
             finally: store.close()

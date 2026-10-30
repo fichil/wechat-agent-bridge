@@ -498,6 +498,13 @@ onBeforeUnmount(() => {
           }}
         </p>
         <p v-if="item.message" class="conversation-alert">{{ item.message }}</p>
+        <p v-if="item.round_id" class="settings-note">
+          {{ item.trigger_reason === "mention" ? "@ 触发" : "累计条数触发" }} ·
+          第 {{ item.batch_index }} 批 · 已处理
+          {{ item.round_completed_count }}/{{ item.round_message_count }} 条 ·
+          {{ item.round_final ? "最终批次" : "分批记忆处理" }}
+          <span v-if="item.chose_silence"> · AI 选择不发言</span>
+        </p>
         <p v-if="item.legacy" class="settings-note">
           历史任务：原始请求与响应未记录。
         </p>

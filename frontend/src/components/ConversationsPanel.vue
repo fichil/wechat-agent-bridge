@@ -131,7 +131,8 @@ function messageTime(value: string | null) {
     >
   </div>
   <p class="ai-placeholder-note">
-    开启 AI 后自动回复微信并更新记忆；群聊仅在有人 @ 当前账号时回复。
+    开启 AI 后自动回复微信并更新记忆；群聊默认仅响应
+    @，可在会话设置中开启按消息条数主动调用。
   </p>
   <p v-if="actionError" class="conversation-alert" role="alert">
     {{ actionError }}

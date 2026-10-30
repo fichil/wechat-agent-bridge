@@ -115,10 +115,10 @@ class ReplyWakeTests(RoleTestCase):
         self.assertEqual(self.store.source_versions, {})
         self.assertEqual(self.store.source_reads, {})
 
-    def test_paused_sessions_have_no_fast_lane_model_or_send(self):
+    def test_paused_sessions_keep_scanning_without_model_or_send(self):
         self.configured(); self.delta(); run = self.wait_run(self.start())
         self.store.call(lambda: (self.store.db.execute('UPDATE ai_sessions SET paused=1'), self.store.db.commit()))
-        self.assertEqual(self.store.sync_targets(), {})
+        self.assertIn(self.ids[0], self.store.sync_targets())
         self.assertEqual(self.store.ai_candidates(), [])
         self.assertEqual(self.store.delivery_candidates(), [])
         self.assertIsNone(self.store.claim_delivery(run['run_id'], 0))

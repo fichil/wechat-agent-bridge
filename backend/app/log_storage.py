@@ -84,16 +84,18 @@ class LogStoreMixin:
             def write():
                 with self.db:
                     rows = self.db.execute("SELECT payload FROM diagnostic_logs WHERE task_id=?", (task_id,)).fetchall()
+                    progress = {k:task.get(k) for k in ('round_id','trigger_reason','batch_index','round_message_count','round_completed_count','round_final','chose_silence') if k in task}
                     if not rows:
                         value = {k:task.get(k) for k in ("account_id", "conversation_id", "trigger", "started_at", "profile_id")}
                         value.update(category=category, operation=task.get("operation", "conversation"), task_id=task_id,
                             status="failed" if task.get("error") else "completed", application_status=task["status"],
                             error=task.get("error"), message=task.get("message"))
+                        value.update(progress)
                         self._log_put(sanitize(value), dict(note="本任务没有发起模型 HTTP 请求。", application_result=sanitize(task)))
                     else:
                         for row in rows:
                             value = json.loads(row[0])
-                            self._log_put(dict(log_id=value["log_id"], application_status=task["status"],
+                            self._log_put(dict(log_id=value["log_id"], application_status=task["status"], **progress,
                                 profile_id=value.get("profile_id") or task.get("profile_id")))
                     self._log_prune()
                 self.notify(dict(type="changed", account_id=task.get("account_id"), resources=["logs"]))

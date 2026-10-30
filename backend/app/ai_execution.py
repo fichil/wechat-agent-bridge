@@ -141,7 +141,7 @@ class AiExecution:
                     envelope["messages"].pop()
             self.store.trim_ai_run(aid, cid, rid, {m["message_id"] for m in envelope["messages"]})
             reply_ids = self.store.ai_run(aid,cid,rid).get('reply_trigger_ids',[])
-            envelope.update(reply_allowed=bool(reply_ids), reply_target_ids=reply_ids)
+            envelope.update(self.store.ai_reply_envelope(aid,cid,rid))
             # Closing AI while preparing must not launch a new remote request.
             if not self.store.mark_ai_attempt(aid, cid, rid):
                 return

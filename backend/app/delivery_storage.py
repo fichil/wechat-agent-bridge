@@ -87,13 +87,14 @@ class DeliveryStoreMixin:
             if datetime.fromisoformat(item['sent_at'].replace('Z','+00:00')) < datetime.fromisoformat(session['enabled_at']): return
         except ValueError: return
         conv=self._conversation(aid,cid); source=conv['source_id']
-        if source.endswith('@chatroom'):
-            if (item.get('mention_status')!='known' or item.get('mentions_all') or
-                    self._account(aid)['wxid'] not in item.get('mentioned_wxids',[])): return
-        elif conv['category'] not in ('contact','enterprise_contacts'):
-            return
         mark=next((v for k,v in json.loads(session['watermarks']).items() if k.startswith(ref['shard']+'|')),None)
         if mark and mark['generation']==ref.get('generation') and ref['local_id']<=mark['upper']: return
+        if source.endswith('@chatroom'):
+            counted = self._group_note_live(aid, cid, item)
+            if (item.get('mention_status')!='known' or item.get('mentions_all') or
+                    self._account(aid)['wxid'] not in item.get('mentioned_wxids',[])): return counted
+        elif conv['category'] not in ('contact','enterprise_contacts'):
+            return
         inserted=self.db.execute('INSERT OR IGNORE INTO reply_triggers VALUES(?,?,?,?,NULL)',
             (item['message_id'],aid,cid,self._ai_session(aid,cid)['epoch'])).rowcount
         if inserted:
@@ -106,7 +107,10 @@ class DeliveryStoreMixin:
 
     def _delivery_reopen_pending(self, aid, cid):
         # Eligibility discovered during a memory-only model call belongs to its next round.
-        self.db.execute("UPDATE ai_message_state SET status='pending',memorized_at=NULL WHERE status='memorized' AND message_id IN (SELECT message_id FROM reply_triggers WHERE account_id=? AND conversation_id=? AND epoch=? AND consumed_run_id IS NULL)",(aid,cid,self._ai_session(aid,cid)['epoch']))
+        group = self._group_round(aid, cid)
+        held = group['reply_trigger_ids'] if group else []
+        exclusion = ' AND message_id NOT IN (' + ','.join('?' for _ in held) + ')' if held else ''
+        self.db.execute("UPDATE ai_message_state SET status='pending',memorized_at=NULL WHERE status='memorized' AND message_id IN (SELECT message_id FROM reply_triggers WHERE account_id=? AND conversation_id=? AND epoch=? AND consumed_run_id IS NULL)"+exclusion,(aid,cid,self._ai_session(aid,cid)['epoch'],*held))
 
     def _reply_ids(self, aid, cid, mids):
         if not mids: return []
@@ -117,8 +121,9 @@ class DeliveryStoreMixin:
         return bool(self.db.execute("SELECT 1 FROM deliveries WHERE account_id=? AND conversation_id=? AND status IN ('failed','unknown','queued','sending') LIMIT 1",(aid,cid)).fetchone())
 
     def _delivery_debouncing(self, aid, cid):
+        if self._group_round(aid, cid): return False
         row=self.db.execute('SELECT last_trigger_at FROM delivery_sessions WHERE account_id=? AND conversation_id=?',(aid,cid)).fetchone()
-        return bool(row and row[0]>time.time()-1)
+        return bool(row and row[0]>time.time()-1) or (self._is_group(aid,cid) and self._group_debouncing(aid,cid))
 
     def _delivery_public(self, rid):
         parts=[dict(index=r['part_index'],status=r['status'],attempts=r['attempts'],code=r['code'],
@@ -135,8 +140,14 @@ class DeliveryStoreMixin:
     def _queue_delivery(self, run):
         aid,cid,rid=run['account_id'],run['conversation_id'],run['run_id']
         mids=[r[0] for r in self.db.execute('SELECT message_id FROM ai_run_messages WHERE run_id=?',(rid,))]
+        group_round = bool(run.get('round_id'))
+        if group_round:
+            if not run.get('round_final') or not self._group_run_allowed(run):
+                run['reply']=''
+                return
+            mids = run['reply_trigger_ids']
         triggers=[mid for mid in self._reply_ids(aid,cid,mids) if mid in run.get('reply_trigger_ids',[])]
-        if not triggers:
+        if not triggers and not (group_round and run['trigger_reason']=='group_threshold'):
             run['reply']=''
             return
         # A completed empty reply also consumes its trigger; edits must not create a second response.
@@ -160,6 +171,9 @@ class DeliveryStoreMixin:
                 aid,cid=row['account_id'],row['conversation_id']
                 if not self._preferences(aid,cid)['ai_enabled'] or self._ai_session(aid,cid)['epoch']!=row['epoch']:
                     self.db.execute("UPDATE deliveries SET status='cancelled',code='ai_disabled' WHERE run_id=? AND part_index=?",(rid,part)); return None
+                run = json.loads(self.db.execute('SELECT payload FROM ai_runs WHERE run_id=?',(rid,)).fetchone()[0])
+                if run.get('trigger_reason')=='group_threshold' and not self._preferences(aid,cid)['group_proactive_message_threshold']:
+                    self.db.execute("UPDATE deliveries SET status='cancelled',code='group_proactive_disabled' WHERE run_id=? AND part_index=?",(rid,part)); return None
                 if self._ai_session(aid,cid)['paused']: return None
                 if self.db.execute("SELECT 1 FROM deliveries WHERE account_id=? AND conversation_id=? AND status IN ('sending','unknown','failed')",(aid,cid)).fetchone(): return None
                 if self.db.execute("SELECT 1 FROM deliveries WHERE run_id=? AND part_index<? AND status<>'sent'",(rid,part)).fetchone(): return None
