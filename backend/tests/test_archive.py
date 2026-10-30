@@ -10,8 +10,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from fastapi.testclient import TestClient
-from backend.app.main import create_app
+from auth_support import TestClient, create_app
 from backend.app.storage import Store, order_key
 from backend.app.conversations import ConversationError
 from backend.app.conversation_settings import ConversationSettingsStore, SettingsError

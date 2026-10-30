@@ -3,6 +3,9 @@
 Windows 本机微信工作台：Vue 3 / TypeScript 前端，Python 3.12 / FastAPI 后端。
 账号、会话、聊天历史和按需读取的图片、静态表情及 GIF 保存到本地 SQLite。页面和 API 优先读取数据库，微信退出、后端重启后仍能查询已保存历史。
 
+本机与远程访问均需独立的后台管理员登录。登录保持 7 天；退出只注销当前浏览器会话，修改或重置密码会注销所有设备。退出网页不停止消息同步、AI 处理或已启用的自动回复。
+云服务器使用 Caddy 提供 HTTPS 和生产静态文件，完整步骤见 [后台认证与 Windows 部署](docs/auth-and-deployment.md)。
+
 ## 启动
 
 要求 Windows x64、Python 3.12、Node.js 22.12+ 或 24+。当前真实兼容基线为微信 **4.1.15.56**。
@@ -10,6 +13,7 @@ Windows 本机微信工作台：Vue 3 / TypeScript 前端，Python 3.12 / FastAP
 ```powershell
 python -m venv .venv-backend
 .\.venv-backend\Scripts\python.exe -m pip install -r backend\requirements.lock.txt
+.\.venv-backend\Scripts\python.exe -m backend.admin init
 Push-Location frontend
 npm ci
 Pop-Location
@@ -18,12 +22,14 @@ Pop-Location
 ```
 
 访问 <http://127.0.0.1:5173>，接口文档 <http://127.0.0.1:8765/docs>。
+初始化命令在终端隐藏输入并确认密码（12–128 字符），默认用户名 `admin`，没有默认密码。开发入口显式启用回环 HTTP；登录后才能查询业务与开发接口文档。
 `-NoBrowser` 不打开浏览器；`-SmokeTest` 只检查服务启动与清理，禁用真实监控。
 Ctrl+C 停止本次启动拥有的服务及读取子进程，不结束微信或其他服务。端口被占用时不抢占。
 也可用独立终端启动：
 
 ```powershell
-.\.venv-backend\Scripts\python.exe -B -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8765 --workers 1 --no-access-log
+$env:BRIDGE_ENV = 'development'
+.\.venv-backend\Scripts\python.exe -B -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8765 --workers 1 --no-access-log --forwarded-allow-ips 127.0.0.1
 # 另一个终端，位于 frontend
 npm run dev
 ```
@@ -88,6 +94,7 @@ API 配置包含名称、服务商、协议、基础地址、模型名和密钥�
 ## JSON 接口
 
 业务接口统一前缀 `/api/v1`，使用 `POST` 和 `Content-Type: application/json`。只有无入参健康检查保留 `GET /health`。
+`/auth/login`、`/auth/session`、`/auth/logout`、`/auth/change-password` 负责认证。所有 POST 必须提供精确允许的 `Origin`；业务、退出与改密请求还需会话 Cookie 和会话查询返回的 `X-CSRF-Token`。生产环境不提供交互式 API 文档。
 旧账号 GET 接口已移除；Python 账号识别模块及 CLI 保持原契约。
 
 | 接口 | JSON 请求 | 行为 |

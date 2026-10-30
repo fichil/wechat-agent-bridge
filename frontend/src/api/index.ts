@@ -1,5 +1,6 @@
 import createClient from "openapi-fetch";
 import type { components, paths } from "./schema";
+import { authenticatedFetch } from "../auth";
 
 export type Account = components["schemas"]["Account"];
 export type Snapshot = components["schemas"]["AccountSnapshot"];
@@ -45,8 +46,7 @@ export class ApiFailure extends Error {
 }
 
 const client = createClient<paths>({
-  fetch: (request) =>
-    fetch(request, { signal: AbortSignal.timeout(15_000), cache: "no-store" }),
+  fetch: authenticatedFetch,
 });
 
 function value<T>(result: {

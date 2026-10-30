@@ -7,8 +7,7 @@ import time
 import unittest
 from unittest.mock import Mock
 
-from fastapi.testclient import TestClient
-from backend.app.main import create_app
+from auth_support import TestClient, create_app
 from backend.app.agents import UnavailableAgent
 from wechat_account_probe.models import Instance, aggregate, failure_result, instance_result
 

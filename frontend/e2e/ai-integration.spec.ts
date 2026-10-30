@@ -3,13 +3,30 @@ import { blankCard } from "../src/role-cards";
 
 let ids: { account_id: string; conversation_id: string }[];
 const service = "http://127.0.0.1:18765";
-test.beforeEach(async ({ request }) => {
+let requestHeaders: Record<string, string>;
+async function fixturePost(page: Page, url: string, options: { data: object }) {
+  return page.request.post(url, { ...options, headers: requestHeaders });
+}
+test.beforeEach(async ({ context }) => {
+  const request = context.request;
+  const login = await request.post(service + "/api/v1/auth/login", {
+    headers: { Origin: "http://127.0.0.1:15173" },
+    data: { username: "admin", password: "synthetic-test-password-2026" },
+  });
+  expect(login.ok()).toBeTruthy();
+  requestHeaders = {
+    Origin: "http://127.0.0.1:15173",
+    "X-CSRF-Token": (await login.json()).csrf_token,
+  };
   ids = await (
-    await request.post(service + "/test/reset", { data: {} })
+    await request.post(service + "/test/reset", {
+      data: {},
+      headers: requestHeaders,
+    })
   ).json();
 });
 async function post(page: Page, path: string, data: object = {}) {
-  const response = await page.request.post(service + "/api/v1/" + path, {
+  const response = await fixturePost(page, service + "/api/v1/" + path, {
     data,
   });
   expect(response.ok()).toBeTruthy();
@@ -57,10 +74,10 @@ test("uncertain delivery requires a decision and failed delivery retries the exi
     expected_revision: 0,
     ai_enabled: true,
   });
-  await page.request.post(service + "/test/send-result", {
+  await fixturePost(page, service + "/test/send-result", {
     data: { status: "unknown" },
   });
-  await page.request.post(service + "/test/message", { data: { index: 1 } });
+  await fixturePost(page, service + "/test/message", { data: { index: 1 } });
   await page.goto(`/workspace/${ids[0]!.account_id}/logs`);
   await page
     .getByLabel("会话", { exact: true })
@@ -78,10 +95,10 @@ test("uncertain delivery requires a decision and failed delivery retries the exi
     .getByRole("button", { name: "已核对：不确定的段已发出", exact: true })
     .click();
   await expect(page.locator(".ai-runs")).toContainText("手动确认");
-  await page.request.post(service + "/test/send-result", {
+  await fixturePost(page, service + "/test/send-result", {
     data: { status: "failed" },
   });
-  await page.request.post(service + "/test/message", { data: { index: 2 } });
+  await fixturePost(page, service + "/test/message", { data: { index: 2 } });
   await page
     .getByRole("button", { name: "处理未处理消息", exact: true })
     .click();
@@ -89,7 +106,7 @@ test("uncertain delivery requires a decision and failed delivery retries the exi
     page.getByRole("button", { name: "重试发送原回复", exact: true }),
   ).toBeVisible();
   const before = await post(page, "ai-runs/list", ids[0]!);
-  await page.request.post(service + "/test/send-result", {
+  await fixturePost(page, service + "/test/send-result", {
     data: { status: "sent" },
   });
   await page
@@ -200,7 +217,7 @@ test("global instructions, history-only memory and live reply delivery", async (
   const role = blankCard();
   role.data.name = "合成角色";
   await post(page, "role-cards/create", { card: role });
-  await page.request.post(service + "/test/message", {
+  await fixturePost(page, service + "/test/message", {
     data: { index: 1, content: { text: "记住周五开会" } },
   });
   await page.goto(`/workspace/${ids[0]!.account_id}/conversations`);
@@ -224,13 +241,13 @@ test("global instructions, history-only memory and live reply delivery", async (
   const pref = await post(page, "conversation-preferences/query", ids[0]!);
   expect(pref.memory).toContain("记住周五开会");
   expect(pref.memory_revision).toBe(1);
-  await page.request.post(service + "/test/message", {
+  await fixturePost(page, service + "/test/message", {
     data: { index: 2, type: "voice", content: { transcript: null } },
   });
   await expect(
     page.locator(".log-pending-item").filter({ hasText: "等待转写" }),
   ).toHaveCount(1);
-  await page.request.post(service + "/test/message", {
+  await fixturePost(page, service + "/test/message", {
     data: { index: 2, type: "voice", content: { transcript: "改为周六" } },
   });
   await page
@@ -270,10 +287,10 @@ test("log details are lazy, failures can retry, and refresh preserves open JSON"
     expected_revision: 0,
     ai_enabled: true,
   });
-  await page.request.post(service + "/test/message", {
+  await fixturePost(page, service + "/test/message", {
     data: { index: 1, content: { text: "日志合成消息" } },
   });
-  await page.request.post(service + "/test/fail-next", { data: {} });
+  await fixturePost(page, service + "/test/fail-next", { data: {} });
   let detailRequests = 0;
   await page.route("**/api/v1/logs/get", async (route) => {
     detailRequests++;
@@ -363,7 +380,7 @@ test("log details are lazy, failures can retry, and refresh preserves open JSON"
 test("source logs paginate, filter by time and preserve loaded details across updates", async ({
   page,
 }) => {
-  await page.request.post(service + "/test/source-logs", {
+  await fixturePost(page, service + "/test/source-logs", {
     data: { count: 35 },
   });
   await page.goto(`/workspace/${ids[0]!.account_id}/logs`);
@@ -384,7 +401,7 @@ test("source logs paginate, filter by time and preserve loaded details across up
   await result.locator("summary").click();
   await expect(result.locator("pre")).toContainText("合成读取记录");
   await anchored.scrollIntoViewIfNeeded();
-  await page.request.post(service + "/test/source-logs", {
+  await fixturePost(page, service + "/test/source-logs", {
     data: { count: 1 },
   });
   await expect(page.locator(".log-entry")).toHaveCount(36);

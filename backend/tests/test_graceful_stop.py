@@ -18,7 +18,7 @@ class GracefulStopTests(unittest.TestCase):
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1",0));port=sock.getsockname()[1]
             process=subprocess.Popen([sys.executable,str(root/"scripts/serve_backend.py"),"--stop-file",str(stop),"--database",str(database),"--port",str(port)],
-                cwd=root,env={**os.environ,"BRIDGE_DISABLE_MONITOR":"1"},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                cwd=root,env={**os.environ,"BRIDGE_DISABLE_MONITOR":"1","BRIDGE_ENV":"development","BRIDGE_PUBLIC_ORIGIN":"http://127.0.0.1:5173","BRIDGE_AUTH_DATABASE":str(Path(temp)/'auth.sqlite3')},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name=="nt" else 0)
             try:
                 with httpx.Client(trust_env=False,timeout=.5) as client:

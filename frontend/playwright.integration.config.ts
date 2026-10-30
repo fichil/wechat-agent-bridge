@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: "ai-integration.spec.ts",
+  testMatch: "*-integration.spec.ts",
   outputDir: "../.local/ai-config-acceptance/test-results",
   workers: 1,
   timeout: 30_000,

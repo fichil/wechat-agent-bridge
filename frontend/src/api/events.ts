@@ -1,3 +1,5 @@
+import { watch } from "vue";
+import { authState, invalidateAuthentication } from "../auth";
 export type ChangeEvent = {
   type: "ready" | "changed" | "resync" | "task";
   account_id?: string;
@@ -11,7 +13,14 @@ let retry = 1000;
 let timer: ReturnType<typeof setTimeout> | undefined;
 
 function connect() {
-  if (socket || !listeners.size || import.meta.env.MODE === "test") return;
+  if (
+    socket ||
+    !listeners.size ||
+    !authState.authenticated ||
+    authState.invalidating ||
+    import.meta.env.MODE === "test"
+  )
+    return;
   socket = new WebSocket(
     `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/v1/events`,
   );
@@ -20,6 +29,7 @@ function connect() {
     socket?.send(JSON.stringify({ type: "subscribe", account_ids: [] }));
   };
   socket.onmessage = ({ data }) => {
+    if (!authState.authenticated || authState.invalidating) return;
     try {
       const event = JSON.parse(String(data)) as ChangeEvent;
       if (!["ready", "changed", "resync", "task"].includes(event.type)) return;
@@ -28,13 +38,30 @@ function connect() {
       /* Reconnect/ready performs an authoritative database query. */
     }
   };
-  socket.onclose = () => {
+  socket.onclose = (event) => {
     socket = null;
-    if (listeners.size) timer = setTimeout(connect, retry);
+    if (event.code === 4401) {
+      invalidateAuthentication();
+      return;
+    }
+    if (listeners.size && authState.authenticated)
+      timer = setTimeout(connect, retry);
     retry = Math.min(retry * 2, 30000);
   };
   socket.onerror = () => socket?.close();
 }
+
+watch(
+  () => authState.authenticated,
+  (loggedIn) => {
+    if (loggedIn) connect();
+    else {
+      clearTimeout(timer);
+      socket?.close();
+      socket = null;
+    }
+  },
+);
 
 export function onChange(listener: (event: ChangeEvent) => void) {
   listeners.add(listener);

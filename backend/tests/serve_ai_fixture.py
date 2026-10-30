@@ -8,7 +8,9 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import uvicorn
-from backend.app.main import create_app, ALLOWED_ORIGINS
+from backend.app.main import create_app
+from backend.app.auth import AuthConfig
+from auth_support import PASSWORD
 from backend.app.services import browser_values
 from test_conversations import accounts, rows, Reader
 from ai_fakes import FakeProvider
@@ -25,7 +27,6 @@ class BrowserProvider(FakeProvider):
             return httpx.Response(503, text="synthetic provider unavailable")
         return super().respond(request)
 
-ALLOWED_ORIGINS.add("http://127.0.0.1:15173")
 reader = Reader()
 provider = BrowserProvider()
 class BrowserSender:
@@ -34,13 +35,15 @@ class BrowserSender:
     def send(self, binding, job): return dict(status=self.result,code='synthetic')
 
 sender = BrowserSender()
-app = create_app(accounts, database_path=":memory:", conversation_reader=reader, message_reader=reader, monitor=False, ai_provider=provider,send_transport=sender,send_auto=True)
+app = create_app(accounts, database_path=":memory:", conversation_reader=reader, message_reader=reader, monitor=False, ai_provider=provider,send_transport=sender,send_auto=True,
+                 auth_path=':memory:', auth_config=AuthConfig('development', 'http://127.0.0.1:15173', ('http://127.0.0.1:18765',)))
 original_lifespan = app.router.lifespan_context
 
 
 @asynccontextmanager
 async def lifespan(application):
     async with original_lifespan(application):
+        application.state.auth.set_password(PASSWORD)
         store = application.state.store
         application.state.discovery.scan()
         application.state.test_ids = []
@@ -56,6 +59,8 @@ app.router.lifespan_context = lifespan
 
 @app.post("/test/reset")
 def reset():
+    with app.state.auth.transaction():
+        app.state.auth.db.execute('DELETE FROM attempts')
     store = app.state.store
     assert store.path == ":memory:"
     provider.fail_next = False

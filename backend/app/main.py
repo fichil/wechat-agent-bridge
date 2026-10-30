@@ -1,10 +1,11 @@
 from contextlib import asynccontextmanager
 import os
+import hmac
+import asyncio
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .adapters import AccountProbe, discover_local_accounts
 from .models import Account, AccountSnapshot, ApiError, Health, ScanTask, StartScanRequest, ScanQuery, AccountQuery
@@ -22,10 +23,7 @@ from .ai_execution_models import (AiSettings, AiSettingsUpdate, TaskQuery, Profi
 from .log_models import (LogAccount, LogQuery, LogGet, LogClear, LogPage, LogDetail, LogDeleted,
                          SessionPage, RunMessagesQuery, RunMessagesPage)
 from .delivery_models import Delivery, DeliveryAction, DeliveryResolve, SendCapability
-
-ALLOWED_ORIGINS = {"http://127.0.0.1:5173", "http://localhost:5173",
-                   "http://127.0.0.1:8765", "http://localhost:8765"}
-
+from .auth import AuthConfig, AuthStore, AuthError, Login, PasswordChange, AuthSession, AuthOk, DEFAULT_AUTH_PATH, SESSION_SECONDS
 
 def error(code: str, message: str, status: int):
     return JSONResponse(status_code=status, content=dict(code=code, message=message))
@@ -33,9 +31,9 @@ def error(code: str, message: str, status: int):
 
 def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_reader=None,
                settings_path=None, message_reader=None, database_path=None, monitor=None, ai_provider=None, ai_auto=None,
-               send_transport=None, send_auto=None) -> FastAPI:
+               send_transport=None, send_auto=None, auth_path=None, auth_config=None) -> FastAPI:
     @asynccontextmanager
-    async def lifespan(app):
+    async def business_lifespan(app):
         from .storage import Store, DEFAULT_PATH
         from .runtime import Bridge
         from .events import Events
@@ -71,25 +69,93 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
             await asyncio.gather(asyncio.to_thread(app.state.ai.close), asyncio.to_thread(app.state.sender.close))
             await asyncio.to_thread(bridge.close)
 
-    app = FastAPI(title="WeChat Agent Bridge", version="1.0.0", lifespan=lifespan)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
-    failures = {code: {"model": ApiError} for code in (400, 403, 404, 409, 415, 422, 500, 503)}
+    @asynccontextmanager
+    async def lifespan(app):
+        app.state.auth_config = auth_config or AuthConfig.environment()
+        app.state.auth = AuthStore(auth_path if auth_path is not None else os.environ.get('BRIDGE_AUTH_DATABASE', str(DEFAULT_AUTH_PATH)))
+        try:
+            async with business_lifespan(app):
+                yield
+        finally:
+            app.state.auth.close()
+
+    development = (auth_config.mode if auth_config else os.environ.get('BRIDGE_ENV')) == 'development'
+    app = FastAPI(title="WeChat Agent Bridge", version="1.0.0", lifespan=lifespan,
+                  docs_url='/docs' if development else None, redoc_url=None,
+                  openapi_url='/openapi.json' if development else None)
+    failures = {code: {"model": ApiError} for code in (400, 401, 403, 404, 409, 415, 422, 429, 500, 503)}
 
     @app.middleware("http")
     async def local_boundary(request: Request, call_next):
+        config = request.app.state.auth_config
+        auth = request.app.state.auth
         origin = request.headers.get("origin")
-        if request.url.hostname not in ("127.0.0.1", "localhost"):
-            response = error("host_not_allowed", "仅允许本机控制台访问", 400)
-        elif (origin is not None and origin not in ALLOWED_ORIGINS) or (
-            request.headers.get("sec-fetch-site") == "cross-site" and origin not in ALLOWED_ORIGINS
-        ):
-            response = error("origin_not_allowed", "仅允许本机控制台访问", 403)
+        public = request.url.path in ('/api/v1/health', '/api/v1/auth/login', '/api/v1/auth/session')
+        session = await asyncio.to_thread(auth.session, request.cookies.get(config.cookie))
+        request.state.auth_session = session
+        if not config.allows_host(request.headers.get('host', ''), health=request.url.path == '/api/v1/health'):
+            response = error("host_not_allowed", "不允许的访问地址", 400)
+        elif config.secure and request.url.scheme != 'https' and request.url.path != '/api/v1/health':
+            response = error('https_required', '请使用 HTTPS 访问后台。', 403)
+        elif (origin is not None and origin not in config.origins) or request.headers.get('sec-fetch-site') == 'cross-site':
+            response = error("origin_not_allowed", "不允许的请求来源", 403)
+        elif request.method == 'POST' and origin not in config.origins:
+            response = error('origin_not_allowed', '请求缺少有效来源。', 403)
         elif request.method == "POST" and request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
             response = error("json_required", "请求必须使用 JSON", 415)
+        elif not public and not session:
+            response = error('authentication_required', '请先登录后台。', 401)
+        elif not public and request.method == 'POST' and not hmac.compare_digest(request.headers.get('x-csrf-token', '').encode(), session['csrf'].encode()):
+            response = error('csrf_invalid', '登录校验已失效，请刷新页面重试。', 403)
+        elif request.url.path.startswith('/api/v1/auth/') and len(await request.body()) > 8192:
+            response = error('invalid_request', '请求格式不正确', 422)
         else:
             response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers['X-Frame-Options'] = 'DENY'
+        response.headers['Referrer-Policy'] = 'no-referrer'
+        return response
+
+    @app.exception_handler(AuthError)
+    async def auth_error(_request, exc):
+        response = error(exc.code, exc.message, exc.status)
+        if exc.status == 429:
+            response.headers['Retry-After'] = '900'
+        return response
+
+    @app.post('/api/v1/auth/session', response_model=AuthSession, responses=failures)
+    def auth_session(_body: JsonRequest, request: Request):
+        return request.app.state.auth.view(request.state.auth_session)
+
+    @app.post('/api/v1/auth/login', response_model=AuthSession, responses=failures)
+    def login(body: Login, request: Request):
+        auth, config = request.app.state.auth, request.app.state.auth_config
+        token, session = auth.login(body.username, body.password.get_secret_value(), request.client.host if request.client else 'unknown')
+        # Rotation prevents session fixation; another device remains logged in.
+        old = request.cookies.get(config.cookie)
+        if old:
+            auth.logout(old)
+        response = JSONResponse(auth.view(session).model_dump())
+        response.set_cookie(config.cookie, token, max_age=SESSION_SECONDS, secure=config.secure,
+                            httponly=True, samesite='strict', path='/')
+        return response
+
+    @app.post('/api/v1/auth/logout', response_model=AuthOk, responses=failures)
+    def logout(_body: JsonRequest, request: Request):
+        config = request.app.state.auth_config
+        request.app.state.auth.logout(request.cookies[config.cookie])
+        response = JSONResponse({'ok': True})
+        response.delete_cookie(config.cookie, path='/', secure=config.secure, httponly=True, samesite='strict')
+        return response
+
+    @app.post('/api/v1/auth/change-password', response_model=AuthOk, responses=failures)
+    def change_password(body: PasswordChange, request: Request):
+        config = request.app.state.auth_config
+        request.app.state.auth.change_password(request.cookies[config.cookie], body.current_password.get_secret_value(),
+                                              body.new_password.get_secret_value(), request.client.host if request.client else 'unknown')
+        response = JSONResponse({'ok': True})
+        response.delete_cookie(config.cookie, path='/', secure=config.secure, httponly=True, samesite='strict')
         return response
 
     @app.exception_handler(RequestValidationError)
@@ -157,12 +223,17 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
 
     @app.websocket("/api/v1/events")
     async def events(socket: WebSocket):
-        if socket.url.hostname not in ("127.0.0.1", "localhost") or socket.headers.get("origin") not in ALLOWED_ORIGINS:
+        config, auth = socket.app.state.auth_config, socket.app.state.auth
+        token = socket.cookies.get(config.cookie)
+        if not config.allows_host(socket.headers.get('host', '')) or socket.headers.get("origin") not in config.origins or (config.secure and socket.url.scheme != 'wss'):
             await socket.close(code=1008)
             return
+        if not await asyncio.to_thread(auth.session, token):
+            await socket.close(code=4401)
+            return
         try:
-            await socket.app.state.events.serve(socket, socket.app.state.store)
-        except WebSocketDisconnect:
+            await socket.app.state.events.serve(socket, socket.app.state.store, lambda: auth.session(token))
+        except (WebSocketDisconnect, asyncio.CancelledError):
             pass
 
     @app.post("/api/v1/message-reads", response_model=MessageReadTask, status_code=202, responses=failures)
@@ -312,6 +383,20 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         return request.app.state.store.save_ai_defaults(body.expected_revision,
             body.model_dump(exclude_unset=True, include={"role_card_code", "api_profile_id"}))
 
+    generate_openapi = app.openapi
+    def authenticated_openapi():
+        schema = generate_openapi()
+        schema['components']['securitySchemes'] = {
+            'SessionCookie': {'type': 'apiKey', 'in': 'cookie', 'name': '__Host-bridge_session',
+                              'description': 'Seven-day HTTPS session; explicit loopback development uses bridge_dev_session.'},
+            'CsrfToken': {'type': 'apiKey', 'in': 'header', 'name': 'X-CSRF-Token',
+                          'description': 'Returned by POST /api/v1/auth/session. Exact allowed Origin is also required.'},
+        }
+        for path, methods in schema['paths'].items():
+            if 'post' in methods and path not in ('/api/v1/auth/login', '/api/v1/auth/session'):
+                methods['post']['security'] = [{'SessionCookie': [], 'CsrfToken': []}]
+        return schema
+    app.openapi = authenticated_openapi
     return app
 
 

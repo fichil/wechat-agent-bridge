@@ -1,0 +1,27 @@
+# Rendered by scripts/production_server.py. Only built public assets are served.
+{
+    admin off
+}
+
+@@SITE@@ {
+    encode zstd gzip
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+        Strict-Transport-Security "max-age=31536000"
+    }
+    handle /api/* {
+        reverse_proxy 127.0.0.1:8765 {
+            header_up Host @@HOST@@
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto https
+        }
+    }
+    handle {
+        root * "@@DIST@@"
+        try_files {path} /index.html
+        header Cache-Control "no-cache"
+        file_server
+    }
+}

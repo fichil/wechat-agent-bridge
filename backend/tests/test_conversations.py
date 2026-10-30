@@ -6,8 +6,7 @@ import threading
 import time
 import unittest
 
-from fastapi.testclient import TestClient
-from backend.app.main import create_app
+from auth_support import TestClient, create_app
 from backend.app.conversation_models import Exclusions
 from wechat_account_probe.models import Instance, aggregate, instance_result, ProbeError
 from wechat_conversations.reader import CONTAINERS

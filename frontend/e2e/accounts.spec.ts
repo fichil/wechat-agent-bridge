@@ -1,3 +1,4 @@
+import { mockAuthenticatedSession } from "./auth-fixture";
 import { test, expect, type Page } from "@playwright/test";
 import { snapshot, syntheticAccount, task } from "../tests/fixtures";
 import type { Snapshot } from "../src/api";
@@ -11,6 +12,7 @@ async function mockApi(page: Page, initial = snapshot()) {
   });
   await page.route("**/api/v1/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (await mockAuthenticatedSession(route, path)) return;
     if (state.fail) {
       await route.abort();
       return;

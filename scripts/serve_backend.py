@@ -15,7 +15,8 @@ def main():
     parser.add_argument("--database")
     args = parser.parse_args()
     from backend.app.main import create_app
-    server = uvicorn.Server(uvicorn.Config(create_app(database_path=args.database), host="127.0.0.1", port=args.port, workers=1, access_log=False))
+    server = uvicorn.Server(uvicorn.Config(create_app(database_path=args.database), host="127.0.0.1", port=args.port, workers=1, access_log=False,
+                                         proxy_headers=True, forwarded_allow_ips='127.0.0.1'))
     finished = threading.Event()
     def watch():
         while not finished.wait(.25):

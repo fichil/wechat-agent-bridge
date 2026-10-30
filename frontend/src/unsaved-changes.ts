@@ -2,6 +2,7 @@ import { onBeforeUnmount, type Ref } from "vue";
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from "vue-router";
 import { ElMessageBox } from "element-plus";
 import "element-plus/es/components/message-box/style/css";
+import { authState } from "./auth";
 
 export function useUnsavedChanges(
   dirty: Ref<boolean>,
@@ -10,6 +11,7 @@ export function useUnsavedChanges(
 ) {
   let pending: Promise<boolean> | null = null;
   async function decide() {
+    if (authState.invalidating) return true;
     if (busy.value) return false;
     if (!dirty.value) return true;
     try {
@@ -36,6 +38,7 @@ export function useUnsavedChanges(
     return pending;
   }
   function unload(event: BeforeUnloadEvent) {
+    if (authState.invalidating) return;
     if (dirty.value || busy.value) {
       event.preventDefault();
       event.returnValue = "";

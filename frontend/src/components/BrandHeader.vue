@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useRouter } from "vue-router";
 import { useAccountsStore } from "../stores/accounts";
+import AdminMenu from "./AdminMenu.vue";
 
 defineProps<{ workspace?: boolean }>();
 const accounts = useAccountsStore();
@@ -19,11 +20,12 @@ async function switchAccount() {
     </RouterLink>
     <div class="header-actions">
       <div class="environment">
-        <span class="local-dot" />本机空间<span class="environment-divider"
+        <span class="local-dot" />微信工作台<span class="environment-divider"
           >/</span
         >Windows
       </div>
       <ElButton v-if="workspace" @click="switchAccount">切换账号</ElButton>
+      <AdminMenu />
     </div>
   </header>
 </template>

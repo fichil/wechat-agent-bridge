@@ -28,7 +28,7 @@ class Events:
             else:
                 queue.put_nowait(event)
 
-    async def serve(self, socket, store):
+    async def serve(self, socket, store, authorized=lambda: True):
         await socket.accept()
         queue = asyncio.Queue(maxsize=64)
         self.clients.add(queue)
@@ -44,12 +44,25 @@ class Events:
             if not set(subscription.account_ids) <= known:
                 await socket.close(code=1008)
                 return
+            if not await asyncio.to_thread(authorized):
+                await socket.close(code=4401)
+                return
             await socket.send_json(dict(type="ready", revisions={a["account_id"]: a["revision"] for a in accounts}))
             receive = asyncio.create_task(socket.receive())
+            pending = None
             try:
                 while True:
                     pending = asyncio.create_task(queue.get())
-                    done, _ = await asyncio.wait([receive, pending], return_when=asyncio.FIRST_COMPLETED)
+                    done, _ = await asyncio.wait([receive, pending], timeout=1, return_when=asyncio.FIRST_COMPLETED)
+                    if not await asyncio.to_thread(authorized):
+                        pending.cancel()
+                        await asyncio.gather(pending, return_exceptions=True)
+                        await socket.close(code=4401)
+                        break
+                    if not done:
+                        pending.cancel()
+                        await asyncio.gather(pending, return_exceptions=True)
+                        continue
                     if receive in done:
                         pending.cancel()
                         await asyncio.gather(pending, return_exceptions=True)
@@ -59,7 +72,9 @@ class Events:
                         await socket.send_json(event)
             finally:
                 receive.cancel()
-                await asyncio.gather(receive, return_exceptions=True)
+                if pending is not None:
+                    pending.cancel()
+                await asyncio.gather(receive, *([pending] if pending is not None else []), return_exceptions=True)
         except (ValueError, asyncio.TimeoutError):
             await socket.close(code=1008)
         finally:

@@ -65,6 +65,7 @@ def check():
 
 
 def main():
+    os.environ.setdefault('BRIDGE_ENV', 'development')
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--no-browser", action="store_true")

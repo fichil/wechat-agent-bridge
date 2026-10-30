@@ -1,3 +1,4 @@
+import { mockAuthenticatedSession } from "./auth-fixture";
 import { test, expect, type Page } from "@playwright/test";
 import { snapshot, syntheticAccount, task } from "../tests/fixtures";
 import { defaultExclusions } from "../src/conversation-options";
@@ -49,6 +50,7 @@ async function mockConversations(page: Page) {
   });
   await page.route("**/api/v1/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (await mockAuthenticatedSession(route, path)) return;
     const body =
       route.request().method() === "POST" ? route.request().postDataJSON() : {};
     const id = body?.account_id;
