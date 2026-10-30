@@ -18,7 +18,8 @@ sys.path.insert(0, str(ROOT))
 from backend.app.auth import AuthConfig, AuthStore, DEFAULT_AUTH_PATH
 from backend.app.ai_timeouts import AI_SHUTDOWN_GRACE_SECONDS
 
-RUNTIME = ROOT / '.local/production'
+from bridge_paths import DATA, FRONTEND
+RUNTIME = DATA / 'production'
 
 
 def render_config(origin, dist):
@@ -65,8 +66,8 @@ def main():
         raise RuntimeError('Windows x64 is required')
     os.environ['BRIDGE_ENV'] = 'production'
     origin = os.environ.get('BRIDGE_PUBLIC_ORIGIN', '')
-    content = render_config(origin, ROOT/'frontend/dist')
-    if not (ROOT/'frontend/dist/index.html').is_file():
+    content = render_config(origin, FRONTEND)
+    if not (FRONTEND/'index.html').is_file():
         raise RuntimeError('Build frontend first: npm ci; npm run build')
     auth_path = Path(os.environ.get('BRIDGE_AUTH_DATABASE', str(DEFAULT_AUTH_PATH))).resolve()
     if not auth_path.is_file():
@@ -88,7 +89,9 @@ def main():
     run_dir.mkdir(parents=True)
     config_path = run_dir/'Caddyfile'
     config_path.write_text(content, encoding='utf-8')
-    subprocess.run([caddy, 'validate', '--config', str(config_path), '--adapter', 'caddyfile'], check=True,
+    caddy_env = {**os.environ, 'APPDATA': str(DATA / 'caddy'), 'XDG_DATA_HOME': str(DATA / 'caddy'),
+                 'XDG_CONFIG_HOME': str(DATA / 'caddy-config')}
+    subprocess.run([caddy, 'validate', '--config', str(config_path), '--adapter', 'caddyfile'], check=True, env=caddy_env,
                    creationflags=subprocess.CREATE_NO_WINDOW)
     if args.check:
         print('Production configuration, administrator, build and ports are ready. No services started.')
@@ -114,7 +117,7 @@ def main():
         for name, command in commands:
             output=(run_dir/(name+'.log')).open('wb'); handles.append(output)
             child=subprocess.Popen([sys.executable,'-B',str(ROOT/'scripts/service_child.py'),*command],cwd=ROOT,
-                stdin=subprocess.PIPE,stdout=output,stderr=output,creationflags=subprocess.CREATE_NO_WINDOW)
+                stdin=subprocess.PIPE,stdout=output,stderr=output,env=caddy_env if name=='caddy' else None,creationflags=subprocess.CREATE_NO_WINDOW)
             children.append(child); job.assign(child); child.stdin.write(b'start\n'); child.stdin.close()
             if name=='backend':
                 opener=build_opener(ProxyHandler({})); deadline=time.monotonic()+40

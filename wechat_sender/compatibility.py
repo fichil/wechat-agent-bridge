@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BUILD = ROOT / ".local/native-send"
+from bridge_paths import DATA, NATIVE
+BUILD = NATIVE
 DLL = BUILD / "bridge_text.dll"
-ACCEPTANCE = ROOT / ".local/native-send-acceptance.json"
+ACCEPTANCE = DATA / "native-send-acceptance.json"
 REQUIRED_CHECKS = ('native_receipt', 'archive_readback', 'account_binding', 'module_unload',
                    'foreground', 'window_state', 'input', 'clipboard', 'drafts')
 CORE_HASHES = {
@@ -33,9 +34,29 @@ def build_identity():
 def accepted(account, core_hash, dll_hash):
     try:
         data = json.loads(ACCEPTANCE.read_text(encoding="utf-8"))
-        return (data.get("passed") is True and data.get("dll_sha256") == dll_hash
+        # Legacy records remain valid for source checkouts only, never portable installs.
+        bound = data.get('binding')
+        binding_ok = bound == machine_binding() if bound else not (ROOT / 'portable-manifest.json').exists()
+        return (binding_ok and data.get("passed") is True and data.get("dll_sha256") == dll_hash
                 and data.get("core_sha256") == core_hash
                 and all(data.get('checks', {}).get(name) == 'passed' for name in REQUIRED_CHECKS)
                 and account in data.get("accounts", []))
     except (OSError, ValueError):
         return False
+
+
+def machine_binding():
+    """Bind acceptance to this Windows installation and current user SID."""
+    import os
+    import winreg
+    from wechat_account_probe.native import handle_sid
+    import ctypes as c
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\Cryptography', 0,
+                       winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+        machine = winreg.QueryValueEx(key, 'MachineGuid')[0]
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    kernel.GetCurrentProcess.restype = c.c_void_p
+    kernel.CloseHandle.argtypes = [c.c_void_p]
+    sid = handle_sid(kernel, kernel.GetCurrentProcess())
+    version = digest(ROOT / 'portable-manifest.json') if (ROOT / 'portable-manifest.json').is_file() else 'source'
+    return hashlib.sha256((machine + '|' + sid + '|' + version).encode()).hexdigest()

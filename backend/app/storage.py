@@ -20,7 +20,8 @@ from .delivery_storage import DeliveryStoreMixin, DELIVERY_SCHEMA
 from .group_round_storage import GroupRoundStoreMixin, GROUP_SCHEMA
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_PATH = ROOT / ".local" / "bridge.sqlite3"
+from bridge_paths import DATA
+DEFAULT_PATH = DATA / "bridge.sqlite3"
 IMAGE_LIMIT = 512 * 1024 * 1024
 PAGE_BYTES = 16 * 1024 * 1024
 

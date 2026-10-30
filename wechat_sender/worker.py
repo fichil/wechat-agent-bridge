@@ -162,7 +162,9 @@ def inspect(request):
 def send(request):
     status='failed'; submitted=False; pending=False; process=None; allocations=[]; mutex=None; owned=False
     loaded=None; exports={}; cleanup=False; module_owned=False
-    token=uuid4().hex; report=BUILD/('receipt-'+token+'.json')
+    from bridge_paths import RECEIPTS
+    RECEIPTS.mkdir(parents=True, exist_ok=True)
+    token=uuid4().hex; report=RECEIPTS/('receipt-'+token+'.json')
     def call(address,parameter):
         nonlocal pending
         thread=check(K.CreateRemoteThread(process,None,0,address,parameter,0,None))

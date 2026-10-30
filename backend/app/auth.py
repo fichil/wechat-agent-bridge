@@ -17,7 +17,8 @@ from argon2.exceptions import VerificationError, InvalidHashError
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_AUTH_PATH = ROOT / ".local/auth.sqlite3"
+from bridge_paths import DATA
+DEFAULT_AUTH_PATH = DATA / "auth.sqlite3"
 SESSION_SECONDS = 7 * 24 * 3600
 HASHER = PasswordHasher(memory_cost=19456, time_cost=2, parallelism=1)
 

@@ -9,7 +9,8 @@ from uuid import uuid4
 
 from .conversation_models import Exclusions
 
-DEFAULT_PATH = Path(__file__).resolve().parents[2] / ".local" / "conversation-settings.json"
+from bridge_paths import DATA
+DEFAULT_PATH = DATA / "conversation-settings.json"
 
 
 class SettingsError(Exception):

@@ -49,9 +49,11 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         app.state.bridge, app.state.store = bridge, store
         app.state.discovery, app.state.conversations, app.state.messages = bridge.discovery, bridge.conversations, bridge.messages
         from .ai_execution import AiExecution
-        app.state.ai = AiExecution(store, bridge, ai_provider, enabled if ai_auto is None else ai_auto)
+        from bridge_paths import migration_pending
+        migration_hold = migration_pending() and str(path) != ':memory:'
+        app.state.ai = AiExecution(store, bridge, ai_provider, False if migration_hold else enabled if ai_auto is None else ai_auto)
         from .delivery import DeliveryExecution
-        app.state.sender = DeliveryExecution(store,bridge,send_transport,enabled if send_auto is None else send_auto)
+        app.state.sender = DeliveryExecution(store,bridge,send_transport,False if migration_hold else enabled if send_auto is None else send_auto)
         def notify(event):
             app.state.events.publish(event)
             bridge.scheduler.notify(event)
