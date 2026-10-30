@@ -44,6 +44,10 @@ function page(id = "one", next: string | null = null): ConversationPage {
       {
         conversation_id: "conversation-" + id,
         ai_enabled: false,
+        ai_pending_count: 0,
+        ai_waiting_count: 0,
+        ai_paused: false,
+        memory_revision: 0,
         preferences_revision: 0,
         name: "合成好友",
         category: "contact",

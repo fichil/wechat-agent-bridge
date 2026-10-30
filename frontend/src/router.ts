@@ -8,7 +8,7 @@ export const router = createRouter({
     { path: "/", redirect: "/accounts" },
     { path: "/accounts", component: AccountsPage },
     {
-      path: "/workspace/:accountId/:section(overview|conversations|role-cards|agents|settings)?",
+      path: "/workspace/:accountId/:section(overview|conversations|role-cards|agents|settings|logs)?",
       component: WorkspacePage,
     },
     { path: "/:pathMatch(.*)*", redirect: "/accounts" },

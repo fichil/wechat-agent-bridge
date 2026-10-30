@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
 import threading
+import time
 from uuid import uuid4
 
 from wechat_account_probe.models import ProbeError
@@ -13,6 +14,7 @@ from .conversation_models import ConversationPage, ConversationRefresh, Exclusio
 from .message_models import MessageReadTask, MessagePage, MessageImage
 from .services import browser_values
 from .storage import now, dump
+from .diagnostics import record_source, record_delta_groups
 
 
 class WorkQueue:
@@ -84,12 +86,17 @@ class Discovery:
         task = dict(scan_id=uuid4().hex, status="running", started_at=now(), error=None)
         return ScanTask.model_validate(self.bridge.queue.submit("scan", task, "scan", self.scan))
 
-    def scan(self):
+    def scan(self, automatic=False):
+        started = time.monotonic()
         try:
             result = browser_values(self.probe())
             # Validate before persisting any result from a reader.
             checked = AccountSnapshot.model_validate(dict(result, scan_id=uuid4().hex, scanned_at=now()))
             result = self.bridge.store.save_accounts(checked.model_dump(mode="json"))
+            for item in result["accounts"]:
+                if item.get("account_id"):
+                    record_source(self.bridge.store,"accounts",{},item,aid=item["account_id"],automatic=automatic,elapsed=time.monotonic()-started)
+            record_source(self.bridge.store,"accounts",{},dict(account_count=len(result["accounts"]),summary=result["summary"]),automatic=automatic,elapsed=time.monotonic()-started)
             with self.lock:
                 self.live_accounts = {a["account_id"]: Account.model_validate(dict(a, source_state="online"))
                     for a in result["accounts"] if a.get("account_id") and a.get("instances")}
@@ -97,6 +104,7 @@ class Discovery:
                 self.bridge.process_signature = tuple(sorted((i["pid"],int(i["created"])) for i in result.get("client_instances",[])))
             return dict(summary=result["summary"], exit_code=result["exit_code"], error=result.get("error"))
         except Exception:
+            record_source(self.bridge.store,"accounts",{},None,automatic=automatic,elapsed=time.monotonic()-started,error="probe_failed")
             from wechat_account_probe.models import failure_result
             result = failure_result("probe_failed")
             self.bridge.store.save_accounts(result)
@@ -159,7 +167,7 @@ class Conversations:
         self.account(aid)
         task = dict(account_id=aid, refresh_id=uuid4().hex, status="queued", started_at=now())
         def work():
-            result = self.bridge.source(aid, self.reader.read)
+            result = self.bridge.source(aid, self.reader.read, "conversations", {}, task_id=task["refresh_id"])
             self.bridge.store.save_conversations(aid, result)
         return ConversationRefresh.model_validate(self.bridge.queue.submit(("conversations", aid), task, "conversations", work))
 
@@ -193,7 +201,7 @@ class Messages:
     def image(self, request):
         return MessageImage.model_validate(self.bridge.store.image(request.account_id, request.conversation_id, request.message_id))
 
-    def start(self, request, kind="history"):
+    def start(self, request, kind="history", automatic=False):
         aid, cid = request.account_id, request.conversation_id
         _, source_id = self.bridge.conversations.resolve(aid, cid)
         task = dict(account_id=aid, conversation_id=cid, task_id=uuid4().hex, kind=kind,
@@ -206,16 +214,20 @@ class Messages:
             if kind == "history":
                 cached = self.page(request)
                 if cached.needs_sync or request.refresh:
-                    result = self.bridge.source(aid, lambda a: self.reader.messages(a, body))
+                    result = self.bridge.source(aid, lambda a: self.reader.messages(a, body), "messages", body, cid=cid, task_id=task["task_id"])
                     self.bridge.store.save_history(aid, cid, result, body)
+                else:
+                    record_source(self.bridge.store,"messages",body,cached.model_dump(mode="json"),aid=aid,cid=cid,task_id=task["task_id"],source="cache")
                 return dict(page=self.page(request).model_dump(mode="json"))
             cached = self.image(request)
             if cached.needs_sync:
-                result = self.bridge.source(aid, lambda a: self.reader.message_image(a, body))
+                result = self.bridge.source(aid, lambda a: self.reader.message_image(a, body), "image", {**body,"message_id":request.message_id}, cid=cid, automatic=automatic, task_id=task["task_id"])
                 if result["status"] == "available":
                     self.bridge.store.image(aid, cid, request.message_id, result)
                 else:
                     return dict(image=dict(message_id=request.message_id, **result))
+            else:
+                record_source(self.bridge.store,"image",dict(message_id=request.message_id),cached.model_dump(mode="json"),aid=aid,cid=cid,automatic=automatic,task_id=task["task_id"],source="cache")
             return dict(image=self.image(request).model_dump(mode="json"))
         key = (kind, aid, cid, dump(body), getattr(request, "refresh", False))
         return MessageReadTask.model_validate(self.bridge.queue.submit(key, task, kind, work))
@@ -244,21 +256,27 @@ class Bridge:
             self.thread = threading.Thread(target=self.loop, daemon=True, name="change-timer")
             self.thread.start()
 
-    def source(self, aid, operation):
-        account = self.discovery.online(aid)
+    def source(self, aid, operation, kind="read", inputs=None, *, cid=None, automatic=False, task_id=None):
+        started = time.monotonic()
         try:
+            account = self.discovery.online(aid)
             result = operation(account)
             if self.discovery.online(aid).instances != account.instances:
                 raise ProbeError("account_changed_during_read")
             self.store.sync_error(aid, None)
+            record_source(self.store,kind,inputs or {},result,aid=aid,cid=cid,automatic=automatic,task_id=task_id,elapsed=time.monotonic()-started)
             return result
         except ProbeError as exc:
+            record_source(self.store,kind,inputs or {},None,aid=aid,cid=cid,automatic=automatic,task_id=task_id,elapsed=time.monotonic()-started,error=str(exc))
             self.store.sync_error(aid, str(exc))
             if str(exc) in IDENTITY_ERRORS:
                 with self.discovery.lock:
                     self.discovery.live_accounts.pop(aid, None)
                 self.store.set_state(aid, "offline")
                 self.process_signature = None
+            raise
+        except Exception as exc:
+            record_source(self.store,kind,inputs or {},None,aid=aid,cid=cid,automatic=automatic,task_id=task_id,elapsed=time.monotonic()-started,error=exc.code if isinstance(exc,ConversationError) else "source_read_failed")
             raise
 
     def tick(self, check_processes=True):
@@ -267,17 +285,20 @@ class Bridge:
             instances, _ = enumerate_instances()
             signature = tuple(sorted((i.pid, i.created) for i in instances))
             if signature != self.process_signature:
-                self.discovery.scan()
+                self.discovery.scan(automatic=True)
                 self.process_signature = signature
         for account in list(self.discovery.live_accounts.values()):
             if self.stopped.is_set():
                 return
             aid = account.account_id
             try:
-                result = self.source(aid, lambda a: self.reader.changes(a, self.store.states(aid)))
+                states = self.store.states(aid)
+                started = time.monotonic()
+                result = self.source(aid, lambda a: self.reader.changes(a, states), "changes", dict(checkpoints=states), automatic=True)
                 if result.get("conversations"):
                     self.store.save_conversations(aid, result["conversations"])
                 self.store.save_delta(aid, result)
+                record_delta_groups(self.store, aid, states, result, time.monotonic()-started)
                 self.failures.pop(aid, None)
             except (ProbeError, ConversationError) as exc:
                 self.failures[aid] = exc.code if isinstance(exc, ConversationError) else str(exc)

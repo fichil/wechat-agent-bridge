@@ -15,6 +15,13 @@ from .conversations import ConversationError
 from .message_models import MessageRequest, ImageRequest, MessageTaskQuery, MessageReadTask, MessagePage, MessageImage
 from .role_models import (JsonRequest, CardQuery, CardCreate, CardUpdate, CardDelete, CardList,
                           RoleCard, CardDeleted, PreferencesQuery, PreferencesUpdate, ConversationPreferences)
+from .ai_models import (ProfileQuery, ProfileCreate, ProfileUpdate, ProfileDelete, ApiProfile,
+                        ProfileList, ProfileDeleted, AiDefaults, DefaultsUpdate)
+from .ai_execution_models import (AiSettings, AiSettingsUpdate, TaskQuery, ProfileTest, ProfileTask,
+                                  RunStart, RunQuery, RunRetry, AiRun, RunList)
+from .log_models import (LogAccount, LogQuery, LogGet, LogClear, LogPage, LogDetail, LogDeleted,
+                         SessionPage, RunMessagesQuery, RunMessagesPage)
+from .delivery_models import Delivery, DeliveryAction, DeliveryResolve, SendCapability
 
 ALLOWED_ORIGINS = {"http://127.0.0.1:5173", "http://localhost:5173",
                    "http://127.0.0.1:8765", "http://localhost:8765"}
@@ -25,7 +32,8 @@ def error(code: str, message: str, status: int):
 
 
 def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_reader=None,
-               settings_path=None, message_reader=None, database_path=None, monitor=None) -> FastAPI:
+               settings_path=None, message_reader=None, database_path=None, monitor=None, ai_provider=None, ai_auto=None,
+               send_transport=None, send_auto=None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app):
         from .storage import Store, DEFAULT_PATH
@@ -42,10 +50,17 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         bridge = Bridge(store, probe, conversation_reader or LocalConversationReader(), message_reader=message_reader, monitor=enabled)
         app.state.bridge, app.state.store = bridge, store
         app.state.discovery, app.state.conversations, app.state.messages = bridge.discovery, bridge.conversations, bridge.messages
+        from .ai_execution import AiExecution
+        app.state.ai = AiExecution(store, bridge, ai_provider, enabled if ai_auto is None else ai_auto)
+        from .delivery import DeliveryExecution
+        app.state.sender = DeliveryExecution(store,bridge,send_transport,enabled if send_auto is None else send_auto)
         try:
             yield
         finally:
             import asyncio
+            app.state.ai.stopped.set()
+            app.state.sender.stop.set()
+            await asyncio.gather(asyncio.to_thread(app.state.ai.close), asyncio.to_thread(app.state.sender.close))
             await asyncio.to_thread(bridge.close)
 
     app = FastAPI(title="WeChat Agent Bridge", version="1.0.0", lifespan=lifespan)
@@ -111,6 +126,18 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
              responses=failures)
     def get_account(body: AccountQuery, request: Request):
         return request.app.state.discovery.account(body.account_id)
+
+    @app.post('/api/v1/wechat-send-status/query', response_model=SendCapability, responses=failures)
+    def send_status(body: AccountQuery, request: Request):
+        return request.app.state.sender.capability(body.account_id)
+
+    @app.post('/api/v1/ai-deliveries/retry', response_model=Delivery, responses=failures)
+    def retry_delivery(body: DeliveryAction, request: Request):
+        return request.app.state.store.update_delivery(body.account_id,body.conversation_id,body.run_id)
+
+    @app.post('/api/v1/ai-deliveries/resolve', response_model=Delivery, responses=failures)
+    def resolve_delivery(body: DeliveryResolve, request: Request):
+        return request.app.state.store.update_delivery(body.account_id,body.conversation_id,body.run_id,body.resolution)
 
     @app.post("/api/v1/messages/query", response_model=MessagePage, responses=failures)
     def cached_messages(body: MessageRequest, request: Request):
@@ -192,8 +219,90 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
 
     @app.post("/api/v1/conversation-preferences/update", response_model=ConversationPreferences, responses=failures)
     def update_preferences(body: PreferencesUpdate, request: Request):
-        patch = body.model_dump(exclude_unset=True, include={"ai_enabled", "role_card_code", "memory"})
-        return request.app.state.store.save_preferences(body.account_id, body.conversation_id, body.expected_revision, patch)
+        patch = body.model_dump(exclude_unset=True, include={"ai_enabled", "role_card_code", "api_profile_id", "memory"})
+        return request.app.state.store.save_preferences(body.account_id, body.conversation_id, body.expected_revision, patch, body.expected_memory_revision)
+
+    @app.post("/api/v1/api-profiles/query", response_model=ProfileList, responses=failures)
+    def api_profiles(_body: JsonRequest, request: Request):
+        return request.app.state.store.api_profiles()
+
+    @app.post("/api/v1/api-profiles/get", response_model=ApiProfile, responses=failures)
+    def api_profile(body: ProfileQuery, request: Request):
+        return request.app.state.store.api_profile(body.profile_id)
+
+    @app.post("/api/v1/api-profiles/create", response_model=ProfileTask, status_code=202, responses=failures)
+    def create_profile(body: ProfileCreate, request: Request):
+        return request.app.state.ai.start_profile(body.model_dump(exclude={"api_key"}), body.api_key.get_secret_value())
+
+    @app.post("/api/v1/api-profiles/update", response_model=ProfileTask, status_code=202, responses=failures)
+    def update_profile(body: ProfileUpdate, request: Request):
+        return request.app.state.ai.start_profile(body.model_dump(exclude={"api_key", "profile_id", "expected_revision"}),
+            body.api_key.get_secret_value() if body.api_key is not None else None, body.profile_id, body.expected_revision)
+
+    @app.post("/api/v1/api-profiles/test", response_model=ProfileTask, status_code=202, responses=failures)
+    def test_profile(body: ProfileTest, request: Request):
+        return request.app.state.ai.start_profile(identity=body.profile_id, expected=body.expected_revision)
+
+    @app.post("/api/v1/api-profiles/tasks/query", response_model=ProfileTask, responses=failures)
+    def profile_task(body: TaskQuery, request: Request):
+        return request.app.state.store.api_task(body.task_id)
+
+    @app.post("/api/v1/ai-settings/query", response_model=AiSettings, responses=failures)
+    def ai_settings(_body: JsonRequest, request: Request):
+        return request.app.state.store.ai_settings()
+
+    @app.post("/api/v1/ai-settings/update", response_model=AiSettings, responses=failures)
+    def ai_settings_update(body: AiSettingsUpdate, request: Request):
+        return request.app.state.store.save_ai_settings(body.expected_revision, body.instructions)
+
+    @app.post("/api/v1/ai-runs/start", response_model=AiRun, status_code=202, responses=failures)
+    def ai_start(body: RunStart, request: Request):
+        return request.app.state.ai.start(body.account_id, body.conversation_id, body.request_id)
+
+    @app.post("/api/v1/ai-runs/retry", response_model=AiRun, status_code=202, responses=failures)
+    def ai_retry(body: RunRetry, request: Request):
+        return request.app.state.ai.retry(body.account_id, body.conversation_id, body.run_id, body.request_id)
+
+    @app.post("/api/v1/ai-runs/query", response_model=AiRun, responses=failures)
+    def ai_query(body: RunQuery, request: Request):
+        return request.app.state.store.ai_run(body.account_id, body.conversation_id, body.run_id)
+
+    @app.post("/api/v1/ai-runs/list", response_model=RunList, responses=failures)
+    def ai_list(body: PreferencesQuery, request: Request):
+        return request.app.state.store.ai_runs(body.account_id, body.conversation_id)
+
+    @app.post("/api/v1/logs/query", response_model=LogPage, responses=failures)
+    def logs(body: LogQuery, request: Request):
+        return request.app.state.store.logs(body)
+
+    @app.post("/api/v1/logs/get", response_model=LogDetail, responses=failures)
+    def log_detail(body: LogGet, request: Request):
+        return request.app.state.store.log_detail(body.account_id, body.log_id)
+
+    @app.post("/api/v1/logs/clear", response_model=LogDeleted, responses=failures)
+    def clear_logs(body: LogClear, request: Request):
+        return request.app.state.store.clear_logs(body.account_id, body.scope)
+
+    @app.post("/api/v1/ai-runs/sessions/query", response_model=SessionPage, responses=failures)
+    def ai_sessions(body: LogAccount, request: Request):
+        return request.app.state.store.ai_session_list(body.account_id)
+
+    @app.post("/api/v1/ai-runs/messages/query", response_model=RunMessagesPage, responses=failures)
+    def ai_messages(body: RunMessagesQuery, request: Request):
+        return request.app.state.store.ai_pending_messages(body)
+
+    @app.post("/api/v1/api-profiles/delete", response_model=ProfileDeleted, responses=failures)
+    def delete_profile(body: ProfileDelete, request: Request):
+        return request.app.state.store.delete_api_profile(body.profile_id, body.expected_revision)
+
+    @app.post("/api/v1/ai-defaults/query", response_model=AiDefaults, responses=failures)
+    def ai_defaults(_body: JsonRequest, request: Request):
+        return request.app.state.store.ai_defaults()
+
+    @app.post("/api/v1/ai-defaults/update", response_model=AiDefaults, responses=failures)
+    def update_defaults(body: DefaultsUpdate, request: Request):
+        return request.app.state.store.save_ai_defaults(body.expected_revision,
+            body.model_dump(exclude_unset=True, include={"role_card_code", "api_profile_id"}))
 
     return app
 

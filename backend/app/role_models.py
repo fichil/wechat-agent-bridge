@@ -88,6 +88,7 @@ class CardUpdate(CardDelete):
 
 
 class CardSummary(BaseModel):
+    is_default: bool = False
     card_code: str
     name: str
     usage_count: int
@@ -117,20 +118,41 @@ class PreferencesQuery(JsonRequest):
 
 class PreferencesUpdate(PreferencesQuery):
     expected_revision: int = Field(ge=0)
+    expected_memory_revision: int | None = Field(default=None, ge=0)
     ai_enabled: StrictBool | None = None
     role_card_code: str | None = Field(default=None, min_length=1, max_length=128)
+    api_profile_id: str | None = Field(default=None, min_length=1, max_length=128)
     memory: str | None = None
 
     @model_validator(mode="after")
     def valid_patch(self):
-        changes = self.model_fields_set & {"ai_enabled", "role_card_code", "memory"}
-        if not changes or any(getattr(self, key) is None for key in changes - {"role_card_code"}):
+        changes = self.model_fields_set & {"ai_enabled", "role_card_code", "api_profile_id", "memory"}
+        if not changes or any(getattr(self, key) is None for key in changes - {"role_card_code", "api_profile_id"}):
             raise ValueError("invalid_preferences_patch")
         return self
+
+
+class ConfigurationIssue(BaseModel):
+    code: str
+    message: str
+
+
+class EffectiveConfiguration(BaseModel):
+    role_card_code: str | None
+    role_card_name: str | None
+    api_profile_id: str | None
+    api_profile_name: str | None
+    role_source: Literal["explicit", "default"]
+    api_source: Literal["explicit", "default"]
+    ready: bool
+    issues: list[ConfigurationIssue]
 
 
 class ConversationPreferences(PreferencesQuery):
     ai_enabled: bool
     role_card_code: str | None
+    api_profile_id: str | None = None
+    effective: EffectiveConfiguration | None = None
     memory: str
     revision: int
+    memory_revision: int = 0

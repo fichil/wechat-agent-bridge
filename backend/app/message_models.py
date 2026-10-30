@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel, Field
 from .conversation_models import ConversationAccountRequest
+from .ai_execution_models import AiMessageState
 
 
 class MessageRequest(ConversationAccountRequest):
@@ -42,6 +43,10 @@ class MessageContent(BaseModel):
 
 
 class Message(BaseModel):
+    mentioned_wxids: list[str] = Field(default_factory=list)
+    mention_status: Literal["known", "unknown"] = "unknown"
+    mentions_all: bool = False
+    ai_state: AiMessageState | None = None
     message_id: str
     sort_key: str = Field(default="", description="Opaque stable lexical ordering key; do not parse or submit as a cursor.")
     sent_at: datetime | None

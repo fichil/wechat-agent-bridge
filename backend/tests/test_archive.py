@@ -1,3 +1,4 @@
+from migration_helpers import remove_v5
 import base64
 from contextlib import closing
 import json
@@ -127,12 +128,15 @@ class ArchiveTests(unittest.TestCase):
     def test_index_migration_failure_preserves_existing_archive_and_is_retryable(self):
         self.ingest([1,2]); self.store.close()
         with closing(sqlite3.connect(self.path)) as db:
+            remove_v5(db)
             db.execute("DROP INDEX message_pending_transcripts")
             db.execute("DELETE FROM schema_migrations WHERE version=2")
+            db.execute("DROP TABLE ai_defaults")
             db.execute("DROP TABLE conversation_preferences")
+            db.execute("DROP TABLE api_profiles")
             db.execute("DROP TABLE role_cards")
             db.execute("DROP INDEX conversation_owner")
-            db.execute("DELETE FROM schema_migrations WHERE version=3")
+            db.execute("DELETE FROM schema_migrations WHERE version>=3")
             db.execute("PRAGMA user_version=1")
             db.execute("CREATE TRIGGER fail_migration BEFORE INSERT ON schema_migrations WHEN new.version=2 BEGIN SELECT RAISE(ABORT,'synthetic'); END")
             db.commit()

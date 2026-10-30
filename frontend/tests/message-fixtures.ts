@@ -1,6 +1,8 @@
 import type { Message, MessagePage, MessageReadTask } from "../src/api";
 export function message(index: number, own = false): Message {
   return {
+    mention_status: "unknown",
+    mentions_all: false,
     message_id: `message-${index}`,
     sort_key: String(index + 1000).padStart(8, "0"),
     type: "text",

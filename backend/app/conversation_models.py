@@ -48,7 +48,13 @@ class ConversationSettings(BaseModel):
 
 
 class Conversation(BaseModel):
+    ai_pending_count: int = 0
+    ai_waiting_count: int = 0
+    ai_paused: bool = False
+    ai_run_status: str | None = None
+    memory_revision: int = 0
     ai_enabled: bool = False
+    ai_configuration_ready: bool | None = None
     preferences_revision: int = 0
     conversation_id: str
     name: str

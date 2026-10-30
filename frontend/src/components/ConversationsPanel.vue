@@ -43,6 +43,9 @@ function saved(value: ConversationPreferences) {
   );
   if (item && (item.preferences_revision ?? 0) <= value.revision) {
     item.ai_enabled = value.ai_enabled;
+    item.ai_configuration_ready = value.ai_enabled
+      ? (value.effective?.ready ?? false)
+      : null;
     item.preferences_revision = value.revision;
   }
 }
@@ -127,9 +130,18 @@ function messageTime(value: string | null) {
       >刷新会话</ElButton
     >
   </div>
-  <p class="ai-placeholder-note">当前仅保存配置，自动回复暂未接入</p>
+  <p class="ai-placeholder-note">
+    开启 AI 后自动回复微信并更新记忆；群聊仅在有人 @ 当前账号时回复。
+  </p>
   <p v-if="actionError" class="conversation-alert" role="alert">
     {{ actionError }}
+    <RouterLink :to="`/workspace/${accountId}/role-cards`"
+      >管理角色卡</RouterLink
+    >
+    ·
+    <RouterLink :to="`/workspace/${accountId}/agents`"
+      >管理 API 配置</RouterLink
+    >
   </p>
   <div v-if="store.error" class="conversation-alert" role="alert">
     {{ store.error }}<span v-if="store.page"> 当前显示上次读取结果。</span>
@@ -229,7 +241,13 @@ function messageTime(value: string | null) {
             :aria-label="`${item.name} AI 接入`"
             @update:model-value="toggle(item, $event === true)"
           />
-          <small>{{ item.ai_enabled ? "接入 AI" : "关闭 AI 接入" }}</small>
+          <small>{{
+            item.ai_enabled
+              ? item.ai_configuration_ready === false
+                ? "已开启 · 配置缺失"
+                : "自动回复微信"
+              : "自动回复已关闭"
+          }}</small>
           <button
             type="button"
             class="conversation-settings-button"

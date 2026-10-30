@@ -72,6 +72,26 @@ def xml_root(text):
         return None
 
 
+def parse_mentions(source):
+    """Only native msgsource metadata is authoritative; never match display names."""
+    if source is None:
+        return dict(mentioned_wxids=[], mention_status="unknown", mentions_all=False)
+    try:
+        text = decode_text(source)
+        if not text:
+            return dict(mentioned_wxids=[], mention_status="known", mentions_all=False)
+        root = xml_root(text)
+        if root is None or root.tag not in ("msgsource", "atuserlist"):
+            raise ValueError()
+        nodes = [root] if root.tag == "atuserlist" else root.findall(".//atuserlist")
+        values = {s.strip() for node in nodes for s in (node.text or "").split(",") if s.strip()}
+        if len(values) > 1024 or any(not re.fullmatch(r"[A-Za-z0-9_.@-]{1,127}", s) for s in values):
+            raise ValueError()
+        return dict(mentioned_wxids=sorted(values - {"notify@all"}), mention_status="known", mentions_all="notify@all" in values)
+    except (ValueError, TypeError, UnicodeError):
+        return dict(mentioned_wxids=[], mention_status="unknown", mentions_all=False)
+
+
 def packed_transcript(data):
     try:
         parent = protobuf(data).get(5, [])

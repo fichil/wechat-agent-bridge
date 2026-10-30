@@ -6,6 +6,7 @@ import "element-plus/es/components/option/style/css";
 import { api, type Conversation, type ConversationPreferences } from "../api";
 import { onChange } from "../api/events";
 import { useRoleCardsStore } from "../stores/role-cards";
+import { useAiConfigStore } from "../stores/ai-config";
 import { settingsError } from "../role-cards";
 import { useUnsavedChanges } from "../unsaved-changes";
 
@@ -15,8 +16,10 @@ const emit = defineEmits<{
   saved: [value: ConversationPreferences];
 }>();
 const cards = useRoleCardsStore();
+const config = useAiConfigStore();
 const original = ref<ConversationPreferences | null>(null);
 const role = ref<string | null>(null);
+const profile = ref<string | null>(null);
 const memory = ref("");
 const loading = ref(false);
 const saving = ref(false);
@@ -28,12 +31,14 @@ const dirty = computed(
   () =>
     !!original.value &&
     (role.value !== original.value.role_card_code ||
+      profile.value !== (original.value.api_profile_id ?? null) ||
       memory.value !== original.value.memory),
 );
 const beforeLeave = useUnsavedChanges(dirty, save, saving);
 let generation = 0;
 let reloadAfterSave = false;
 void cards.load();
+void config.load();
 
 async function load(preserve = false) {
   const aid = props.accountId,
@@ -45,6 +50,7 @@ async function load(preserve = false) {
   if (!preserve) {
     original.value = null;
     role.value = null;
+    profile.value = null;
     memory.value = "";
   }
   try {
@@ -52,11 +58,16 @@ async function load(preserve = false) {
     if (ticket !== generation) return;
     // A user can start typing while a notification-driven read is in flight.
     if (preserve && dirty.value) {
-      externalChange.value = result.revision !== original.value?.revision;
+      externalChange.value =
+        externalChange.value ||
+        result.revision !== original.value?.revision ||
+        result.memory_revision !== original.value?.memory_revision;
+      if (original.value) original.value.effective = result.effective;
       return;
     }
     original.value = result;
     role.value = result.role_card_code;
+    profile.value = result.api_profile_id ?? null;
     memory.value = result.memory;
     externalChange.value = false;
   } catch (cause) {
@@ -80,6 +91,7 @@ watch(
 
 async function save(): Promise<boolean> {
   if (!original.value || busy.value) return false;
+  if (!dirty.value) return true;
   const ticket = generation;
   saving.value = true;
   error.value = notice.value = "";
@@ -88,11 +100,24 @@ async function save(): Promise<boolean> {
       account_id: props.accountId,
       conversation_id: props.conversation.conversation_id,
       expected_revision: original.value.revision,
-      role_card_code: role.value,
-      memory: memory.value,
+      ...(role.value !== original.value.role_card_code
+        ? { role_card_code: role.value }
+        : {}),
+      ...(profile.value !== (original.value.api_profile_id ?? null)
+        ? { api_profile_id: profile.value }
+        : {}),
+      ...(memory.value !== original.value.memory
+        ? {
+            memory: memory.value,
+            expected_memory_revision: original.value.memory_revision,
+          }
+        : {}),
     });
     if (ticket !== generation) return false;
     original.value = result;
+    role.value = result.role_card_code;
+    profile.value = result.api_profile_id ?? null;
+    memory.value = result.memory;
     externalChange.value = false;
     notice.value = "会话设置已保存";
     emit("saved", result);
@@ -118,7 +143,14 @@ const unsubscribe = onChange((event) => {
   const relevant =
     event.type === "ready" ||
     event.type === "resync" ||
-    (event.resources?.includes("conversation_preferences") &&
+    (event.resources?.some((r) =>
+      [
+        "conversation_preferences",
+        "ai_defaults",
+        "role_cards",
+        "api_profiles",
+      ].includes(r),
+    ) &&
       (!event.conversation_ids?.length ||
         event.conversation_ids.includes(props.conversation.conversation_id)));
   if (!relevant) return;
@@ -126,10 +158,7 @@ const unsubscribe = onChange((event) => {
     reloadAfterSave = true;
     return;
   }
-  if (dirty.value) {
-    externalChange.value = true;
-    return;
-  }
+  if (dirty.value && event.account_id) externalChange.value = true;
   void load(true);
 });
 onBeforeUnmount(() => {
@@ -185,15 +214,19 @@ defineExpose({ beforeLeave });
         >
         <ElSelect
           id="conversation-role"
-          :model-value="role"
+          :model-value="role ?? ''"
           :disabled="busy"
           filterable
           clearable
-          placeholder="未选择角色卡"
+          placeholder="使用全局默认角色卡"
           aria-label="角色卡"
           class="role-select"
           @update:model-value="role = $event || null"
         >
+          <ElOption
+            value=""
+            :label="`使用全局默认${cards.items.find((c) => c.is_default) ? ' · ' + cards.items.find((c) => c.is_default)!.name : '（未设置）'}`"
+          />
           <ElOption
             v-for="card in cards.items"
             :key="card.card_code"
@@ -210,6 +243,44 @@ defineExpose({ beforeLeave });
         <p v-if="cards.error" class="conversation-alert" role="alert">
           角色卡列表读取失败，当前选择已保留。<ElButton @click="cards.load"
             >重试角色卡</ElButton
+          >
+        </p>
+        <label class="editor-field" for="conversation-api"
+          ><span>API 配置</span></label
+        >
+        <ElSelect
+          id="conversation-api"
+          :model-value="profile ?? ''"
+          :disabled="busy"
+          filterable
+          clearable
+          placeholder="使用全局默认 API"
+          aria-label="API 配置"
+          class="role-select"
+          @update:model-value="profile = $event || null"
+        >
+          <ElOption
+            value=""
+            :label="`使用全局默认${config.items.find((p) => p.is_default) ? ' · ' + config.items.find((p) => p.is_default)!.name : '（未设置）'}`"
+          />
+          <ElOption
+            v-for="item in config.items"
+            :key="item.profile_id"
+            :value="item.profile_id"
+            :label="`${item.name} · ${item.model}`"
+          />
+          <ElOption
+            v-if="
+              profile && !config.items.some((p) => p.profile_id === profile)
+            "
+            :value="profile"
+            :label="`当前 API · ${profile}`"
+            disabled
+          />
+        </ElSelect>
+        <p v-if="config.error" class="conversation-alert" role="alert">
+          API 列表读取失败，当前选择已保留。<ElButton @click="config.load"
+            >重试 API 配置</ElButton
           >
         </p>
         <label class="editor-field memory-field"

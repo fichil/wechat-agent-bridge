@@ -17,6 +17,23 @@ import webbrowser
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def stop():
+    import psutil
+    metadata = ROOT / ".local/framework/current.json"
+    if not metadata.is_file():
+        raise RuntimeError("Legacy launcher has no graceful-stop record; back up SQLite before a controlled stop.")
+    value = json.loads(metadata.read_text(encoding="utf-8"))
+    process = psutil.Process(value["pid"])
+    if abs(process.create_time()-value["created"]) > .01 or not any(arg.endswith("dev_server.py") for arg in process.cmdline()):
+        raise RuntimeError("Launcher identity changed; no action taken")
+    target = Path(value["stop_file"]).resolve()
+    if not target.is_relative_to((ROOT / ".local/framework").resolve()) or target.name != "stop.request":
+        raise RuntimeError("Invalid stop-file path; no action taken")
+    target.write_text("stop\n", encoding="utf-8")
+    print("Graceful stop requested; the backend will finish active work and close SQLite.")
+    return 0
+
+
 def check():
     if os.name != "nt" or sys.maxsize <= 2**32:
         raise RuntimeError("Windows x64 is required")
@@ -50,8 +67,11 @@ def main():
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--smoke-test", action="store_true", help="Start, health-check and clean up; never scan WeChat")
+    parser.add_argument("--stop", action="store_true", help="Gracefully stop the currently owned backend")
     args = parser.parse_args()
     try:
+        if args.stop:
+            return stop()
         node, vite = check()
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
@@ -62,11 +82,14 @@ def main():
     from windows_job import WindowsJob
     logs = ROOT / ".local/framework" / (datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid4().hex[:6])
     logs.mkdir(parents=True)
+    stop_file = logs / "stop.request"
+    metadata = ROOT / ".local/framework/current.json"
+    import psutil
+    metadata.write_text(json.dumps(dict(pid=os.getpid(), created=psutil.Process().create_time(), stop_file=str(stop_file))), encoding="utf-8")
     children, handles = [], []
     job = WindowsJob()
     commands = [
-        ("backend", ROOT, [sys.executable, "-B", "-m", "uvicorn", "backend.app.main:app",
-                           "--host", "127.0.0.1", "--port", "8765", "--workers", "1", "--no-access-log"]),
+        ("backend", ROOT, [sys.executable, "-B", str(ROOT / "scripts/serve_backend.py"), "--stop-file", str(stop_file)]),
         ("frontend", ROOT / "frontend", [node, str(vite), "--host", "127.0.0.1", "--port", "5173", "--strictPort"]),
     ]
     try:
@@ -109,6 +132,8 @@ def main():
         print("Press Ctrl+C to stop this launch and its child processes.", flush=True)
         while all(child.poll() is None for child in children):
             time.sleep(0.5)
+        if stop_file.exists():
+            return 0
         raise RuntimeError(f"A service stopped. Logs: {logs}")
     except KeyboardInterrupt:
         return 0
@@ -116,6 +141,12 @@ def main():
         print(str(exc), file=sys.stderr)
         return 1
     finally:
+        if children and children[0].poll() is None:
+            stop_file.write_text("stop\n", encoding="utf-8")
+            try:
+                children[0].wait(timeout=210)
+            except subprocess.TimeoutExpired:
+                print("Backend graceful-stop deadline exceeded; the owned job will close.", file=sys.stderr)
         job.close()
         for child in children:
             # If assignment failed, the helper is still blocked on stdin and owns no service.
@@ -124,6 +155,8 @@ def main():
             child.wait(timeout=5)
         for handle in handles:
             handle.close()
+        if metadata.is_file() and json.loads(metadata.read_text(encoding="utf-8")).get("pid") == os.getpid():
+            metadata.unlink()
 
 
 if __name__ == "__main__":

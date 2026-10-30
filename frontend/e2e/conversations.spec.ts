@@ -61,6 +61,18 @@ async function mockConversations(page: Page) {
       return route.fulfill({
         json: accounts.accounts.find((a) => body.account_id === a.account_id),
       });
+    if (path.endsWith("/ai-runs/list"))
+      return route.fulfill({
+        json: { items: [], pending_count: 0, waiting_count: 0, paused: false },
+      });
+    if (path.endsWith("/ai-settings/query"))
+      return route.fulfill({
+        json: {
+          instructions: "合成提示词",
+          default_instructions: "合成提示词",
+          revision: 0,
+        },
+      });
     if (path.endsWith("/message-images/query"))
       return route.fulfill({
         json: {
@@ -222,6 +234,10 @@ async function mockConversations(page: Page) {
             return {
               conversation_id: `${id}-${index}`,
               ai_enabled: false,
+              ai_pending_count: 0,
+              ai_waiting_count: 0,
+              ai_paused: false,
+              memory_revision: 0,
               preferences_revision: 0,
               name,
               category,
@@ -485,7 +501,7 @@ test("cache query contract, pagination, manual refresh, and mobile empty states"
   await expect(page.locator(".conversation-row")).toHaveCount(61);
   state.fail = false;
   await page.getByRole("link", { name: "设置", exact: true }).click();
-  await page.getByRole("button", { name: "恢复默认" }).click();
+  await page.getByRole("button", { name: "恢复默认", exact: true }).click();
   await page.getByRole("button", { name: "保存设置" }).click();
   await expect(page.getByText("设置已保存", { exact: true })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });

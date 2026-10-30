@@ -35,6 +35,7 @@ async function mockWorkspace(page: Page) {
         ai_enabled: false,
         role_card_code: null,
         memory: "",
+        memory_revision: 0,
         revision: 0,
       });
     return preferences.get(key)!;
@@ -56,6 +57,12 @@ async function mockWorkspace(page: Page) {
     const body = route.request().postDataJSON();
     const fail = (code: string, message: string, status = 409) =>
       route.fulfill({ status, json: { code, message } });
+    if (path.endsWith("/api-profiles/query"))
+      return route.fulfill({ json: { items: [], presets: [] } });
+    if (path.endsWith("/ai-defaults/query"))
+      return route.fulfill({
+        json: { role_card_code: null, api_profile_id: null, revision: 0 },
+      });
     if (path.endsWith("/accounts/query"))
       return route.fulfill({ json: accounts });
     if (path.endsWith("/accounts/get"))
@@ -136,6 +143,7 @@ async function mockWorkspace(page: Page) {
         );
       if (!role) {
         role = {
+          is_default: false,
           card_code: `RC_${String(roles.length + 1).padStart(32, "0")}`,
           card: body.card,
           name: body.card.data.name,

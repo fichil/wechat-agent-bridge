@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from wechat_account_probe.models import ProbeError
 from wechat_conversations.reader import IDENTITY_ERRORS, text_value
 from .cache import DatabaseCache
-from .content import MAX_CONTENT, parse_content
+from .content import MAX_CONTENT, parse_content, parse_mentions
 
 SHARD = re.compile(r"(?:biz_)?message_[0-9]+\.db\Z")
 COLUMNS = {"local_id", "server_id", "local_type", "sort_seq", "real_sender_id", "create_time",
@@ -67,6 +67,8 @@ class MessageReader:
         order = "ASC" if direction == "newer" else "DESC"
         safe = ",".join(f"CASE WHEN length(m.{c})<={MAX_CONTENT} THEN m.{c} ELSE NULL END AS {c}"
                         for c in ("message_content", "compress_content", "packed_info_data"))
+        safe += (f",CASE WHEN length(m.source)<={MAX_CONTENT} THEN m.source ELSE NULL END AS source"
+                 if "source" in columns else ",NULL AS source")
         query = (f"SELECT m.local_id,m.server_id,m.local_type,m.sort_seq,m.real_sender_id,m.create_time,"
                  f"{safe}, n.user_name AS sender_username, "
                  f"(COALESCE(length(m.message_content),0)>{MAX_CONTENT} OR COALESCE(length(m.compress_content),0)>{MAX_CONTENT} OR COALESCE(length(m.packed_info_data),0)>{MAX_CONTENT}) AS oversized "
@@ -168,7 +170,7 @@ class MessageReader:
             item = dict(_key=list(row_key(row)),
                 sort_key=f'{row["sort_seq"]+2**63:020d}.{row["create_time"]+2**63:020d}.{row["shard"].encode().hex()}.{row["local_id"]+2**63:020d}',
                 _ref=dict(shard=row["shard"], local_id=row["local_id"], server_id=str(row["server_id"]), generation=row.get("generation", "legacy")),
-                sent_at=when, type=kind, content=content, is_self=is_self,
+                sent_at=when, type=kind, content=content, is_self=is_self, **parse_mentions(row.get("source")),
                 sender=dict(wxid=username, wechat_id=alias, nickname=nickname, remark=remark,
                             status="complete" if username and nickname else "partial" if username else "unknown"),
                 issues=errors)

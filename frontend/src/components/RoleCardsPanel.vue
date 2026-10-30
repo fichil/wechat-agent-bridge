@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
 import { api, type RoleCard } from "../api";
 import { useRoleCardsStore } from "../stores/role-cards";
+import { useAiConfigStore } from "../stores/ai-config";
 import {
   blankCard,
   cardTextFields,
@@ -12,6 +13,8 @@ import {
 import { useUnsavedChanges } from "../unsaved-changes";
 
 const cards = useRoleCardsStore();
+const config = useAiConfigStore();
+void config.load();
 const selected = ref<RoleCard | null>(null);
 const editing = ref(false);
 const draft = ref(blankCard());
@@ -155,6 +158,20 @@ async function remove() {
     saving.value = false;
   }
 }
+async function makeDefault() {
+  if (!selected.value || busy.value) return;
+  saving.value = true;
+  error.value = "";
+  try {
+    await config.setDefault({ role_card_code: selected.value.card_code });
+    await cards.load();
+    notice.value = "已设为全账号默认角色卡。";
+  } catch (cause) {
+    error.value = settingsError(cause);
+  } finally {
+    saving.value = false;
+  }
+}
 async function importFile(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -230,6 +247,10 @@ watch(
     {{ cards.error }} <ElButton @click="cards.load">重试列表</ElButton>
   </p>
   <p v-if="error" class="conversation-alert" role="alert">{{ error }}</p>
+  <p v-if="config.error" class="conversation-alert" role="alert">
+    {{ config.error }}
+    <ElButton @click="config.load">重新加载默认配置</ElButton>
+  </p>
   <p v-if="notice" class="save-notice" role="status">{{ notice }}</p>
   <div class="role-layout">
     <section class="role-list" aria-label="角色卡列表">
@@ -259,7 +280,9 @@ watch(
         :disabled="busy"
         @click="open(card.card_code)"
       >
-        <strong>{{ card.name }}</strong
+        <strong
+          >{{ card.name }}
+          <span v-if="card.is_default" class="default-badge">默认</span></strong
         ><code>{{ card.card_code }}</code
         ><small>{{ card.usage_count }} 个会话使用</small>
       </button>
@@ -309,6 +332,20 @@ watch(
               >保存角色卡</ElButton
             >
             <ElButton :disabled="busy" @click="exportFile">导出 JSON</ElButton>
+            <ElButton
+              v-if="selected"
+              :disabled="
+                busy ||
+                config.loading ||
+                !config.defaults ||
+                !!config.error ||
+                latest?.is_default
+              "
+              @click="makeDefault"
+              >{{
+                latest?.is_default ? "默认角色卡" : "设为默认角色卡"
+              }}</ElButton
+            >
             <ElButton
               v-if="selected"
               :disabled="busy"

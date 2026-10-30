@@ -36,6 +36,12 @@ async function mockApi(page: Page, initial = snapshot()) {
           message: "账号已失效，请重新识别。",
         },
       });
+    } else if (path.endsWith("/api-profiles/query")) {
+      await route.fulfill({ json: { items: [], presets: [] } });
+    } else if (path.endsWith("/ai-defaults/query")) {
+      await route.fulfill({
+        json: { role_card_code: null, api_profile_id: null, revision: 0 },
+      });
     } else throw new Error(`Unexpected synthetic route: ${path}`);
   });
   return state;
@@ -62,7 +68,9 @@ test("cached accounts → workspace → switch, without source scans", async ({
     fullPage: true,
   });
   await page.getByRole("link", { name: "Agent", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "功能待接入" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Agent · API 配置" }),
+  ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "发送", exact: true }),
   ).toHaveCount(0);

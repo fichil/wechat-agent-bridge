@@ -1,3 +1,4 @@
+from migration_helpers import remove_v5
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from copy import deepcopy
@@ -5,6 +6,7 @@ import json
 from pathlib import Path
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -14,6 +16,7 @@ from backend.app.storage import Store
 from backend.app.services import browser_values
 from backend.app.conversations import ConversationError
 from test_conversations import accounts, rows, Reader
+from ai_fakes import FakeProvider
 
 
 def card(name="合成角色"):
@@ -26,11 +29,12 @@ def card(name="合成角色"):
             insertion_order=1, extensions={"any": True}, unknown_entry={"keep": "yes"})])))
 
 
-class RoleTests(unittest.TestCase):
+class RoleTestCase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name) / "archive.sqlite3"
-        self.app = create_app(accounts, database_path=self.path, conversation_reader=Reader(), monitor=False)
+        self.provider = FakeProvider()
+        self.app = create_app(accounts, database_path=self.path, conversation_reader=Reader(), monitor=False, ai_provider=self.provider)
         self.client = TestClient(self.app, base_url="http://127.0.0.1:8765")
         self.client.__enter__()
         self.store = self.app.state.store
@@ -56,7 +60,30 @@ class RoleTests(unittest.TestCase):
         return self.post("conversation-preferences/query", account_id=self.ids[index], conversation_id=self.cids[index]).json()
 
     def update(self, revision=0, index=0, **fields):
+        if "memory" in fields and "expected_memory_revision" not in fields:
+            fields["expected_memory_revision"] = self.preferences(index)["memory_revision"]
         return self.post("conversation-preferences/update", account_id=self.ids[index], conversation_id=self.cids[index], expected_revision=revision, **fields)
+
+    def finish_profile(self, response):
+        if response.status_code != 202:
+            return response
+        task = response.json()
+        for _ in range(200):
+            task = self.post("api-profiles/tasks/query", task_id=task["task_id"]).json()
+            if task["status"] in ("completed", "failed"):
+                break
+            time.sleep(.01)
+        self.assertEqual(task["status"], "completed", task)
+        return self.post("api-profiles/get", profile_id=task["profile_id"])
+
+    def create_api(self, **fields):
+        response = self.post("api-profiles/create", **{**dict(name="合成 API", provider="openai", protocol="openai_responses",
+            base_url="https://example.test/v1", model="synthetic-model", api_key="synthetic-test-only"), **fields})
+        self.assertEqual(response.status_code, 202, response.text)
+        return self.finish_profile(response).json()
+
+
+class RoleTests(RoleTestCase):
 
     def test_v2_roundtrip_duplicate_names_updates_and_conflicts(self):
         original = card()
@@ -74,7 +101,10 @@ class RoleTests(unittest.TestCase):
         self.assertEqual(self.post("role-cards/get", card_code=first["card_code"]).json()["card"], changed)
 
     def test_defaults_partial_changes_preserve_memory_and_account_isolation(self):
-        self.assertEqual(self.preferences(), dict(account_id=self.ids[0], conversation_id=self.cids[0], ai_enabled=False, role_card_code=None, memory="", revision=0))
+        initial = self.preferences()
+        self.assertFalse(initial.pop("effective")["ready"])
+        self.assertEqual(initial, dict(account_id=self.ids[0], conversation_id=self.cids[0], ai_enabled=False, role_card_code=None, api_profile_id=None, memory="", revision=0, memory_revision=0))
+        self.create_api()
         role = self.create()
         memory = "  中文记忆\n\n" + "长文本\t " * 25000
         saved = self.update(role_card_code=role["card_code"], memory=memory).json()
@@ -151,13 +181,14 @@ class RoleTests(unittest.TestCase):
         role = self.create()
         self.assertNotIn("account_id", events[0])
         self.update(memory="private-memory", role_card_code=role["card_code"])
-        scoped = next(e for e in events if "conversation_preferences" in e["resources"])
+        scoped = next(e for e in events if "conversation_preferences" in e["resources"] and e.get("account_id"))
         self.assertEqual(scoped["account_id"], self.ids[0])
         self.assertEqual(scoped["conversation_ids"], [self.cids[0]])
         self.assertNotIn("private-memory", json.dumps(events))
         self.assertNotIn("合成角色", json.dumps(events, ensure_ascii=False))
 
     def test_restart_preserves_roles_preferences_without_source(self):
+        self.create_api()
         role = self.create()
         self.update(role_card_code=role["card_code"], ai_enabled=True, memory="\n saved \n")
         self.store.close()
@@ -179,7 +210,8 @@ class RoleMigrationTests(unittest.TestCase):
             cid = store.conversations(aid)["items"][0]["conversation_id"]
             store.close()
             with closing(sqlite3.connect(path)) as db:
-                db.executescript("DROP TABLE conversation_preferences; DROP TABLE role_cards; DROP INDEX conversation_owner; DELETE FROM schema_migrations WHERE version=3; PRAGMA user_version=2;")
+                remove_v5(db)
+                db.executescript("DROP TABLE ai_defaults; DROP TABLE conversation_preferences; DROP TABLE api_profiles; DROP TABLE role_cards; DROP INDEX conversation_owner; DELETE FROM schema_migrations WHERE version>=3; PRAGMA user_version=2;")
             from backend.app.storage import ROLE_SCHEMA
             with patch("backend.app.storage.ROLE_SCHEMA", (*ROLE_SCHEMA, "INVALID SQL")):
                 with self.assertRaises(ConversationError): Store(path)
@@ -190,5 +222,5 @@ class RoleMigrationTests(unittest.TestCase):
             store = Store(path)
             try:
                 self.assertEqual(store.preferences(aid, cid)["memory"], "")
-                self.assertEqual(store.call(lambda: store.db.execute("PRAGMA user_version").fetchone()[0]), 3)
+                self.assertEqual(store.call(lambda: store.db.execute("PRAGMA user_version").fetchone()[0]), 7)
             finally: store.close()

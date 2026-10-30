@@ -6,6 +6,8 @@ import BrandHeader from "../components/BrandHeader.vue";
 import ConversationsPanel from "../components/ConversationsPanel.vue";
 import ConversationSettingsPanel from "../components/ConversationSettingsPanel.vue";
 import RoleCardsPanel from "../components/RoleCardsPanel.vue";
+import ApiProfilesPanel from "../components/ApiProfilesPanel.vue";
+import LogsPanel from "../components/LogsPanel.vue";
 import { useAccountsStore } from "../stores/accounts";
 import { formatTime, reasonText } from "../reasons";
 const route = useRoute();
@@ -21,6 +23,7 @@ const entries = [
   { key: "role-cards", label: "角色卡", icon: "▤" },
   { key: "agents", label: "Agent", icon: "◇" },
   { key: "settings", label: "设置", icon: "⚙" },
+  { key: "logs", label: "日志", icon: "▦" },
 ];
 const title = computed(
   () => entries.find((item) => item.key === section.value)?.label ?? "账号概览",
@@ -61,12 +64,11 @@ watch(
               :to="`/workspace/${account.account_id}/${entry.key}`"
               :class="{ active: section === entry.key }"
               ><span aria-hidden="true">{{ entry.icon }}</span
-              >{{ entry.label
-              }}<span v-if="entry.key === 'agents'" class="soon-dot"
-            /></RouterLink>
+              >{{ entry.label }}</RouterLink
+            >
           </nav>
           <div class="sidebar-note">
-            会话与记忆按账号独立<br />角色卡由所有账号共用
+            会话与记忆按账号独立<br />角色卡、API 及默认选择全账号共用
           </div>
         </template>
       </aside>
@@ -160,6 +162,11 @@ watch(
           :account-id="account.account_id"
         />
         <RoleCardsPanel v-else-if="section === 'role-cards'" />
+        <ApiProfilesPanel v-else-if="section === 'agents'" />
+        <LogsPanel
+          v-else-if="section === 'logs' && account.account_id"
+          :account-id="account.account_id"
+        />
         <ConversationSettingsPanel
           v-else-if="section === 'settings' && account.account_id"
           :account-id="account.account_id"

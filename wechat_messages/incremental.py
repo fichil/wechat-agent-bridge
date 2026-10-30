@@ -117,6 +117,9 @@ def changes(reader, request, deadline):
                     upper = old.get("upper_id") if old and not reset else None
                     upper = min(upper, maximum) if upper is not None else maximum
                     safe = ",".join(f"CASE WHEN length(m.{c})<={MAX_CONTENT} THEN m.{c} ELSE NULL END AS {c}" for c in ("message_content","compress_content","packed_info_data"))
+                    source_columns = {r[1] for r in db.execute(f'PRAGMA table_info("{table}")')}
+                    safe += (f",CASE WHEN length(m.source)<={MAX_CONTENT} THEN m.source ELSE NULL END AS source"
+                             if "source" in source_columns else ",NULL AS source")
                     oversized = " OR ".join(f"COALESCE(length(m.{c}),0)>{MAX_CONTENT}" for c in ("message_content","compress_content","packed_info_data"))
                     projection = f"SELECT m.local_id,m.server_id,m.local_type,m.sort_seq,m.create_time,m.real_sender_id,{safe},n.user_name AS sender_username,({oversized}) AS oversized FROM \"{table}\" m LEFT JOIN Name2Id n ON m.real_sender_id=n.rowid"
                     rows = [dict(r, shard=shard) for r in db.execute(projection+" WHERE m.local_id>? AND m.local_id<=? ORDER BY m.local_id LIMIT ?", (low, upper, budget))]

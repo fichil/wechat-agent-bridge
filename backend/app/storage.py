@@ -1,5 +1,6 @@
 """Local archive. All SQL, transactions and checkpoints belong to one thread."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import datetime, timezone
 import base64
 import hashlib
@@ -11,6 +12,11 @@ from uuid import uuid4
 
 from .conversations import ConversationError
 from .role_storage import RoleStoreMixin, ROLE_SCHEMA
+from .ai_storage import AiStoreMixin, AI_SCHEMA
+from .ai_execution_storage import AiExecutionStoreMixin, EXECUTION_SCHEMA
+from .ai_execution_models import DEFAULT_INSTRUCTIONS
+from .log_storage import LogStoreMixin, LOG_SCHEMA
+from .delivery_storage import DeliveryStoreMixin, DELIVERY_SCHEMA
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / ".local" / "bridge.sqlite3"
@@ -75,7 +81,7 @@ CREATE TABLE cursors(token TEXT PRIMARY KEY, account_id TEXT NOT NULL, conversat
 """
 
 
-class Store(RoleStoreMixin):
+class Store(DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
     def __init__(self, path=DEFAULT_PATH, settings=None, image_limit=IMAGE_LIMIT):
         self.path, self.image_limit = Path(path) if str(path) != ":memory:" else path, image_limit
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="archive-db")
@@ -125,9 +131,17 @@ class Store(RoleStoreMixin):
         self.db.execute("PRAGMA temp_store=MEMORY")
         self.db.execute("PRAGMA cache_size=-16384")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3):
+        if version not in (0, 1, 2, 3, 4, 5, 6, 7):
             self.db.close()
             raise ConversationError("storage_version_unsupported", "数据库版本高于当前程序，请使用匹配版本。", 503)
+        if 0 < version < 7 and str(self.path) != ':memory:':
+            backup_dir = self.path.parent / 'migration-backups'
+            backup_dir.mkdir(exist_ok=True)
+            backup_path = backup_dir / ('before-v7-' + uuid4().hex + '.sqlite3')
+            with closing(sqlite3.connect(backup_path)) as backup:
+                self.db.backup(backup)
+                if backup.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                    raise ConversationError('backup_failed', '升级前备份未通过校验。', 503)
         if not version:
             # Explicit transaction: a failed migration leaves no half-created schema.
             try:
@@ -153,11 +167,47 @@ class Store(RoleStoreMixin):
                     self.db.execute(statement)
                 self.db.execute("INSERT INTO schema_migrations VALUES(3,?)", (now(),))
                 self.db.execute("PRAGMA user_version=3")
+        if version < 4:
+            with self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                for statement in AI_SCHEMA:
+                    self.db.execute(statement)
+                self.db.execute("INSERT INTO schema_migrations VALUES(4,?)", (now(),))
+                self.db.execute("PRAGMA user_version=4")
+        if version < 5:
+            with self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                for statement in EXECUTION_SCHEMA:
+                    self.db.execute(statement)
+                self.db.execute("INSERT INTO ai_settings VALUES(1,?,0)", (DEFAULT_INSTRUCTIONS,))
+                self.db.execute("INSERT INTO ai_sessions(account_id,conversation_id,auto_pending) SELECT account_id,conversation_id,ai_enabled FROM conversation_preferences")
+                self.db.execute("INSERT INTO schema_migrations VALUES(5,?)", (now(),))
+                self.db.execute("PRAGMA user_version=5")
+        if version < 6:
+            with self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                for statement in LOG_SCHEMA:
+                    self.db.execute(statement)
+                self._log_migrate()
+                self.db.execute("INSERT INTO schema_migrations VALUES(6,?)", (now(),))
+                self.db.execute("PRAGMA user_version=6")
+        if version < 7:
+            with self.db:
+                self.db.execute('BEGIN IMMEDIATE')
+                for statement in DELIVERY_SCHEMA:
+                    self.db.execute(statement)
+                for row in self.db.execute('SELECT account_id,conversation_id FROM conversation_preferences WHERE ai_enabled=1').fetchall():
+                    self._delivery_enable(*row)
+                self.db.execute('INSERT INTO schema_migrations VALUES(7,?)', (now(),))
+                self.db.execute('PRAGMA user_version=7')
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             self.db.close()
             raise ConversationError("storage_corrupt", "数据库校验失败，请保留原文件后恢复备份。", 503)
         try:
             with self.db:
+                self._ai_recover()
+                self._delivery_recover()
+                self._log_recover()
                 if settings and not self.db.execute("SELECT 1 FROM metadata WHERE key='settings_imported'").fetchone():
                     for key, value in settings._load().items():
                         self.db.execute("INSERT OR IGNORE INTO conversation_settings VALUES(?,?)", (key, dump(value)))
@@ -375,7 +425,7 @@ class Store(RoleStoreMixin):
             start = anchor.get("offset", 0)
             items = []
             preferences = {r["conversation_id"]: r for r in self.db.execute(
-                "SELECT conversation_id,ai_enabled,revision FROM conversation_preferences WHERE account_id=? AND conversation_id IN ("
+                "SELECT conversation_id,ai_enabled,revision,role_card_code,api_profile_id FROM conversation_preferences WHERE account_id=? AND conversation_id IN ("
                 + ",".join("?" for _ in ids[start:start+size]) + ")", (aid, *ids[start:start+size])).fetchall()}
             for cid in ids[start:start+size]:
                 row = self._conversation(aid, cid)
@@ -384,6 +434,12 @@ class Store(RoleStoreMixin):
                 preference = preferences.get(cid)
                 item["ai_enabled"] = bool(preference["ai_enabled"]) if preference else False
                 item["preferences_revision"] = preference["revision"] if preference else 0
+                item["ai_configuration_ready"] = self._effective(preference)["ready"] if item["ai_enabled"] else None
+                counts = self._ai_counts(aid, cid)
+                item.update(ai_pending_count=counts["pending_count"], ai_waiting_count=counts["waiting_count"],
+                            ai_paused=bool(self._ai_session(aid,cid)["paused"]), memory_revision=self._preferences(aid,cid)["memory_revision"])
+                latest_run = self.db.execute("SELECT status FROM ai_runs WHERE account_id=? AND conversation_id=? ORDER BY rowid DESC LIMIT 1", (aid,cid)).fetchone()
+                item["ai_run_status"] = latest_run[0] if latest_run else None
                 items.append(item)
             with self.db:
                 next_cursor = self._cursor(aid, None, "conversations", dict(ids=ids, offset=start+size, rules=rules, raw=total_raw, revision=anchor.get("revision", account["revision"]))) if start+size < len(ids) else None
@@ -400,7 +456,7 @@ class Store(RoleStoreMixin):
                 needs_sync=not bool(meta), revision=account["revision"], **extra)
         return self.call(query)
 
-    def _upsert_message(self, aid, cid, item, generation="legacy"):
+    def _upsert_message(self, aid, cid, item, generation="legacy", incremental=False):
         row = dict(item)
         ref, key = row.pop("_ref"), row.pop("_key")
         generation = ref.get("generation", generation)
@@ -416,6 +472,7 @@ class Store(RoleStoreMixin):
         row.update(message_id=mid, sort_key=order_key(key))
         payload = dump(row)
         if old and old[1] == payload and old[2] == dump(ref):
+            self._delivery_note_message(aid, cid, row, ref, incremental)
             # Rotate pending transcript checks without emitting a content change.
             self.db.execute("UPDATE messages SET updated_at=? WHERE message_id=?", (now(), mid))
             return False
@@ -423,6 +480,8 @@ class Store(RoleStoreMixin):
         self.db.execute("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,conversation_id,identity_key) DO UPDATE SET "
             "shard=excluded.shard,generation=excluded.generation,local_id=excluded.local_id,sort_key=excluded.sort_key,payload=excluded.payload,source_ref=excluded.source_ref,source_key=excluded.source_key,updated_at=excluded.updated_at,change_seq=excluded.change_seq",
             (mid, aid, cid, identity, sid, ref["shard"], generation, ref["local_id"], row["sort_key"], payload, dump(ref), dump(key), now(),revision))
+        self._ai_note_message(aid, cid, row)
+        self._delivery_note_message(aid, cid, row, ref, incremental)
         return True
 
     def _range(self, aid, cid, lower, upper):
@@ -469,7 +528,7 @@ class Store(RoleStoreMixin):
                 next_after=[changed[-1]["change_seq"],changed[-1]["message_id"]] if more else [upper,"~"]
                 with self.db:
                     newer=self._cursor(aid,cid,"messages",dict(mode="changes",after=next_after,upper=upper if more else None))
-                items=sorted((json.loads(r["payload"]) for r in changed),key=lambda item:(item["sort_key"],item["message_id"]))
+                items=sorted((self._ai_message(json.loads(r["payload"]),aid,cid) for r in changed),key=lambda item:(item["sort_key"],item["message_id"]))
                 return dict(account_id=aid,conversation_id=cid,snapshot_id=str(upper),observed_at=now(),items=items,
                     older_cursor=None,newer_cursor=newer,has_more=more,issues=[],status="complete",needs_sync=False,
                     coverage="partial",last_synced_at=conv["last_synced_at"],source_state=account["source_state"],revision=upper)
@@ -500,7 +559,7 @@ class Store(RoleStoreMixin):
             extra = self.db.execute("SELECT value FROM metadata WHERE key=?", ("history:"+cid,)).fetchone()
             issues = json.loads(extra[0])["issues"] if extra else []
             return dict(account_id=aid, conversation_id=cid, snapshot_id=str(account["revision"]),
-                observed_at=conv["last_synced_at"] or now(), items=[json.loads(r["payload"]) for r in reversed(rows)],
+                observed_at=conv["last_synced_at"] or now(), items=[self._ai_message(json.loads(r["payload"]),aid,cid) for r in reversed(rows)],
                 older_cursor=older, newer_cursor=newer, has_more=older_exists, issues=issues,
                 status="partial" if needs or issues else "complete", needs_sync=needs,
                 coverage="complete" if segment and not segment[0] else "partial" if rows or segment else "not_synced",
@@ -533,6 +592,9 @@ class Store(RoleStoreMixin):
                         self.db.execute("DELETE FROM media_cache WHERE cache_key=?", (old[0],))
                         total -= old[1]
                     event = self._changed(aid, ["images"], [cid])
+                    self.db.execute("UPDATE ai_sessions SET auto_pending=1 WHERE account_id=? AND conversation_id=?", (aid, cid))
+                    self.db.execute("UPDATE messages SET change_seq=? WHERE message_id=?", (event["revision"], mid))
+                    event["resources"].append("messages")
                 row = self.db.execute("SELECT * FROM media_cache WHERE cache_key=? AND account_id=?", (key, aid)).fetchone()
                 if row:
                     self.db.execute("UPDATE media_cache SET used_at=? WHERE cache_key=?", (time.time(), key))
@@ -571,7 +633,9 @@ class Store(RoleStoreMixin):
                         self.db.execute("DELETE FROM history_ranges WHERE conversation_id=?", (cid,))
                         changed.add(cid)
                     for item in group.get("items", []):
-                        if cid and self._upsert_message(aid, cid, item, group["generation"]):
+                        previous = self.db.execute('SELECT last_id,generation FROM sync_state WHERE account_id=? AND shard=? AND table_name=?', (aid,group['shard'],group['table_name'])).fetchone()
+                        fresh = (not group.get('reset') and item['_ref']['local_id'] > (previous['last_id'] if previous and previous['generation']==group['generation'] else group.get('baseline_id',0)))
+                        if cid and self._upsert_message(aid, cid, item, group["generation"], incremental=fresh):
                             changed.add(cid)
                     if cid and group.get("items"):
                         self.db.execute("UPDATE conversations SET last_synced_at=? WHERE conversation_id=?", (now(), cid))
@@ -607,6 +671,6 @@ class Store(RoleStoreMixin):
             result = json.loads(row[0]) if row else None
             if result and result.get("page"):
                 ids=result["page"].pop("_message_ids",[])
-                result["page"]["items"]=[json.loads(r[0]) for mid in ids if (r:=self.db.execute("SELECT payload FROM messages WHERE message_id=? AND account_id=?",(mid,result["account_id"])).fetchone())]
+                result["page"]["items"]=[self._ai_message(json.loads(r[0]),result["account_id"],result["conversation_id"]) for mid in ids if (r:=self.db.execute("SELECT payload FROM messages WHERE message_id=? AND account_id=?",(mid,result["account_id"])).fetchone())]
             return result
         return self.call(query)

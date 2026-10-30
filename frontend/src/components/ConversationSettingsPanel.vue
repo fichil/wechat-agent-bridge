@@ -1,12 +1,27 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from "vue";
 import { api } from "../api";
+import AiSettingsPanel from "./AiSettingsPanel.vue";
 import {
   defaultExclusions,
   exclusionOptions,
   conversationErrorText,
 } from "../conversation-options";
 const props = defineProps<{ accountId: string }>();
+const activeTab = ref<"filters" | "ai">("filters");
+function moveTab(event: KeyboardEvent) {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  activeTab.value =
+    event.key === "Home"
+      ? "filters"
+      : event.key === "End"
+        ? "ai"
+        : activeTab.value === "filters"
+          ? "ai"
+          : "filters";
+  document.getElementById(`settings-tab-${activeTab.value}`)?.focus();
+}
 const exclusions = ref(defaultExclusions());
 const loading = ref(true);
 const saving = ref(false);
@@ -64,8 +79,50 @@ function reset() {
 </script>
 
 <template>
-  <div class="settings-menu"><span aria-current="page">会话过滤</span></div>
-  <form @submit.prevent="save">
+  <div
+    class="settings-menu"
+    role="tablist"
+    aria-label="设置分类"
+    @keydown="moveTab"
+  >
+    <button
+      id="settings-tab-filters"
+      type="button"
+      role="tab"
+      :aria-selected="activeTab === 'filters'"
+      aria-controls="settings-panel-filters"
+      :tabindex="activeTab === 'filters' ? 0 : -1"
+      @click="activeTab = 'filters'"
+    >
+      会话过滤
+    </button>
+    <button
+      id="settings-tab-ai"
+      type="button"
+      role="tab"
+      :aria-selected="activeTab === 'ai'"
+      aria-controls="settings-panel-ai"
+      :tabindex="activeTab === 'ai' ? 0 : -1"
+      @click="activeTab = 'ai'"
+    >
+      AI 提示词
+    </button>
+  </div>
+  <div
+    v-show="activeTab === 'ai'"
+    id="settings-panel-ai"
+    role="tabpanel"
+    aria-labelledby="settings-tab-ai"
+  >
+    <AiSettingsPanel />
+  </div>
+  <form
+    v-show="activeTab === 'filters'"
+    id="settings-panel-filters"
+    role="tabpanel"
+    aria-labelledby="settings-tab-filters"
+    @submit.prevent="save"
+  >
     <div class="settings-toolbar">
       <div class="settings-copy">
         <p class="intro-copy">

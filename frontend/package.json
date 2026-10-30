@@ -15,7 +15,8 @@
     "format": "prettier --write src tests e2e scripts *.ts *.json",
     "format:check": "prettier --check src tests e2e scripts *.ts *.json",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:ai": "playwright test --config playwright.integration.config.ts"
   },
   "dependencies": {
     "element-plus": "2.14.7",

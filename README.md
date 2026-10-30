@@ -50,7 +50,7 @@ npm run dev
 微信源数据仍使用共享只读句柄、已提交 WAL 校验、逐页认证和内存解密。
 已捕获并验证的快照不会因为解密期间发生后续写入而被丢弃；后续检查继续追上新提交。
 工作进程无窗口、低优先级，文件/内存读取限速 32 MiB/s；沿用 384 MiB 解密缓存、单库/WAL 256 MiB、单分片 60 秒及消息任务 180 秒上限。
-这些是处理预算，不代表进程总内存上限。不操作窗口、焦点、鼠标、键盘、剪贴板，不注入、不自动提权、不发送消息或标记已读。
+这些是读取预算，不代表进程总内存上限。读取链路不操作窗口、焦点、鼠标、键盘、剪贴板，不注入、不自动提权或标记已读。自动回复使用下文独立的原生发送进程。
 
 表情下载只接受来自绑定消息或同账号表情库的地址，不接受 API 调用方提供 URL。允许 `qpic.cn` 及其子域，另精确允许本机 4.1.15.56 样本实际使用的 `vweixinf.tc.qq.com`。每次跳转都重新检查域名及 DNS 公网地址，并将连接固定至已验证 IP；不使用系统代理或改变代理设置，不携带 Cookie。最多两次跳转，网络总预算 20 秒、限速 1 MiB/s，仍受单媒体任务 60 秒预算约束。表情校验最多 500 帧、累计解码 1 亿像素；超限、未知加密格式、下载失败均返回独立原因，不把静态缩略图当作完整动画。
 
@@ -65,9 +65,25 @@ npm run dev
 
 每条会话右侧可切换 AI 开关或打开设置。设置占用右侧聊天详情区域，选择器只显示角色名称和编码；记忆是可随时修改的长文本，初始为空。开关立即保存，角色选择和记忆通过“保存会话设置”提交；关闭 AI、更换或取消角色卡均保留记忆。离开未保存的编辑时可保存、放弃或关闭提示继续编辑。
 
-这些功能仅管理本地配置，当前不调用模型、不自动回复、不生成记忆。会话配置按账号和会话隔离，微信退出或服务重启后仍保留；微信同步不会覆盖配置。角色卡修改对全部引用会话生效。多页面编辑使用修订号避免覆盖，冲突时保留草稿并提示重新加载。
+开启会话 AI 后，系统按批次处理本地未纳入记忆的消息，生成回复并更新会话记忆。具备实时触发资格的回复在本机发送验收通过后自动发送至微信；历史批次只更新记忆。会话配置按账号和会话隔离，微信退出或服务重启后仍保留；微信同步不会覆盖配置。角色卡修改对全部引用会话生效。多页面编辑使用修订号避免覆盖，冲突时保留草稿并提示重新加载。
 
-数据保存在 `.local/bridge.sqlite3`，数据库版本升级至 3，和聊天归档一样不进入源码备份。升级前备份方式见 [数据库说明](docs/database.md)。实现参考 [Character Card V2 规范](https://github.com/malfoyslastname/character-card-spec-v2/blob/main/spec_v2.md)及 [SillyTavern 可编辑会话记忆](https://docs.sillytavern.app/extensions/summarize/)，本项目仅实现配置存储和编辑，不执行规范中的模型提示或开场白行为。
+数据保存在 `.local/bridge.sqlite3`，数据库版本升级至 7，和聊天归档一样不进入源码备份。升级前备份方式见 [数据库说明](docs/database.md)。实现参考 [Character Card V2 规范](https://github.com/malfoyslastname/character-card-spec-v2/blob/main/spec_v2.md)及 [SillyTavern 可编辑会话记忆](https://docs.sillytavern.app/extensions/summarize/)，角色卡作为每次请求的角色资料传入，不自动将开场白发送到微信。
+
+### Agent API 配置与全局默认
+
+侧栏 Agent 支持新增、修改、删除 API 配置及设为默认。API 配置、角色卡和两项默认选择均由所有微信账号共用；会话可分别选择指定角色卡、指定 API，或“使用全局默认”。默认继承不复制 ID，因此切换全局默认后，继承它的会话立即生效；显式选择的会话保持原选择。
+
+API 配置包含名称、服务商、协议、基础地址、模型名和密钥。预设覆盖 OpenAI、Anthropic、Gemini、Grok、DeepSeek，另支持自定义服务；协议包括 Responses、Chat Completions、Anthropic Messages 和 Gemini GenerateContent。Gemini 可切换 OpenAI 兼容入口，Anthropic 可填写 API 版本和工作空间 ID。地址和模型可编辑；保存先校验格式，再使用合成数据进行真实文本生成和 JSON 测试；测试通过后才提交配置。图片能力单独探测，纯文字 API 仍可保存。测试可能产生 API 费用。
+
+密钥使用当前 Windows 用户的 DPAPI 加密后存入 SQLite，API 查询不返回明文或密文。新增必填；编辑框留空时不提交密钥，保留已有值，填入新值则替换。迁移到其他电脑或 Windows 用户后通常需要重新填写；解密失败会提示，不降级为明文。密钥不进入浏览器持久存储、通知或源码备份。
+
+角色卡与 API 配置各自在从空列表创建第一条时自动设为默认；后续创建不覆盖默认。升级已有数据时，最早创建的角色卡设为默认。默认标记属于本地元数据，不改变角色卡 V2 导出文件。未使用的默认项可删除，删除后清空默认值，不自动选下一条。
+
+开启 AI 前，后端在事务中解析会话指定项或全局默认，并检查角色卡、API 和密钥能否读取；缺失时开关保持关闭，页面提供配置入口。API 还必须通过文本与 JSON 测试；测试结果只代表该时刻的结果。旧的已开启配置若缺失依赖，会显示“已开启 · 配置缺失”。关闭 AI、修改记忆不受缺失配置限制；修改已开启会话的绑定必须通过校验。
+
+显式绑定的角色卡/API（含已关闭 AI 的会话）以及被已开启会话通过默认值继承的配置都计入引用数量，使用中禁止删除。要删除被默认继承的配置，可先更换全局默认或关闭相关会话 AI；显式引用需先解除或更换。所有更改通过 WebSocket 同步到其他账号页面，未保存草稿保留。
+
+配置方案参考 [SillyTavern Connection Profiles](https://docs.sillytavern.app/usage/core-concepts/connection-profiles/)、[OpenAI Responses](https://developers.openai.com/api/docs/guides/migrate-to-responses)、[Anthropic Messages](https://platform.claude.com/docs/en/api/overview)、[Gemini](https://ai.google.dev/api/generate-content)、[Gemini 兼容接口](https://ai.google.dev/gemini-api/docs/openai)、[Grok](https://docs.x.ai/developers/quickstart)、[DeepSeek](https://api-docs.deepseek.com/) 和 [Windows DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata)。具体模型与服务商的实际兼容性仍需通过配置测试验证。
 
 ## JSON 接口
 
@@ -97,10 +113,17 @@ npm run dev
 | `/role-cards/delete` | `card_code`、`expected_revision` | 删除未被引用的卡片，返回 JSON 结果 |
 | `/conversation-preferences/query` | `account_id`、`conversation_id` | 当前会话的开关、角色编码、记忆和修订号 |
 | `/conversation-preferences/update` | 身份、`expected_revision`、待修改字段 | 保存会话配置，不修改省略的字段 |
+| `/api-profiles/query` | `{}` | 全局 API 配置、密钥可读状态、引用数量和服务商预设 |
+| `/api-profiles/get` | `profile_id` | 单个配置，不含密钥 |
+| `/api-profiles/create` | `name/provider/protocol/base_url/model/api_key`，可选 `anthropic_version/workspace_id` | 新建配置，201；密钥加密保存 |
+| `/api-profiles/update` | `profile_id/expected_revision`、完整配置字段，可省略 `api_key` | 更新配置；省略密钥表示保留，空值拒绝 |
+| `/api-profiles/delete` | `profile_id/expected_revision` | 删除未使用配置，默认引用同步清空 |
+| `/ai-defaults/query` | `{}` | 全局默认角色卡、API ID 和独立修订号 |
+| `/ai-defaults/update` | `expected_revision`、`role_card_code` 和/或 `api_profile_id` | 选择全局默认项；省略字段保持原值，不接受空值 |
 
-会话列表额外返回 `ai_enabled` 和 `preferences_revision`，不携带记忆。配置未保存时返回 `ai_enabled=false`、`role_card_code=null`、`memory=""`、`revision=0`。更新可提交 `ai_enabled`、`role_card_code` 和 `memory` 中一项或多项；`role_card_code=null` 取消角色选择，`memory=""` 明确清空记忆，其余字段不能用 `null` 清空。未变化的配置保存不递增修订号。
+会话列表额外返回 `ai_enabled` 和 `preferences_revision`，不携带记忆。配置未保存时返回 `ai_enabled=false`、`role_card_code=null`、`api_profile_id=null`、`memory=""`、`revision=0`。更新可提交 `ai_enabled`、`role_card_code`、`api_profile_id` 和 `memory` 中一项或多项；`role_card_code=null` 使用全局默认角色卡，`memory=""` 明确清空记忆，`api_profile_id=null` 使用全局默认 API，其余字段不能用 `null` 清空。查询另返回 `effective`（实际生效项、来源、可用状态与缺失原因）；会话列表增加 `ai_configuration_ready`。未变化的配置保存不递增修订号。
 
-新增错误包括 `409 revision_conflict`、`409 role_card_in_use` 和 `404 role_card_not_found`。输入不合法继续返回 `422 invalid_request`。角色卡通知使用全局 `resources=["role_cards"]`；配置通知包含账号、会话 ID 和 `conversation_preferences/conversations` 资源名，不包含角色正文或记忆。重连重新读取，正在编辑的草稿不会被通知覆盖。
+新增错误包括 `409 revision_conflict`、`409 role_card_in_use` 和 `404 role_card_not_found`。输入不合法继续返回 `422 invalid_request`。角色卡、API 和默认值通知使用全局 `role_cards/api_profiles/ai_defaults/conversation_preferences/conversations` 资源名；配置通知包含账号、会话 ID 和 `conversation_preferences/conversations` 资源名，不包含角色正文或记忆。重连重新读取，正在编辑的草稿不会被通知覆盖。
 
 每页 1–100 条，默认 50。分页游标不透明、绑定账号和会话、24 小时有效；过滤条件变化或游标过期返回 `409 cursor_expired`。
 消息 `older_cursor` 用于历史，`newer_cursor` 用于 SQLite 中的变更流，后者可捕获低排序值迟到插入及已存在消息的内容更新；`has_more=true` 时继续排空该变更批次。
@@ -131,6 +154,7 @@ npm run check:api
 npm test
 npm run build
 npm run test:e2e
+npm run test:e2e:ai
 Pop-Location
 # 十万条合成消息，临时数据库，绝不访问微信
 .\.venv-backend\Scripts\python.exe -B -X utf8 scripts\verify_archive_performance.py
@@ -318,3 +342,51 @@ if __name__ == '__main__':
 [extract_avatars.py](https://github.com/xiangruiai/xiangrui-toolkit/blob/main/skills/%E5%86%85%E5%AE%B9%E8%AE%BE%E8%AE%A1/group-daily/scripts/extract_avatars.py)。
 本模块独立实现了加密快照、本人精确查询、独立错误状态和时间/大小限制，
 没有引入该项目的 CLI、转写或模型依赖。
+
+
+### 全局 AI 提示词、增量记忆与测试
+
+设置页的“AI 调用设置”由所有账号共用。每次业务请求含全局提示词、角色卡、当前会话记忆和未处理消息；响应严格要求 `{"memory":"完整新记忆","reply":"本次回复"}`。请求另外携带 `reply_allowed`、本轮触发消息 ID 和最近回复的发送状态；强制协议要求以发送状态为准，不把生成内容当作已发送事实。每条消息带原始时间；时间缺失明确标为未知。
+
+首次启用分批处理已在本地的消息，不主动补拉全部微信历史。后续对方新消息自动触发，本人消息随下次对方消息或手动处理纳入。每批最多 50 条、4 张图片，文字 JSON 最多 64 KiB，请求体最多 20 MiB；单条或记忆超限会提示，不静默截断。全局最多两个模型请求并发，同一会话串行。
+
+图片、表情包复用本地缓存，以 Base64 放入模型的图片输入字段；动图取首帧，不改原始缓存。图片模型未验证或不支持时等待；未转写语音等待微信转写完成，之后只发送转写文字。视频与附件内容解析本次不支持。
+
+消息标签包括待处理、等待转写／图片、暂不支持、处理中、已纳入记忆和失败。覆盖记录绑定实际内容指纹；修正消息、补齐转写会重新处理。记忆与本批标签在同一 SQLite 事务提交。手工修改记忆有独立修订号，旧响应无法覆盖；关闭 AI 取消本地结果应用。失败暂停自动调用，通过“重试并恢复自动处理”继续，不自动重复可能已计费的请求。
+
+Agent 中“删除 API 配置”右侧可测试已保存配置。修改候选配置测试失败保留旧值；测试任务只存状态与公开结果，不存候选密钥。已有 v4 API 升级后标为未验证，原有 AI 开关保留，通过测试后才能执行。
+
+隐藏启动的服务可用 `.venv-backend\Scripts\python.exe scripts/dev_server.py --stop` 请求正常停止，等待后端退出后再备份和重启。该入口只操作当前项目启动器登记的进程，后台模型任务会先完成，SQLite 再关闭。
+
+实现参考 [SillyTavern 增量摘要](https://docs.sillytavern.app/extensions/summarize/)、[OpenAI 结构化输出](https://developers.openai.com/api/docs/guides/structured-outputs)、[Claude 图片输入](https://platform.claude.com/docs/en/build-with-claude/vision)及 [DeepSeek JSON Output](https://api-docs.deepseek.com/guides/json_mode/)。验收与切换记录见 [AI 执行验收](docs/acceptance-ai-execution-2026-10-29.md)。
+
+### 独立日志
+
+左侧“设置”下方的“日志”集中展示 AI 调用和微信后端读取。会话页仅保留微信消息、AI 开关及会话设置；生成回复、批次、待处理／等待素材明细、暂停原因、手动处理和重试入口均移入日志页。日志按当前账号隔离，全局 API 合成测试日志可由所有账号查看。
+
+每个模型 HTTP 尝试分别保存配置名称／模型／协议／修订号、实际输入快照、协议请求 JSON、响应 JSON 或非 JSON 错误正文、解析结果和本地回写结果。JSON 详情按需加载，可折叠和复制；图片和二进制替换为 MIME、大小、指纹等摘要。密钥、认证头、Cookie 和解密材料会在写入前脱敏。微信来源日志记录扫描、会话、消息、图片及增量同步；相同的自动无变化检查合并次数，普通页面查询不产生日志。
+
+日志仅存本机，默认保留 7 天，正文上限 512 MiB，清理时保护运行记录。清空日志不会清空聊天、记忆、消息处理标记或任务去重记录。日志失败只提示诊断记录异常，不重发模型请求或改变业务结果。旧任务仅迁入已保存的历史摘要，以前未保存的请求、响应和输入记忆显示“未记录”。
+
+相关接口：`POST /api/v1/logs/query|get|clear`、`POST /api/v1/ai-runs/sessions/query`、`POST /api/v1/ai-runs/messages/query`。日志 WebSocket 通知只包含变更元数据，不包含正文。验收见 [独立日志验收](docs/acceptance-logs-2026-10-29.md)。
+
+
+### 微信原生自动回复（v7）
+
+会话开关“自动回复微信”控制生成和发送。私聊只回复启用后实时增量中的新消息；群聊只回复 `source/msgsource/atuserlist` 精确包含当前账号的消息，支持压缩 source。不以昵称文本判断，`@所有人`、无法确认的来源均不触发。普通群消息、历史补录和已回复消息的内容修正只更新记忆。本人消息进入后续上下文；手工回复不取消本轮 AI 回复。
+
+连续触发采用 3 秒合并窗口；模型执行期间的新消息进入下一轮。同会话生成、发送串行，每个账号独立排队。AI 结果、触发消费和待发送分段在同一 SQLite 事务保存，长回复按 UTF-8 字节限制拆分并保留中文与组合 emoji，空回复不发送。离线时保留队列，恢复后继续；关闭 AI 取消未提交发送，已经提交的原生操作等待结果。
+
+日志页分别展示生成状态、发送状态和每段进度。明确未发出的失败项可“重试发送原回复”，不会再次调用模型。原生提交后超时或进程中断标为“结果不确定”，暂停该会话后续发送；核对微信后可确认不确定的段已发出，或放弃本条剩余发送并恢复。原生回执、人工确认和归档回读分别记录，回读匹配不自动解除不确定状态。
+
+发送通道由独立隐藏、低优先级工作进程调用微信内部文本构建与任务调度；不调用窗口、输入或剪贴板操作，不切换会话或修改草稿，不增加接收 Hook。每次核对账号原始 ID、进程创建时间、DLL 大小和 SHA-256、已加载代码及对象布局；未知构建或身份变化立即阻止发送。原生模块仍被任务引用时保留，不强制卸载。Windows/MSVC x64 构建：
+
+```powershell
+powershell -NoProfile -File scripts/build_native_send.ps1
+# 显式验收，仅向在线账号的 filehelper 发送 BRIDGE_TEST_ 开头的测试文本：
+.venv-backend\Scripts\python.exe scripts/verify_native_send_live.py --run
+```
+
+必须先完成本机兼容、回执、归档、窗口、焦点、输入、剪贴板和草稿验收，再登记 `.local/native-send-acceptance.json`。验收脚本只生成报告，不自动开放发送；无法观察的场景标为无法判定。许可、精确指纹和修改说明见 [native_send/NOTICE.md](native_send/NOTICE.md)。文本发送最小实现来自 [helper 固定提交](https://github.com/Prometheus-first/helper/tree/3e65e4bdaff438dc616f32d412175842fa138763/native)，保留其许可，按已确认的个人非商业用途使用。
+
+新增接口：`POST /api/v1/wechat-send-status/query` 查询账号发送能力，`POST /api/v1/ai-deliveries/retry` 重试明确未发送的失败项，`POST /api/v1/ai-deliveries/resolve` 确认或放弃不确定结果。发送状态扩展 `AiRun.delivery`，随现有 WebSocket `ai_runs` 变更通知刷新。详细结果见 [自动回复验收](docs/acceptance-auto-reply-2026-10-30.md)。
