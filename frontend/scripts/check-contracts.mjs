@@ -7,7 +7,8 @@ const saved = await readFile(
   new URL("../src/api/schema.d.ts", import.meta.url),
   "utf8",
 );
-if (generated !== saved) {
+// Git may check out generated TypeScript with CRLF on Windows.
+if (generated !== saved.replace(/\r\n/g, "\n")) {
   console.error("Frontend API types are stale; run npm run generate:api");
   process.exitCode = 1;
 } else console.log("Frontend API types match OpenAPI");
