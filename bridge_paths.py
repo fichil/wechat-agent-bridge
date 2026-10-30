@@ -3,7 +3,8 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-DATA = Path(os.environ.get('BRIDGE_DATA_DIR', ROOT / '.local')).resolve()
+DEFAULT_DATA = ROOT / ('data' if (ROOT / 'portable-manifest.json').is_file() else '.local')
+DATA = Path(os.environ.get('BRIDGE_DATA_DIR', DEFAULT_DATA)).resolve()
 FRONTEND = ROOT / 'frontend/dist'
 NATIVE = ROOT / 'bin/native-send' if (ROOT / 'bin/native-send').is_dir() else DATA / 'native-send'
 RECEIPTS = DATA / 'native-send-receipts'

@@ -205,7 +205,7 @@ class AiExecutionStoreMixin:
         return self.call(query)
 
     def ai_candidates(self):
-        return self.call(lambda: [dict(row) for row in self.db.execute("SELECT s.account_id,s.conversation_id FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.auto_pending=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM ai_runs r WHERE r.account_id=s.account_id AND r.conversation_id=s.conversation_id AND r.status IN ('queued','running')) ORDER BY EXISTS(SELECT 1 FROM reply_triggers t WHERE t.account_id=s.account_id AND t.conversation_id=s.conversation_id AND t.epoch=s.epoch AND t.consumed_run_id IS NULL) DESC,s.rowid") if not self._delivery_blocked(row['account_id'],row['conversation_id']) and self._ai_auto_allowed(row['account_id'],row['conversation_id']) and not self._delivery_debouncing(row['account_id'],row['conversation_id'])])
+        return self.call(lambda: [dict(row) for row in self.db.execute("SELECT s.account_id,s.conversation_id FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.auto_pending=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM ai_runs r WHERE r.account_id=s.account_id AND r.conversation_id=s.conversation_id AND r.status IN ('queued','running')) ORDER BY EXISTS(SELECT 1 FROM reply_triggers t WHERE t.account_id=s.account_id AND t.conversation_id=s.conversation_id AND t.epoch=s.epoch AND t.consumed_run_id IS NULL) DESC,s.rowid") if not self._compatibility_blocked(row['account_id']) and not self._delivery_blocked(row['account_id'],row['conversation_id']) and self._ai_auto_allowed(row['account_id'],row['conversation_id']) and not self._delivery_debouncing(row['account_id'],row['conversation_id'])])
 
     def _ai_auto_allowed(self, aid, cid):
         return not self._is_group(aid, cid) or bool(self._group_reason(aid, cid))
@@ -213,17 +213,18 @@ class AiExecutionStoreMixin:
     def ai_schedule_delay(self):
         def query():
             current = time.time()
-            deadlines = [row[2]+1-current for row in self.db.execute("SELECT s.account_id,s.conversation_id,d.last_trigger_at FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) JOIN delivery_sessions d USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.paused=0 AND s.auto_pending=1 AND NOT EXISTS(SELECT 1 FROM ai_runs r WHERE r.account_id=s.account_id AND r.conversation_id=s.conversation_id AND r.status IN ('queued','running'))") if row[2]+1>current and not self._delivery_blocked(row[0],row[1])]
+            deadlines = [row[2]+1-current for row in self.db.execute("SELECT s.account_id,s.conversation_id,d.last_trigger_at FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) JOIN delivery_sessions d USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.paused=0 AND s.auto_pending=1 AND NOT EXISTS(SELECT 1 FROM ai_runs r WHERE r.account_id=s.account_id AND r.conversation_id=s.conversation_id AND r.status IN ('queued','running'))") if row[2]+1>current and not self._compatibility_blocked(row[0]) and not self._delivery_blocked(row[0],row[1])]
             return max(.01, min([3]+deadlines))
         return self.call(query)
 
     def ai_enabled_sessions(self):
-        return self.call(lambda: [dict(row) for row in self.db.execute("SELECT s.account_id,s.conversation_id FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.paused=0")])
+        return self.call(lambda: [dict(row) for row in self.db.execute("SELECT s.account_id,s.conversation_id FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.paused=0") if not self._compatibility_blocked(row["account_id"])])
 
     def start_ai_run(self, aid, cid, request_id, trigger="manual"):
         def write():
             with self.db:
                 self.db.execute("BEGIN IMMEDIATE")
+                self._compatibility_require(aid)
                 prefs = self._preferences(aid, cid)
                 old = self.db.execute("SELECT payload FROM ai_runs WHERE account_id=? AND conversation_id=? AND request_id=?", (aid, cid, request_id)).fetchone()
                 if old:
@@ -260,7 +261,7 @@ class AiExecutionStoreMixin:
                 run = json.loads(self.db.execute("SELECT payload FROM ai_runs WHERE run_id=?", (rid,)).fetchone()[0])
                 if run["status"] != "queued":
                     return None
-                if not self._group_run_allowed(run) or (run['trigger']=='auto' and not self._ai_auto_allowed(aid,cid)):
+                if self._compatibility_blocked(aid) or not self._group_run_allowed(run) or (run['trigger']=='auto' and not self._ai_auto_allowed(aid,cid)):
                     run.update(status='cancelled', completed_at=stamp(), message='当前群聊触发条件已失效。')
                     self._ai_write_run(run)
                     return None
@@ -354,7 +355,7 @@ class AiExecutionStoreMixin:
             with self.db:
                 row = self.db.execute("SELECT status,payload FROM ai_runs WHERE run_id=?", (rid,)).fetchone()
                 run = json.loads(row[1])
-                if row[0] != "running" or not self._group_run_allowed(run):
+                if row[0] != "running" or self._compatibility_blocked(aid) or not self._group_run_allowed(run):
                     return False
                 self.db.execute("UPDATE ai_message_state SET attempted_at=? WHERE run_id=? AND status='processing'", (stamp(), rid))
             return True
@@ -368,7 +369,7 @@ class AiExecutionStoreMixin:
                 if run["status"] not in ("queued", "running"):
                     return run
                 prefs, session = self._preferences(aid, cid), self._ai_session(aid, cid)
-                if not prefs["ai_enabled"] or session["epoch"] != run["epoch"] or not self._group_run_allowed(run):
+                if self._compatibility_blocked(aid) or not prefs["ai_enabled"] or session["epoch"] != run["epoch"] or not self._group_run_allowed(run):
                     run.update(status="cancelled", message="AI 已关闭，结果未应用。")
                 elif prefs["memory_revision"] != run["memory_revision"]:
                     run.update(status="conflicted", error="ai_memory_conflict", message="记忆已被手工修改，本次结果未覆盖记忆，请重试。")

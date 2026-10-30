@@ -9,7 +9,7 @@ import time
 
 from wechat_account_probe.models import ProbeError
 from wechat_account_probe.sqlcipher import (PAGE, MAX_DATABASE, stable_snapshot,
-    decrypt_snapshot, committed_frames, decrypt_page)
+    decrypt_snapshot, committed_frames, decrypt_page, logical_page_count)
 
 MAX_CACHE = 384 * 1024 * 1024
 
@@ -80,6 +80,7 @@ class DatabaseCache:
                     for number, page in updates.items():
                         check()
                         decoded[number] = decrypt_page(old.key, old.salt, page, number)
+                    count = logical_page_count(decoded.get(1, old.image[:PAGE]), count)
                     if count * PAGE > MAX_DATABASE or any(
                             n not in decoded for n in range(len(old.image)//PAGE+1, count+1)):
                         raise ProbeError("wal_page_out_of_bounds")

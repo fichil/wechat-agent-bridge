@@ -153,7 +153,8 @@ class LocalConversationReader:
         if not account.instances or not account.wxid:
             raise ProbeError("account_not_found")
         source = sorted(account.instances, key=lambda i: (i.session_id, i.pid))[0]
-        instance = Instance(source.pid, int(source.created), source.session_id, source.version)
+        instance = Instance(source.pid, int(source.created), source.session_id, source.version,
+                            source.core_sha256, source.profile_id)
         key = account.account_id, lane
         worker, retired = self._reserve(key, time.monotonic()+(timeout if heavy else .1))
         try:

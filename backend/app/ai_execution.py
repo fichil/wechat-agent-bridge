@@ -88,6 +88,7 @@ class AiExecution:
         return task.copy()
 
     def start(self, aid, cid, request_id, trigger="manual"):
+        self.bridge.compatibility.guard(aid)
         run = self.store.start_ai_run(aid, cid, request_id, trigger)
         if run["status"] == "queued":
             self.submit("run:"+run["run_id"], lambda: self.perform(aid, cid, run["run_id"]))
@@ -120,6 +121,7 @@ class AiExecution:
 
     def _perform(self, aid, cid, rid):
         try:
+            self.bridge.compatibility.guard(aid)
             self.request_images(aid, cid)
             snapshot = self.store.claim_ai_run(aid, cid, rid)
             if snapshot is None:
@@ -143,6 +145,7 @@ class AiExecution:
             reply_ids = self.store.ai_run(aid,cid,rid).get('reply_trigger_ids',[])
             envelope.update(self.store.ai_reply_envelope(aid,cid,rid))
             # Closing AI while preparing must not launch a new remote request.
+            self.bridge.compatibility.guard(aid)
             if not self.store.mark_ai_attempt(aid, cid, rid):
                 return
             run = self.store.ai_run(aid, cid, rid)
@@ -175,7 +178,7 @@ class AiExecution:
                 pass  # Missing/unverified configuration remains visible; never invokes a model.
 
     def notify(self, event):
-        if set(event.get("resources", ())) & {"messages", "conversation_preferences", "ai_runs", "api_profiles", "ai_defaults", "role_cards", "ai_settings"}:
+        if set(event.get("resources", ())) & {"compatibility", "messages", "conversation_preferences", "ai_runs", "api_profiles", "ai_defaults", "role_cards", "ai_settings"}:
             self.wake.set()
 
     def loop(self):

@@ -19,12 +19,13 @@ def dispatch(request):
     confirmation = request.get('confirmation', '')
     if action == 'status':
         state = control.status()
-        return ('后台：' + ('运行中' if state['running'] else '已停止') + '\nHTTPS：' +
-                ('本机证书/访问检查通过（公网访问需外部设备确认）' if state['https'] else '未通过或未启动') +
-                '\n域名：' + control.config().get('origin','尚未配置') +
+        access = ('SSH 私人访问：' + ('已就绪，仅监听服务器本机' if state['private_access'] else '尚未启动或未就绪') if state['access_mode'] == 'private' else
+                  'HTTPS：' + ('本机证书/访问检查通过（公网访问需外部设备确认）' if state['https'] else '未通过或未启动'))
+        return ('后台：' + ('运行中' if state['running'] else '已停止') + '\n' + access +
+                '\n地址：' + control.config().get('origin','尚未配置') +
                 '\n迁移：' + ('等待验证和手动恢复' if state['migration_pending'] else '无待恢复迁移'))
     if action == 'setup':
-        return control.setup(request.get('origin',''), username, password, confirmation)
+        return control.setup(request.get('origin',''), username, password, confirmation, private=request.get('private') is True)
     if action == 'reset':
         return control.reset(password, confirmation)
     if action == 'start':
@@ -36,18 +37,20 @@ def dispatch(request):
     if action in ('open', 'logs', 'help'):
         target = control.config().get('origin') if action=='open' else str(control.DATA/'production') if action=='logs' else str(ROOT/'使用说明.txt')
         if not target:
-            raise ValueError('请先填写域名并保存配置。')
+            raise ValueError('请先选择访问方式并保存首次配置。')
         if action=='logs':
             (control.DATA/'production').mkdir(parents=True, exist_ok=True)
         os.startfile(target)
         return '已打开。'
-    if action in ('export','import'):
+    if action in ('export','export-config','import'):
         from .migrate import export_data, import_data
+        from .configuration import export_configuration
         path = request.get('path')
         if not path:
             raise ValueError('未选择文件。')
         control.stop()
-        value = export_data(control.DATA,path) if action=='export' else import_data(path,control.DATA)
+        value = (export_data(control.DATA,path) if action=='export' else
+                 export_configuration(control.DATA,path) if action=='export-config' else import_data(path,control.DATA))
         return json.dumps(value, ensure_ascii=False, indent=2)+'\n后台保持停止。'
     if action=='acceptance':
         if request.get('confirmed') is not True:

@@ -9,7 +9,6 @@ import struct
 from .models import ProbeError
 
 CONFIG_NAME = b'com.Tencent.WCDB.Config.Cipher'
-XOR_MASK = bytes.fromhex('d2c7442458020000004889442450488b450048844c2448488944254048584c24')
 IDENTIFIER = re.compile(r'[A-Za-z0-9_-]{6,128}\Z')
 
 
@@ -79,13 +78,15 @@ def current_account(memory, paths):
 
 
 def account_at_anchors(memory, anchors):
+    from wechat_compatibility import layout
+    fields = layout(memory)
     values = set()
     for address in anchors:
-        owner = pointer(memory, address + 16 - 0x138)
-        cfg = pointer(memory, owner + 0x68) if owner else 0
+        owner = pointer(memory, address - fields['anchor_owner_back'])
+        cfg = pointer(memory, owner + fields['app_context']) if owner else 0
         if not 0x10000 <= cfg < 0x800000000000:
             continue
-        value = remote_string(memory, cfg + 0x48)
+        value = remote_string(memory, cfg + fields['account_string'])
         if value is not None:
             values.add(value)
     if len(values) != 1:
@@ -155,26 +156,28 @@ def verify_candidates(candidates, first_page, verify_page, check=lambda: None):
 def candidates_at_names(memory, names, check=lambda: None):
     if not names:
         return set()
-    patterns = {struct.pack('<QQ', address, len(CONFIG_NAME)) for address in names}
+    fields = memory.compatibility_profile['cipher_layout']
+    mask = bytes.fromhex(fields['xor_mask'])
+    patterns = {struct.pack('<QQ', address, len(fields['config_name'].encode('ascii'))) for address in names}
     nodes = memory.find(list(patterns), private_only=True, check=check)
     candidates = set()
     for addresses in nodes.values():
         for address in addresses:
             check()
-            node = memory.read(address-16, 0x50)
-            if len(node) != 0x50:
+            node = memory.read(address-fields['node_back'], fields['node_size'])
+            if len(node) != fields['node_size']:
                 continue
-            config = struct.unpack_from('<Q', node, 0x28)[0]
-            obj = memory.read(config+0x88, 0x28)
-            if len(obj) != 0x28:
+            config = struct.unpack_from('<Q', node, fields['config_pointer'])[0]
+            obj = memory.read(config+fields['key_object'], fields['object_size'])
+            if len(obj) != fields['object_size']:
                 continue
-            data_pointer, size = struct.unpack_from('<QQ', obj, 8)
+            data_pointer, size = struct.unpack_from('<QQ', obj, fields['data_pointer'])
             if not 0 < size <= 1024:
                 continue
             blob = memory.read(data_pointer, size)
             if len(blob) != size:
                 continue
-            decoded = bytes(value ^ XOR_MASK[i % len(XOR_MASK)] for i, value in enumerate(blob))
+            decoded = bytes(value ^ mask[i % len(mask)] for i, value in enumerate(blob))
             for match in re.finditer(rb"[xX]'([0-9a-fA-F]{64,192})'", decoded):
                 text = match.group(1)
                 starts = {0, len(text)-64} | set(range(0, len(text)-63, 32))

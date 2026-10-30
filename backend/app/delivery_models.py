@@ -34,3 +34,5 @@ class SendCapability(BaseModel):
     ready: bool
     code: str
     message: str
+    profile_id: str | None = None
+    core_sha256: str | None = None

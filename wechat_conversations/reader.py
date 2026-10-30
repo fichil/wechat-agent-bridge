@@ -25,7 +25,9 @@ SPECIAL = {
 }
 IDENTITY_ERRORS = {"account_changed_during_read", "process_exited", "process_instance_changed",
                    "process_owner_changed", "process_time_unreadable", "account_not_found",
-                   "account_configuration_missing_or_ambiguous", "account_directory_missing_or_ambiguous"}
+                   "account_configuration_missing_or_ambiguous", "account_directory_missing_or_ambiguous",
+                   "client_version_unsupported", "client_binary_changed", "client_binary_unreadable",
+                   "client_binary_invalid", "account_configuration_module_missing"}
 MAX_SESSIONS = 20000
 MAX_AVATARS_TOTAL = 24 * 1024 * 1024
 
@@ -159,8 +161,8 @@ class SessionReader:
     def bind(self, deadline):
         from wechat_account_probe.native import ProcessMemory
         from wechat_account_probe.memory import current_account, bind_directory
-        if self.instance.version != "4.1.15.56":
-            raise ProbeError("client_version_unsupported")
+        from wechat_compatibility import require_profile, bind_memory
+        require_profile(self.instance, 'messages')
         if self.memory is None:
             self.memory = ProcessMemory(self.instance, deadline)
         elif self.memory.deadline != deadline:
@@ -169,6 +171,7 @@ class SessionReader:
             self.memory.read_started = time.monotonic()
         self.memory.deadline = deadline
         paths = self.memory.mapped_paths()
+        bind_memory(self.memory, paths, 'messages')
         current = current_account(self.memory, paths)
         if current != self.wxid:
             raise ProbeError("account_changed_during_read")

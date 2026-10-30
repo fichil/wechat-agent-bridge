@@ -10,6 +10,8 @@ class Instance(BaseModel):
     created: str = Field(pattern=r"^\d+$", description="Exact Windows FILETIME, decimal string")
     session_id: int
     version: str
+    core_sha256: str | None = None
+    profile_id: str | None = None
 
 
 class Avatar(BaseModel):

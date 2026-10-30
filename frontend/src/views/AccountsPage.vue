@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { useRouter } from "vue-router";
 import AccountAvatar from "../components/AccountAvatar.vue";
+import CompatibilityPanel from "../components/CompatibilityPanel.vue";
 import { useAccountsStore } from "../stores/accounts";
 import { formatTime, reasonText } from "../reasons";
 const store = useAccountsStore();
@@ -47,6 +48,7 @@ async function enter(id: string) {
       :closable="false"
       class="status-alert"
     />
+    <CompatibilityPanel />
     <section class="accounts-panel" aria-label="微信账号列表">
       <div class="panel-heading">
         <h2>

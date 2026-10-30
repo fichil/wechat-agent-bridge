@@ -1,5 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
+& python (Join-Path $PSScriptRoot 'generate_compatibility.py') --check
+if ($LASTEXITCODE -ne 0) { throw 'Compatibility header is stale.' }
 $buildPath = Join-Path $projectRoot '.local\native-send'
 New-Item -ItemType Directory -Path $buildPath -Force | Out-Null
 $vswherePath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -14,6 +16,7 @@ try {
     $manifest = @{
         dll_sha256 = (Get-FileHash -LiteralPath 'bridge_text.dll' -Algorithm SHA256).Hash.ToLower()
         sources = @{}
+        compatibility_sha256 = (Get-FileHash -LiteralPath (Join-Path $projectRoot 'wechat_compatibility\profiles.json') -Algorithm SHA256).Hash.ToLower()
     }
     foreach ($file in @('text_bridge.cpp','core_version.h')) {
         $manifest.sources[$file] = (Get-FileHash -LiteralPath (Join-Path $projectRoot "native_send\$file") -Algorithm SHA256).Hash.ToLower()

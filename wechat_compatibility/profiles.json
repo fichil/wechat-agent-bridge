@@ -1,0 +1,130 @@
+{
+  "schema": 1,
+  "profiles": [
+    {
+      "id": "wechat-4.1.15.56-x64",
+      "version": "4.1.15.56",
+      "arch": "x64",
+      "revision": 1,
+      "capabilities": {
+        "account": true,
+        "messages": true,
+        "images": true,
+        "stickers": true,
+        "send_text": true
+      },
+      "layout": {
+        "anchor_owner_back": 296,
+        "app_context": 104,
+        "account_string": 72,
+        "image_seed": 64,
+        "app_get_slot": 96,
+        "context_get_slot": 24
+      },
+      "read_schema": "wcdb-4.1",
+      "media_schema": "dat-v1-v2",
+      "native": {
+        "id": 2,
+        "abi": "msvc-x64-text-v1",
+        "rvas": {
+          "application": 196685728,
+          "app_vtable": 150279400,
+          "context_vtable": 150803560,
+          "app_get": 289184,
+          "context_get": 3691968,
+          "scheduler_get": 291600,
+          "schedule": 3208272,
+          "text_builder": 90112896,
+          "allocate": 122993884,
+          "free": 122993952
+        },
+        "app_entry": 285968
+      },
+      "builds": [
+        {
+          "sha256": "e0428a7b691853de496532523c2c09aa095f90941c37c9f4cfb3f137f3c66556",
+          "bytes": 204305968,
+          "timestamp": 1792050120,
+          "image_size": 204795904,
+          "original_sha256": null
+        },
+        {
+          "sha256": "932dd6700f22e32faeb9b0cc9581a1f601e60ace151067680d3f6596496fab99",
+          "bytes": 204305968,
+          "timestamp": 1792050120,
+          "image_size": 204795904,
+          "original_sha256": "e0428a7b691853de496532523c2c09aa095f90941c37c9f4cfb3f137f3c66556"
+        }
+      ],
+      "cipher_layout": {
+        "config_name": "com.Tencent.WCDB.Config.Cipher",
+        "xor_mask": "d2c7442458020000004889442450488b450048844c2448488944254048584c24",
+        "node_back": 16,
+        "node_size": 80,
+        "config_pointer": 40,
+        "key_object": 136,
+        "object_size": 40,
+        "data_pointer": 8
+      }
+    },
+    {
+      "id": "wechat-4.2.0.9-x64",
+      "version": "4.2.0.9",
+      "arch": "x64",
+      "revision": 1,
+      "capabilities": {
+        "account": true,
+        "messages": true,
+        "images": true,
+        "stickers": true,
+        "send_text": true
+      },
+      "layout": {
+        "anchor_owner_back": 296,
+        "app_context": 104,
+        "account_string": 72,
+        "image_seed": 64,
+        "app_get_slot": 96,
+        "context_get_slot": 24
+      },
+      "read_schema": "wcdb-4.1",
+      "media_schema": "dat-v1-v2",
+      "native": {
+        "id": 3,
+        "abi": "msvc-x64-text-v1",
+        "rvas": {
+          "application": 198168112,
+          "app_vtable": 151288728,
+          "context_vtable": 151813944,
+          "app_get": 289184,
+          "context_get": 3701024,
+          "scheduler_get": 291600,
+          "schedule": 3217808,
+          "text_builder": 91308080,
+          "allocate": 124350652,
+          "free": 124350720
+        },
+        "app_entry": 285968
+      },
+      "builds": [
+        {
+          "sha256": "a81c4770350a4edf3e774413da832a785d7aac50025471b30ea26d1f846b9fb4",
+          "bytes": 205865000,
+          "timestamp": 1793003957,
+          "image_size": 206352384,
+          "original_sha256": null
+        }
+      ],
+      "cipher_layout": {
+        "config_name": "com.Tencent.WCDB.Config.Cipher",
+        "xor_mask": "d2c7442458020000004889442450488b450048844c2448488944254048584c24",
+        "node_back": 16,
+        "node_size": 80,
+        "config_pointer": 40,
+        "key_object": 136,
+        "object_size": 40,
+        "data_pointer": 8
+      }
+    }
+  ]
+}

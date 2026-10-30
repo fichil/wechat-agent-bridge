@@ -68,6 +68,16 @@ class AuthStoreTests(unittest.TestCase):
 
 
 class AuthApiTests(unittest.TestCase):
+    def test_compatibility_routes_require_login_origin_and_csrf(self):
+        routes = [('compatibility/query', {}), ('compatibility/resume', dict(account_id='synthetic',expected_revision=0))]
+        for path,body in routes:
+            self.assertEqual(self.client.post('/api/v1/'+path,json=body).status_code,401)
+        self.login()
+        for path,body in routes:
+            self.assertEqual(self.client.post('/api/v1/'+path,json=body,headers={'X-CSRF-Token':'invalid'}).status_code,403)
+            self.assertEqual(self.client.post('/api/v1/'+path,json=body,headers={'Origin':'https://other.example'}).status_code,403)
+        self.assertEqual(self.client.post('/api/v1/compatibility/query',json={}).status_code,200)
+
     def setUp(self):
         self.probe = Mock(return_value=aggregate([]))
         self.app = create_app(self.probe, database_path=':memory:', auth_path=':memory:', monitor=False,

@@ -28,6 +28,15 @@ class CountingCache(MemoryCache):
 
 
 class IncrementalTests(unittest.TestCase):
+    def test_new_empty_shard_without_name2id_initializes_without_read_failure(self):
+        with sqlite3.connect(':memory:') as db:
+            db.execute('CREATE TABLE wcdb_metadata(value INTEGER)')
+            self.reader.cache.images[self.shard] = db.serialize()
+        first = self.tick()
+        self.assertEqual(first['issues'], [])
+        self.assertTrue(any(g['shard'] == self.shard and g['table_name'] == '' for g in first['groups']))
+        self.assertEqual(self.tick()['issues'], [])
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.root=Path(self.temp.name)

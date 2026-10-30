@@ -85,6 +85,22 @@ def committed_frames(wal, check=lambda: None):
     return committed, db_size
 
 
+def logical_page_count(first, physical_count):
+    """SQLite fileformat section 1.3.7; call only with an authenticated page 1.
+
+    WCDB may reserve whole zero-filled extents beyond its logical database.
+    Never infer a boundary from zero bytes or skip an unauthenticated live page.
+    """
+    if len(first) != PAGE or first[16:18] != b'\x10\x00' or first[20] != RESERVE:
+        raise ProbeError('database_header_invalid')
+    count = struct.unpack_from('>I', first, 28)[0]
+    if not count or first[24:28] != first[92:96]:
+        count = physical_count
+    if not 1 <= count <= physical_count <= MAX_DATABASE // PAGE:
+        raise ProbeError('database_size_invalid')
+    return count
+
+
 def decrypt_snapshot(database, wal, key, salt=None, check=lambda: None):
     check()
     if not database or len(database) % PAGE or len(database) > MAX_DATABASE:
@@ -93,13 +109,14 @@ def decrypt_snapshot(database, wal, key, salt=None, check=lambda: None):
     if not verify_page(key, salt, database[:PAGE], 1):
         raise ProbeError('database_key_not_verified')
     updates, committed_size = committed_frames(wal, check)
-    # Use only the latest version of each page, validating every page HMAC.
-    count = committed_size or len(database) // PAGE
+    # Authenticate the latest header before using its logical page count.
+    first = decrypt_page(key, salt, updates.get(1, database[:PAGE]), 1)
+    count = logical_page_count(first, committed_size or len(database) // PAGE)
     output = bytearray()
     for pgno in range(1, count + 1):
         check()
         page = updates.get(pgno, database[(pgno-1)*PAGE:pgno*PAGE])
-        output.extend(decrypt_page(key, salt, page, pgno))
+        output.extend(first if pgno == 1 else decrypt_page(key, salt, page, pgno))
     if len(output) < PAGE or output[16:18] != b'\x10\x00' or output[20] != RESERVE:
         raise ProbeError('database_header_invalid')
     output[18:20] = b'\x01\x01'  # standalone memory image: WAL already applied

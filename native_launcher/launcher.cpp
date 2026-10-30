@@ -13,7 +13,7 @@
 #include <cstdint>
 #include <cwctype>
 
-static HWND window, originBox, usernameBox, passwordBox, confirmBox, outputBox;
+static HWND window, originBox, usernameBox, passwordBox, confirmBox, outputBox, privateBox;
 static HFONT font;
 static bool busy = false;
 static std::wstring root;
@@ -104,7 +104,8 @@ static void request(const wchar_t* action, const std::wstring& path=L"") {
     auto password = readText(passwordBox), confirmation = readText(confirmBox);
     std::string body = "{\"action\":" + quote(action) + ",\"origin\":" + quote(readText(originBox)) +
         ",\"username\":" + quote(readText(usernameBox)) + ",\"password\":" + quote(password) +
-        ",\"confirmation\":" + quote(confirmation) + ",\"path\":" + quote(path) + ",\"confirmed\":true}";
+        ",\"confirmation\":" + quote(confirmation) + ",\"path\":" + quote(path) + ",\"private\":" +
+        (SendMessageW(privateBox,BM_GETCHECK,0,0)==BST_CHECKED ? "true" : "false") + ",\"confirmed\":true}";
     SecureZeroMemory(password.data(), password.size()*sizeof(wchar_t));
     SecureZeroMemory(confirmation.data(), confirmation.size()*sizeof(wchar_t));
     SetWindowTextW(passwordBox, L""); SetWindowTextW(confirmBox, L"");
@@ -123,9 +124,11 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
             CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Microsoft YaHei UI");
         make(L"STATIC",L"微信 Agent Bridge",0,24,18,600,30);
         make(L"STATIC",L"解压即用 · 当前 Windows 用户运行 · 关闭此窗口不停止后台",0,24,53,660,24);
-        make(L"STATIC",L"HTTPS 域名",0,24,96,170,24);
+        privateBox=make(L"BUTTON",L"私人访问（SSH）",WS_TABSTOP|BS_AUTOCHECKBOX,24,90,180,30,200);
+        SendMessageW(privateBox,BM_SETCHECK,BST_CHECKED,0);
         originBox=make(L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,210,90,454,30);
-        SendMessageW(originBox,EM_SETCUEBANNER,TRUE,(LPARAM)L"例如 bridge.example.com（首次配置时填写）");
+        SendMessageW(originBox,EM_SETCUEBANNER,TRUE,(LPARAM)L"取消私人访问后填写 HTTPS 域名");
+        EnableWindow(originBox,FALSE);
         make(L"STATIC",L"后台用户名",0,24,136,170,24);
         usernameBox=make(L"EDIT",L"admin",WS_TABSTOP|ES_AUTOHSCROLL,210,130,454,30);
         make(L"STATIC",L"密码 / 新密码",0,24,176,170,24);
@@ -133,9 +136,9 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
         make(L"STATIC",L"确认新密码",0,24,216,170,24);
         confirmBox=make(L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL|ES_PASSWORD,210,210,454,30);
         make(L"STATIC",L"初始化/重置：填写两次新密码。验收/恢复：只填写当前后台密码。",0,24,251,660,24);
-        controls={originBox,usernameBox,passwordBox,confirmBox};
-        const wchar_t* labels[]={L"保存首次配置",L"环境检查",L"启动后台",L"停止后台",L"打开后台",L"刷新状态",L"查看日志",L"重置密码",L"导出迁移包",L"导入迁移包",L"发送验收",L"恢复迁移",L"使用说明"};
-        for (int i=0;i<13;++i) {
+        controls={privateBox,originBox,usernameBox,passwordBox,confirmBox};
+        const wchar_t* labels[]={L"保存首次配置",L"环境检查",L"启动后台",L"停止后台",L"打开后台",L"刷新状态",L"查看日志",L"重置密码",L"导出全部数据",L"导入迁移包",L"发送验收",L"恢复迁移",L"使用说明",L"仅导出角色/API"};
+        for (int i=0;i<14;++i) {
             int row=i/4,col=i%4;
             controls.push_back(make(L"BUTTON",labels[i],WS_TABSTOP|BS_PUSHBUTTON,24+col*164,288+row*43,148,33,100+i));
         }
@@ -145,10 +148,11 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
     case WM_COMMAND: {
         if (busy) return 0;
         int id=LOWORD(wp);
-        const wchar_t* actions[]={L"setup",L"check",L"start",L"stop",L"open",L"status",L"logs",L"reset",L"export",L"import",L"acceptance",L"resume",L"help"};
-        if (id<100 || id>112) return 0;
+        if (id==200) { EnableWindow(originBox,SendMessageW(privateBox,BM_GETCHECK,0,0)!=BST_CHECKED); return 0; }
+        const wchar_t* actions[]={L"setup",L"check",L"start",L"stop",L"open",L"status",L"logs",L"reset",L"export",L"import",L"acceptance",L"resume",L"help",L"export-config"};
+        if (id<100 || id>113) return 0;
         std::wstring path;
-        if (id==108 || id==109) { path=chooseFile(id==108); if(path.empty()) return 0; }
+        if (id==108 || id==109 || id==113) { path=chooseFile(id!=109); if(path.empty()) return 0; }
         const wchar_t* warning = id==110 ? L"将向每个已识别账号的文件传输助手发送一条 BRIDGE_TEST_ 测试消息。\n请先在每个微信窗口保留一段未发送草稿，保持窗口可观察；测试期间不要操作电脑。\n无法观察的项目不会判为通过。确认开始？" :
             id==109 ? L"将停止本包后台，备份当前数据后导入迁移包。旧发送队列不会自动重放。确认导入？" :
             id==107 ? L"将重置本机后台管理员密码并注销所有网页登录会话。确认重置？" :
@@ -159,7 +163,8 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
     case Finished: {
         std::unique_ptr<Reply> reply((Reply*)lp);
         SetWindowTextW(outputBox,reply->text.c_str()); busy=false;
-        for(HWND control:controls) EnableWindow(control,TRUE); return 0;
+        for(HWND control:controls) EnableWindow(control,TRUE);
+        EnableWindow(originBox,SendMessageW(privateBox,BM_GETCHECK,0,0)!=BST_CHECKED); return 0;
     }
     case WM_CLOSE:
         if(busy) { MessageBoxW(h,L"请等待当前操作完成。",L"操作进行中",MB_OK); return 0; }

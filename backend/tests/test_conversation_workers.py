@@ -66,7 +66,8 @@ class WorkerTests(unittest.TestCase):
     def test_cached_reader_rechecks_current_identity_and_never_accepts_switched_account(self):
         reader = SessionReader(Instance(123, 100, 1, "4.1.15.56"), "wxid_synthetic")
         reader.memory = Mock()
-        with patch("wechat_account_probe.memory.current_account", return_value="wxid_switched"):
+        with patch("wechat_compatibility.require_profile"), patch("wechat_compatibility.bind_memory"), \
+                patch("wechat_account_probe.memory.current_account", return_value="wxid_switched"):
             with self.assertRaisesRegex(ProbeError, "account_changed_during_read"):
                 reader.bind(time.monotonic()+10)
 

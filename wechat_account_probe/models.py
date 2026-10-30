@@ -18,6 +18,8 @@ class Instance:
     created: int
     session_id: int
     version: str
+    core_sha256: str = ''
+    profile_id: str | None = None
 
 
 def instance_result(instance, **values):

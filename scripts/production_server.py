@@ -22,19 +22,25 @@ from bridge_paths import DATA, FRONTEND
 RUNTIME = DATA / 'production'
 
 
-def render_config(origin, dist):
-    config = AuthConfig('production', origin)
+def render_config(origin, dist, mode='production'):
+    config = AuthConfig(mode, origin)
     u = urlsplit(config.origin)
     # Reject Caddy syntax and international names not normalized by DNS tooling.
     import re
     if not re.fullmatch(r'[A-Za-z0-9.-]+(?::[0-9]{1,5})?', u.netloc) or '.' not in u.hostname:
         raise ValueError('Use an ASCII DNS hostname for BRIDGE_PUBLIC_ORIGIN')
-    if u.port is not None and u.port != 443:
+    if mode != 'private' and u.port is not None and u.port != 443:
         raise ValueError('Production HTTPS uses port 443')
     path = str(Path(dist).resolve()).replace('\\', '/')
     if any(c in path for c in ('"', '\n', '\r', '{', '}')):
         raise ValueError('Unsupported frontend build path')
-    return (ROOT/'deploy/Caddyfile.template').read_text(encoding='utf-8').replace('@@SITE@@', u.netloc).replace('@@HOST@@', u.netloc).replace('@@DIST@@', path)
+    content = ((ROOT/'deploy/Caddyfile.template').read_text(encoding='utf-8')
+        .replace('@@SITE@@', config.origin if mode == 'private' else u.netloc)
+        .replace('@@BIND@@', 'bind 127.0.0.1' if mode == 'private' else '')
+        .replace('@@SCHEME@@', u.scheme).replace('@@HOST@@', u.netloc).replace('@@DIST@@', path))
+    if mode == 'private':
+        content = content.replace('        Strict-Transport-Security "max-age=31536000"\n', '')
+    return content
 
 
 def stop():
@@ -64,9 +70,10 @@ def main():
         return
     if os.name != 'nt' or sys.maxsize <= 2**32:
         raise RuntimeError('Windows x64 is required')
-    os.environ['BRIDGE_ENV'] = 'production'
+    mode = 'private' if os.environ.get('BRIDGE_ENV') == 'private' else 'production'
+    os.environ['BRIDGE_ENV'] = mode
     origin = os.environ.get('BRIDGE_PUBLIC_ORIGIN', '')
-    content = render_config(origin, FRONTEND)
+    content = render_config(origin, FRONTEND, mode)
     if not (FRONTEND/'index.html').is_file():
         raise RuntimeError('Build frontend first: npm ci; npm run build')
     auth_path = Path(os.environ.get('BRIDGE_AUTH_DATABASE', str(DEFAULT_AUTH_PATH))).resolve()
@@ -80,7 +87,8 @@ def main():
     caddy = shutil.which(args.caddy)
     if not caddy:
         raise RuntimeError('Caddy was not found. Set BRIDGE_CADDY to the official caddy.exe path')
-    for host, port in [('127.0.0.1',8765),('0.0.0.0',80),('0.0.0.0',443)]:
+    ports = [('127.0.0.1',8765)] + ([('127.0.0.1',18765)] if mode == 'private' else [('0.0.0.0',80),('0.0.0.0',443)])
+    for host, port in ports:
         with socket.socket() as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             try: sock.bind((host,port))
@@ -129,7 +137,7 @@ def main():
                     except (OSError,ValueError): pass
                     time.sleep(.25)
                 else: raise RuntimeError('Backend startup timed out')
-        print('Started. Verify HTTPS certificate and login at '+origin,flush=True)
+        print(('Started private loopback access at ' if mode == 'private' else 'Started. Verify HTTPS certificate and login at ')+origin,flush=True)
         while not stop_file.exists() and all(p.poll() is None for p in children): time.sleep(.5)
         if not stop_file.exists(): raise RuntimeError('A managed service exited; inspect the local production logs')
     except KeyboardInterrupt:

@@ -10,10 +10,8 @@ DLL = BUILD / "bridge_text.dll"
 ACCEPTANCE = DATA / "native-send-acceptance.json"
 REQUIRED_CHECKS = ('native_receipt', 'archive_readback', 'account_binding', 'module_unload',
                    'foreground', 'window_state', 'input', 'clipboard', 'drafts')
-CORE_HASHES = {
-    "e0428a7b691853de496532523c2c09aa095f90941c37c9f4cfb3f137f3c66556",
-    "932dd6700f22e32faeb9b0cc9581a1f601e60ace151067680d3f6596496fab99",
-}
+from wechat_compatibility import REGISTRY, registry, profile_for_hash, profile_digest
+CORE_HASHES = {b['sha256'] for p in registry()['profiles'] if p['capabilities']['send_text'] for b in p['builds']}
 
 
 def digest(path):
@@ -28,12 +26,25 @@ def build_identity():
     for name in ("text_bridge.cpp", "core_version.h"):
         if digest(ROOT / "native_send" / name) != manifest["sources"][name]:
             raise ValueError("native_build_stale")
+    if manifest.get('compatibility_sha256') != digest(REGISTRY):
+        raise ValueError('native_build_stale')
     return manifest["dll_sha256"]
 
 
 def accepted(account, core_hash, dll_hash):
     try:
         data = json.loads(ACCEPTANCE.read_text(encoding="utf-8"))
+        if data.get('version') == 2:
+            profile = profile_for_hash(core_hash)
+            if not profile or not profile['capabilities']['send_text']:
+                return False
+            binding = machine_binding()
+            return any(record.get('account') == account and record.get('binding') == binding
+                       and record.get('core_sha256') == core_hash and record.get('dll_sha256') == dll_hash
+                       and record.get('profile_digest') == profile_digest(profile)
+                       and record.get('passed') is True
+                       and all(record.get('checks', {}).get(n) == 'passed' for n in REQUIRED_CHECKS)
+                       for record in data.get('records', []))
         # Legacy records remain valid for source checkouts only, never portable installs.
         bound = data.get('binding')
         binding_ok = bound == machine_binding() if bound else not (ROOT / 'portable-manifest.json').exists()

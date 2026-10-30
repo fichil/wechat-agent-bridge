@@ -48,7 +48,7 @@ class MigrationTests(unittest.TestCase):
         import_data(self.archive,self.target)
         with closing(sqlite3.connect(self.target/'bridge.sqlite3')) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM accounts').fetchone()[0],2)
-            self.assertEqual(db.execute('SELECT epoch,auto_pending,paused FROM ai_sessions').fetchone(),(3,0,1))
+            self.assertEqual(db.execute('SELECT epoch,auto_pending,paused FROM ai_sessions').fetchone(),(3,0,0))
             self.assertEqual([r[0] for r in db.execute('SELECT status FROM deliveries ORDER BY part_index')],['cancelled','cancelled','unknown','unknown','sent'])
             self.assertEqual(db.execute('SELECT status FROM ai_runs').fetchone()[0],'failed')
         with closing(sqlite3.connect(self.source/'auth.sqlite3')) as src, closing(sqlite3.connect(self.target/'auth.sqlite3')) as dst:
@@ -62,6 +62,19 @@ class MigrationTests(unittest.TestCase):
         with offline(self.source):
             with self.assertRaises(ValueError): export_data(self.source,self.archive)
         self.assertFalse(self.archive.exists())
+
+    def test_v8_import_upgrades_staged_copy_and_preserves_source_version(self):
+        with closing(sqlite3.connect(self.source/'bridge.sqlite3')) as db, db:
+            db.execute('DROP TABLE compatibility_state')
+            db.execute('DELETE FROM schema_migrations WHERE version=9')
+            db.execute('PRAGMA user_version=8')
+        export_data(self.source,self.archive)
+        import_data(self.archive,self.target)
+        with closing(sqlite3.connect(self.source/'bridge.sqlite3')) as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],8)
+        with closing(sqlite3.connect(self.target/'bridge.sqlite3')) as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],9)
+            self.assertEqual(db.execute('SELECT count(*) FROM compatibility_state').fetchone()[0],0)
 
     def test_corrupt_or_traversal_archive_never_changes_destination(self):
         export_data(self.source,self.archive)
@@ -109,6 +122,15 @@ class MigrationTests(unittest.TestCase):
         with closing(sqlite3.connect(self.target/'bridge.sqlite3')) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM deliveries WHERE status='unknown'").fetchone()[0],2)
             self.assertEqual(db.execute('SELECT paused FROM ai_sessions').fetchone()[0],0)
+
+    def test_user_pause_survives_import_and_explicit_migration_resume(self):
+        with closing(sqlite3.connect(self.source/'bridge.sqlite3')) as db, db:
+            db.execute('UPDATE ai_sessions SET paused=1')
+        export_data(self.source,self.archive)
+        import_data(self.archive,self.target)
+        resume_data(self.target,[])
+        with closing(sqlite3.connect(self.target/'bridge.sqlite3')) as db:
+            self.assertEqual(db.execute('SELECT paused,auto_pending FROM ai_sessions').fetchone(),(1,0))
 
 
 class PortableBindingTests(unittest.TestCase):

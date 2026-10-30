@@ -5,6 +5,8 @@ import { authenticatedFetch } from "../auth";
 export type Account = components["schemas"]["Account"];
 export type Snapshot = components["schemas"]["AccountSnapshot"];
 export type ScanTask = components["schemas"]["ScanTask"];
+export type CompatibilitySnapshot =
+  components["schemas"]["CompatibilitySnapshot"];
 export type Conversation = components["schemas"]["Conversation"];
 export type ConversationPage = components["schemas"]["ConversationPage"];
 export type ConversationRefresh = components["schemas"]["ConversationRefresh"];
@@ -63,6 +65,18 @@ function value<T>(result: {
 }
 
 export const api = {
+  async compatibility() {
+    return value(
+      await client.POST("/api/v1/compatibility/query", { body: {} }),
+    );
+  },
+  async resumeCompatibility(account_id: string, expected_revision: number) {
+    return value(
+      await client.POST("/api/v1/compatibility/resume", {
+        body: { account_id, expected_revision },
+      }),
+    );
+  },
   async sendCapability(account_id: string) {
     return value(
       await client.POST("/api/v1/wechat-send-status/query", {

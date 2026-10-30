@@ -67,6 +67,7 @@ class DeliveryExecution:
         return dict(account=account.wxid,pid=instance.pid,created=instance.created)
 
     def capability(self, aid, refresh=False):
+        result={}
         try:
             binding=self.binding(aid)
             key=(aid,binding['pid'],binding['created'])
@@ -78,7 +79,8 @@ class DeliveryExecution:
             code='ready' if result.get('ready') else result.get('code','native_acceptance_required')
         except ConversationError as exc: code=exc.code
         except Exception: code='native_unavailable'
-        return dict(account_id=aid,ready=code=='ready',code=code,message=MESSAGES.get(code,MESSAGES['native_unavailable']))
+        return dict(account_id=aid,ready=code=='ready',code=code,message=MESSAGES.get(code,MESSAGES['native_unavailable']),
+                    profile_id=result.get('profile_id'),core_sha256=result.get('core_sha256'))
 
     def perform(self, candidate):
         job=None
@@ -86,6 +88,7 @@ class DeliveryExecution:
         try:
             if self.stop.is_set(): return
             aid=candidate['account_id']
+            self.bridge.compatibility.guard(aid)
             if not self.capability(aid)['ready']: return
             binding=self.binding(aid)
             job=self.store.claim_delivery(candidate['run_id'],candidate['part_index'])
@@ -117,7 +120,7 @@ class DeliveryExecution:
                 self.executor.submit(self.perform,job)
 
     def notify(self, event):
-        if set(event.get("resources", ())) & {"ai_runs", "conversation_preferences", "accounts"}:
+        if set(event.get("resources", ())) & {"compatibility", "ai_runs", "conversation_preferences", "accounts"}:
             self.wake.set()
 
     def loop(self):
