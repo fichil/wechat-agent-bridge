@@ -128,7 +128,8 @@ def main():
                 stdin=subprocess.PIPE,stdout=output,stderr=output,env=caddy_env if name=='caddy' else None,creationflags=subprocess.CREATE_NO_WINDOW)
             children.append(child); job.assign(child); child.stdin.write(b'start\n'); child.stdin.close()
             if name=='backend':
-                opener=build_opener(ProxyHandler({})); deadline=time.monotonic()+40
+                # A freshly copied production archive can be cold on disk.
+                opener=build_opener(ProxyHandler({})); deadline=time.monotonic()+180
                 while time.monotonic()<deadline:
                     if child.poll() is not None: raise RuntimeError('Backend stopped during startup; see local log')
                     try:

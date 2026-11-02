@@ -105,7 +105,7 @@ class MigrationTests(unittest.TestCase):
         failed=False
         def fault(src,dst):
             nonlocal failed
-            if not failed and Path(src).parent.name.startswith('import-') and Path(dst)==self.target/'auth.sqlite3':
+            if not failed and Path(src).parent.name.startswith('import-') and Path(dst).resolve()==(self.target/'auth.sqlite3').resolve():
                 failed=True
                 raise OSError('synthetic failure')
             return replace(src,dst)

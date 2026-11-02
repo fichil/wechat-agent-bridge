@@ -156,6 +156,7 @@ def close_launcher(release):
 
 def powershell(script):
     import base64
+    script = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; " + script
     encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
     subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
                    check=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
@@ -165,11 +166,15 @@ def powershell(script):
 def start_task(name, root=None):
     if name not in (TASK_RUN, TASK_DEPLOY): raise ValueError('Unknown task')
     if name == TASK_RUN and root:
+        current = read(Path(root) / 'current.json')
+        data = Path(current.get('data_path') or Path(root) / 'data')
+        if owner(data, Path(root) / 'releases' / current['commit']): return
+        powershell("$deadline=(Get-Date).AddSeconds(30); while ((Get-ScheduledTask -TaskName 'WeChatBridge-Run').State -eq 'Running') { if ((Get-Date) -gt $deadline) { throw 'Previous run task has not exited' }; Start-Sleep -Milliseconds 250 }")
         write(Path(root) / 'run-permit.json', read(Path(root) / 'current.json'))
     powershell("$ErrorActionPreference='Stop'; Start-ScheduledTask -TaskName '" + name + "'")
 
 
-def wait_healthy(root, commit, *, active, timeout=90):
+def wait_healthy(root, commit, *, active, timeout=240):
     root = Path(root)
     release = root / 'releases' / commit
     managed_version = bool(read(release / 'portable-manifest.json').get('database_schema'))
@@ -367,6 +372,16 @@ class Deployment:
 
     def pending(self):
         with lock(self.root):
+            adoption = read(self.root / 'bootstrap-request.json')
+            if adoption:
+                write(self.root / 'status/bootstrap.json', {'stage': 'adopting'})
+                try:
+                    result = bootstrap(self.root, adoption['source'])
+                    (self.root / 'bootstrap-request.json').unlink()
+                except Exception as error:
+                    result = dict(stage='failed', error=str(error))
+                write(self.root / 'status/bootstrap.json', result)
+                return result
             result = {'stage': 'idle'}
             while True:
                 requests = [read(p) for p in (self.root / 'inbox').glob('*.json')]
@@ -386,9 +401,16 @@ def bootstrap(root, source):
     root, source = Path(root).resolve(), Path(source).resolve()
     if root == source or root.is_relative_to(source) or source.is_relative_to(root):
         raise ValueError('Installation and source must be separate directories')
-    if (root / 'data').exists(): raise ValueError('Installation data already exists')
     manifest = verify_release(source)
     target = root / 'releases' / manifest['commit']
+    if (root / 'data').exists():
+        if read(root / 'current.json') != {'commit': manifest['commit']}:
+            raise ValueError('Bootstrap recovery does not match the original release')
+        verify_release(target)
+        database_check(root / 'data')
+        start_task(TASK_RUN, root)
+        wait_healthy(root, manifest['commit'], active=True)
+        return dict(stage='adopted', commit=manifest['commit'])
     target.mkdir(parents=True, exist_ok=True)
     for name in [*manifest['files'], 'portable-manifest.json']:
         output = confined(target, target / name)
@@ -399,11 +421,14 @@ def bootstrap(root, source):
     stop(source / 'data', source)
     try:
         database_check(source / 'data')
-        shutil.copytree(source / 'data', root / 'data')
-        database_check(root / 'data')
+        staging = root / 'bootstrap-data'
+        if staging.exists(): remove(root, staging)
+        shutil.copytree(source / 'data', staging)
+        database_check(staging)
         for path in (source / 'data').rglob('*'):
-            if path.is_file() and digest(path) != digest(root / 'data' / path.relative_to(source / 'data')):
+            if path.is_file() and digest(path) != digest(staging / path.relative_to(source / 'data')):
                 raise ValueError('Bootstrap data checksum mismatch')
+        os.replace(staging, root / 'data')
         write(root / 'current.json', {'commit': manifest['commit']})
         for name in ('inbox', 'status', 'backups'): (root / name).mkdir(exist_ok=True)
         start_task(TASK_RUN, root)
@@ -426,7 +451,12 @@ def main():
     parser.add_argument('--source', type=Path)
     args = parser.parse_args()
     deployment = Deployment(args.root)
-    if args.action == 'bootstrap': result = bootstrap(args.root, args.source)
+    if args.action == 'bootstrap':
+        if (args.root / 'data').exists(): raise ValueError('Installation data already exists')
+        write(args.root / 'bootstrap-request.json', {'source': str(args.source.resolve())})
+        write(args.root / 'status/bootstrap.json', {'stage': 'queued'})
+        start_task(TASK_DEPLOY)
+        result = {'stage': 'queued', 'request_id': 'bootstrap'}
     elif args.action == 'submit': result = deployment.submit(args.request_id, args.commit, args.sha256)
     elif args.action == 'status': result = deployment.status(args.request_id) if args.request_id else read(args.root / 'current.json')
     elif args.action == 'apply': result = deployment.pending()

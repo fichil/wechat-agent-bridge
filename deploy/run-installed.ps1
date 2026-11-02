@@ -15,7 +15,7 @@ if (-not $permitted) {
     if (Test-Path -LiteralPath (Join-Path $InstallRoot 'transaction.json')) { exit 0 }
     foreach ($statusFile in Get-ChildItem -LiteralPath (Join-Path $InstallRoot 'status') -Filter '*.json' -ErrorAction SilentlyContinue) {
         $status = Get-Content -LiteralPath $statusFile.FullName -Raw | ConvertFrom-Json
-        if ($status.stage -notin @('succeeded','failed','rolled_back','superseded')) { exit 0 }
+        if ($status.stage -notin @('succeeded','failed','rolled_back','superseded','adopted')) { exit 0 }
     }
 }
 $release = Join-Path $InstallRoot ('releases\' + $current.commit)
@@ -28,6 +28,11 @@ $env:BRIDGE_AUTH_DATABASE = Join-Path $env:BRIDGE_DATA_DIR 'auth.sqlite3'
 $env:BRIDGE_CADDY = Join-Path $release 'bin\caddy.exe'
 Remove-Item Env:BRIDGE_DISABLE_MONITOR -ErrorAction SilentlyContinue
 Set-Location -LiteralPath $release
-# Keep the task alive with the supervisor. No SSH connection owns this tree.
-& (Join-Path $release 'runtime\python.exe') -B -X utf8 (Join-Path $release 'scripts\production_server.py')
-exit $LASTEXITCODE
+# Native stderr is not a PowerShell terminating error. Keep both streams in files
+# and wait for the supervisor, so the task owns the whole service lifetime.
+$logDirectory = Join-Path $InstallRoot 'task-logs'
+New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
+$logBase = Join-Path $logDirectory ('run-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+$arguments = @('-B','-X','utf8',('"' + (Join-Path $release 'scripts\production_server.py') + '"'))
+$process = Start-Process -FilePath (Join-Path $release 'runtime\python.exe') -ArgumentList $arguments -WorkingDirectory $release -WindowStyle Hidden -PassThru -Wait -RedirectStandardOutput ($logBase + '.out.log') -RedirectStandardError ($logBase + '.err.log')
+exit $process.ExitCode
