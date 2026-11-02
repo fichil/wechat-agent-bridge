@@ -159,6 +159,9 @@ class ReplyWakeTests(RoleTestCase):
             if current and event.get('account_id') == self.ids[0]:
                 if 'messages' in resources and 'ai_runs' not in resources:
                     current.setdefault('archived', time.monotonic())
+                    trigger = self.store.db.execute('SELECT last_trigger_at FROM delivery_sessions WHERE account_id=? AND conversation_id=?',
+                                                    (self.ids[0], self.cids[0])).fetchone()
+                    if trigger: current.setdefault('triggered_at', trigger[0])
                 if 'ai_runs' in resources:
                     # Notifications here run on the SQL owner after commit.
                     row = self.store.db.execute("SELECT 1 FROM deliveries WHERE account_id=? AND status='queued'", (self.ids[0],)).fetchone()
@@ -168,6 +171,7 @@ class ReplyWakeTests(RoleTestCase):
         generate = self.provider.generate
         def model(*args):
             current['model_started'] = time.monotonic()
+            current['model_started_wall'] = time.time()
             return generate(*args)
         self.provider.generate = model
         self.start_loops()
@@ -189,8 +193,12 @@ class ReplyWakeTests(RoleTestCase):
             until(lambda: 'send_claimed' in current, timeout=7)
             sample = dict(source_to_model=current['model_started']-current['available'],
                           archive_to_model=current['model_started']-current['archived'],
+                          trigger_to_model=current['model_started_wall']-current['triggered_at'],
                           reply_to_claim=current['send_claimed']-current['reply_committed'])
-            self.assertGreaterEqual(sample['archive_to_model'], .95)
+            # Debounce begins at the persisted trigger, before commit/notification.
+            # Slow disk commits can consume part of that second on hosted runners.
+            self.assertGreaterEqual(sample['trigger_to_model'], .95)
+            self.assertGreaterEqual(sample['archive_to_model'], 0)
             self.assertLessEqual(sample['archive_to_model'], 2)
             self.assertGreaterEqual(sample['reply_to_claim'], 0)
             self.assertLessEqual(sample['reply_to_claim'], 1)
