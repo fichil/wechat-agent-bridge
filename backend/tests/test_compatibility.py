@@ -160,6 +160,21 @@ class CompatibilityTests(RoleTestCase):
         self.delta(3)
         self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_triggers WHERE epoch=?',(epoch,)).fetchone()[0]),1)
 
+    def test_guard_readiness_race_preserves_epoch_and_pending_triggers(self):
+        self.configured();self.enable();self.delta(1)
+        aid,cid=self.ids[0],self.cids[0]
+        epoch=self.store.call(lambda:self.store._ai_session(aid,cid)['epoch'])
+        manager=self.app.state.bridge.compatibility
+        manager.enabled=True;manager.sender=Mock()
+        manager.sender.capability.return_value=dict(ready=False,code='native_busy')
+        with patch.object(manager,'check_processes',return_value=True):
+            with self.assertRaises(ConversationError): manager.guard(aid)
+        self.delta(2)
+        self.assertEqual(self.store.call(lambda:self.store._ai_session(aid,cid)['epoch']),epoch)
+        self.assertEqual(self.store.ai_candidates(),[])
+        self.store.compatibility_send_state(aid,True,'ready');self.restore()
+        self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_triggers WHERE epoch=?',(epoch,)).fetchone()[0]),2)
+
     def test_inflight_ai_result_cannot_change_memory_or_queue_send_after_hold(self):
         self.configured(); self.enable(); self.delta()
         previous = self.preferences()['memory']

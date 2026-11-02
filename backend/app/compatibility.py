@@ -9,6 +9,7 @@ from typing import Literal
 from .models import Instance
 from .role_models import JsonRequest
 from .conversations import ConversationError
+from .compatibility_storage import TRANSIENT_SEND_HOLDS
 from wechat_compatibility import CAPABILITIES, profile_for_hash, profile_digest
 
 REASONS = {
@@ -124,7 +125,10 @@ class Compatibility:
         self.store.call(self.store._compatibility_require, aid)
         capability = self.sender.capability(aid, refresh=True) if self.sender else dict(ready=False, code='not_checked')
         if not capability['ready']:
-            self.store.compatibility_pause(aid, capability['code'])
+            if capability['code'] in TRANSIENT_SEND_HOLDS:
+                self.store.compatibility_send_state(aid, False, capability['code'])
+            else:
+                self.store.compatibility_pause(aid, capability['code'])
             self.store.call(self.store._compatibility_require, aid)
 
     def reconcile(self):

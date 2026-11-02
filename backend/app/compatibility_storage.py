@@ -7,6 +7,7 @@ from .conversations import ConversationError
 COMPATIBILITY_SCHEMA = (
     'CREATE TABLE compatibility_state(scope TEXT PRIMARY KEY, revision INTEGER NOT NULL, fingerprint TEXT NOT NULL, held INTEGER NOT NULL, reason TEXT NOT NULL, snapshot TEXT NOT NULL)',
 )
+TRANSIENT_SEND_HOLDS = frozenset(('native_busy', 'sync_pending', 'native_unavailable'))
 
 
 def upgrade_v9(db):
@@ -56,7 +57,7 @@ class CompatibilityStoreMixin:
         state = self._compatibility_row(aid)
         snapshot = json.loads(state['snapshot'])
         return bool(state['fingerprint'] and snapshot.get('readable') and snapshot.get('needs_baseline') is False
-                    and state['reason'] in ('native_busy','sync_pending','native_unavailable'))
+                    and state['reason'] in TRANSIENT_SEND_HOLDS)
 
     def _compatibility_require(self, aid):
         if self._compatibility_blocked(aid):
