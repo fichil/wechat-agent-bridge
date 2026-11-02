@@ -7,7 +7,7 @@ from .conversations import ConversationError
 
 
 FAILOVER_ERRORS = {
-    'ai_network_error', 'ai_provider_error', 'ai_response_invalid', 'ai_empty_reply',
+    'ai_network_error', 'ai_provider_error', 'ai_response_invalid', 'ai_empty_reply', 'reply_invalid',
     'ai_format_unsupported', 'ai_vision_unsupported', 'ai_input_too_large',
     'api_key_unreadable', 'api_profile_unavailable',
 }

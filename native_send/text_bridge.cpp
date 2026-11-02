@@ -304,6 +304,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI WxSendText(void* parameter) {
     };
     return schedule_task(config.base, &task);
 }
+#include "media_send.h"
 extern "C" __declspec(dllexport) DWORD WINAPI WxWaitForTasks(void*) {
  return active_callbacks || live_completions || live_tasks ? ERROR_BUSY : 0;
 }

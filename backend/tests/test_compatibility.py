@@ -140,7 +140,7 @@ class CompatibilityTests(RoleTestCase):
         run = self.wait_run(self.start()); self.finish(run, 'unknown')
         def extra():
             with self.store.db:
-                self.store.db.execute("INSERT INTO deliveries SELECT run_id,1,account_id,conversation_id,epoch,target,'queued part','queued',0,NULL,NULL,NULL,created_at FROM deliveries WHERE run_id=? AND part_index=0", (run['run_id'],))
+                self.store.db.execute("INSERT INTO deliveries(run_id,part_index,account_id,conversation_id,epoch,target,text,status,attempts,code,confirmation,archive_message_id,created_at) SELECT run_id,1,account_id,conversation_id,epoch,target,'queued part','queued',0,NULL,NULL,NULL,created_at FROM deliveries WHERE run_id=? AND part_index=0", (run['run_id'],))
         self.store.call(extra)
         self.store.compatibility_pause(self.ids[0], 'build_changed')
         self.delta(2)
@@ -182,7 +182,7 @@ class CompatibilityTests(RoleTestCase):
             self.assertFalse(db.execute("SELECT name FROM sqlite_master WHERE name='compatibility_state'").fetchone())
         with closing(Store(path)) as store:
             self.assertEqual(len(store.accounts()),2)
-            self.assertEqual(store.call(lambda:store.db.execute('PRAGMA user_version').fetchone()[0]),10)
+            self.assertEqual(store.call(lambda:store.db.execute('PRAGMA user_version').fetchone()[0]),11)
 
 
 class ProfileTests(unittest.TestCase):

@@ -13,6 +13,7 @@ PRIVATE = {"authorization", "cookie", "setcookie", "apikey", "xapikey", "xgoogap
            "secret", "encryptedkey", "password", "token", "accesstoken", "refreshtoken",
            "dbkey", "dbkeys", "keyhex", "encryptionkey", "decryptionkey", "sessionkey"}
 DATA_URI = re.compile(r"data:([^;,\s]+);base64,([A-Za-z0-9+/=\r\n]+)")
+MEDIA_MARKER = re.compile(r'\[\[(?:IMAGE|STICKER):(data:[\s\S]*?)(?:\]\]|$)',re.I)
 CREDENTIAL = re.compile(r"\b(?:sk-|xai-)[A-Za-z0-9_-]{8,}")
 
 def image_summary(data, mime=None):
@@ -52,6 +53,11 @@ def sanitize(value, secrets=()):
                 return json.dumps(sanitize(json.loads(value), secrets), ensure_ascii=False, separators=(",", ":"))
             except (ValueError, TypeError, RecursionError):
                 pass
+        def media_marker(match):
+            uri=DATA_URI.fullmatch(match[1])
+            summary=image_summary(uri[2],uri[1]) if uri else dict(omitted='binary_data')
+            return json.dumps(summary,separators=(',',':'))
+        value=MEDIA_MARKER.sub(media_marker,value)
         return DATA_URI.sub(lambda m: json.dumps(image_summary(m[2], m[1]), separators=(",", ":")), value)
     return value
 

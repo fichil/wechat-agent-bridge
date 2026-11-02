@@ -4,15 +4,15 @@ import json
 import sqlite3
 from unittest.mock import patch
 from test_roles import RoleTestCase
-from test_delivery import DeliveryTests
+import test_delivery as delivery
 from backend.app.storage import Store
 
 
 class MediaRollbackTests(RoleTestCase):
-    configured = DeliveryTests.configured
-    delta = DeliveryTests.delta
-    start = DeliveryTests.start
-    wait_run = DeliveryTests.wait_run
+    configured = delivery.DeliveryTests.configured
+    delta = delivery.DeliveryTests.delta
+    start = delivery.DeliveryTests.start
+    wait_run = delivery.DeliveryTests.wait_run
 
     def test_rollback_preserves_v11_and_holds_entire_future_run(self):
         self.configured()

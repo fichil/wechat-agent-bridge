@@ -11,7 +11,9 @@
         "messages": true,
         "images": true,
         "stickers": true,
-        "send_text": true
+        "send_text": true,
+        "send_image": false,
+        "send_sticker": false
       },
       "layout": {
         "anchor_owner_back": 296,
@@ -71,13 +73,15 @@
       "id": "wechat-4.2.0.9-x64",
       "version": "4.2.0.9",
       "arch": "x64",
-      "revision": 1,
+      "revision": 2,
       "capabilities": {
         "account": true,
         "messages": true,
         "images": true,
         "stickers": true,
-        "send_text": true
+        "send_text": true,
+        "send_image": true,
+        "send_sticker": true
       },
       "layout": {
         "anchor_owner_back": 296,
@@ -104,7 +108,22 @@
           "allocate": 124350652,
           "free": 124350720
         },
-        "app_entry": 285968
+        "app_entry": 285968,
+        "media": {
+          "context_shared": 291360,
+          "context_provider": 3688240,
+          "message_manager": 7447712,
+          "manager_vtable": 154834168,
+          "qstring_utf8": 546720,
+          "image_factory": 65800896,
+          "message_send": 24952720,
+          "copy_wide": 636384,
+          "gif_validate": 15465840,
+          "gif_probe": 5549952,
+          "gif_probe_release": 5245216,
+          "sticker_factory": 29591648,
+          "sticker_vtable": 154858696
+        }
       },
       "builds": [
         {

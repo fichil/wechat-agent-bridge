@@ -1,12 +1,13 @@
 """Durable trigger eligibility and an at-most-one-attempt outbox per reply part."""
 from datetime import datetime, timezone
 import json
+import re
 import time
 import unicodedata
 from uuid import uuid4
 from .conversations import ConversationError
 
-REPLY_FORMAT_VERSION = 1
+REPLY_FORMAT_VERSION = 2
 DELIVERY_SCHEMA = (
     "CREATE TABLE delivery_sessions(account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, enabled_at TEXT NOT NULL, watermarks TEXT NOT NULL, last_trigger_at REAL NOT NULL DEFAULT 0, PRIMARY KEY(account_id,conversation_id), FOREIGN KEY(account_id,conversation_id) REFERENCES conversations(account_id,conversation_id))",
     "CREATE TABLE reply_triggers(message_id TEXT PRIMARY KEY REFERENCES messages, account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, epoch INTEGER NOT NULL, consumed_run_id TEXT)",
@@ -74,7 +75,7 @@ class DeliveryStoreMixin:
         if item.get('is_self') is True:
             # Corroboration only; this never resolves an ambiguous native call.
             if self.db.execute('SELECT 1 FROM deliveries WHERE archive_message_id=?',(item['message_id'],)).fetchone(): return
-            candidates=self.db.execute("SELECT d.run_id,d.part_index FROM deliveries d WHERE d.account_id=? AND d.conversation_id=? AND d.text=? AND d.archive_message_id IS NULL AND d.status IN ('sent','sending','unknown') AND EXISTS(SELECT 1 FROM delivery_attempts a WHERE a.run_id=d.run_id AND a.part_index=d.part_index AND unixepoch(a.started_at)<=unixepoch(?))",(aid,cid,item.get('content',{}).get('text'),item.get('sent_at') or '')).fetchall()
+            candidates=self.db.execute("SELECT d.run_id,d.part_index FROM deliveries d WHERE d.kind='text' AND d.account_id=? AND d.conversation_id=? AND d.text=? AND d.archive_message_id IS NULL AND d.status IN ('sent','sending','unknown') AND EXISTS(SELECT 1 FROM delivery_attempts a WHERE a.run_id=d.run_id AND a.part_index=d.part_index AND unixepoch(a.started_at)<=unixepoch(?))",(aid,cid,item.get('content',{}).get('text'),item.get('sent_at') or '')).fetchall()
             if len(candidates)==1:
                 self.db.execute('UPDATE deliveries SET archive_message_id=? WHERE run_id=? AND part_index=?',(item['message_id'],*candidates[0]))
             return
@@ -136,7 +137,7 @@ class DeliveryStoreMixin:
         return bool(row and row[0]>time.time()-1) or (self._is_group(aid,cid) and self._group_debouncing(aid,cid))
 
     def _delivery_public(self, rid):
-        parts=[dict(index=r['part_index'],status=r['status'],attempts=r['attempts'],code=r['code'],
+        parts=[dict(index=r['part_index'],kind=r['kind'],media=self._media_value(r['media_id']) if r['media_id'] else None,status=r['status'],attempts=r['attempts'],code=r['code'],
                     archive_message_id=r['archive_message_id'],confirmation=r['confirmation'])
                for r in self.db.execute('SELECT * FROM deliveries WHERE run_id=? ORDER BY part_index',(rid,))]
         statuses={p['status'] for p in parts}
@@ -167,9 +168,11 @@ class DeliveryStoreMixin:
         self.db.executemany('UPDATE reply_triggers SET consumed_run_id=? WHERE message_id=? AND consumed_run_id IS NULL',((rid,mid) for mid in triggers))
         if not run.get('reply','').strip(): return
         target=self._conversation(aid,cid)['source_id']
-        for index,text in enumerate(split_reply(run['reply'])):
-            self.db.execute('INSERT INTO deliveries(run_id,part_index,account_id,conversation_id,epoch,target,text,status,created_at) VALUES(?,?,?,?,?,?,?,\'queued\',?)',
-                            (rid,index,aid,cid,run['epoch'],target,text,stamp()))
+        parts = run.get('reply_parts')
+        if parts is None: parts = [dict(index=i,kind='text',text=text) for i,text in enumerate(split_reply(run['reply']))]
+        for part in parts:
+            self.db.execute('INSERT INTO deliveries(run_id,part_index,account_id,conversation_id,epoch,target,text,status,created_at,kind,media_id) VALUES(?,?,?,?,?,?,?,\'queued\',?,?,?)',
+                (rid,part['index'],aid,cid,run['epoch'],target,part.get('text') or '',stamp(),part['kind'],part.get('media',{}).get('media_id')))
 
     def delivery_candidates(self):
         def query():
@@ -207,19 +210,49 @@ class DeliveryStoreMixin:
 
     def finish_delivery(self, job, result):
         def write():
-            if not self.db.execute('SELECT 1 FROM deliveries WHERE run_id=? AND part_index=?', (job['run_id'],job['part_index'])).fetchone(): return
+            row=self.db.execute('SELECT * FROM deliveries WHERE run_id=? AND part_index=?', (job['run_id'],job['part_index'])).fetchone()
+            if not row: return
             state=result.get('status')
             if state not in ('sent','failed','unknown'): state='unknown'
             code=result.get('code','native_result_uncertain')[:100]
+            archive=None
+            if row['kind']!='text' and state=='sent':
+                archive=self._corroborate_delivery(job,result.get('evidence',{}))
+                if not archive: state,code='unknown','native_result_uncertain'
             with self.db:
                 self.db.execute("UPDATE delivery_attempts SET status=?,code=?,completed_at=? WHERE attempt_id=? AND status='sending'",(state,code,stamp(),job['attempt_id']))
                 if state=='failed' and code in ('source_offline','native_unavailable','native_busy','source_identity_changed','native_acceptance_required','native_version_unsupported'):
                     current=self._preferences(job['account_id'],job['conversation_id'])
                     state='queued' if current['ai_enabled'] and self._ai_session(job['account_id'],job['conversation_id'])['epoch']==job['epoch'] else 'cancelled'
-                self.db.execute("UPDATE deliveries SET status=?,code=?,confirmation=? WHERE run_id=? AND part_index=? AND status='sending'",(state,code,'native' if state=='sent' else None,job['run_id'],job['part_index']))
+                self.db.execute("UPDATE deliveries SET status=?,code=?,confirmation=?,archive_message_id=COALESCE(?,archive_message_id) WHERE run_id=? AND part_index=? AND status='sending'",(state,code,('native_archive' if archive else 'native') if state=='sent' else None,archive,job['run_id'],job['part_index']))
                 event=self._ai_touch(job['account_id'],job['conversation_id'],[])
             self.notify(event)
         self.call(write)
+
+    def save_delivery_evidence(self,job,evidence):
+        def write():
+            with self.db:
+                self.db.execute("UPDATE deliveries SET native_evidence=? WHERE run_id=? AND part_index=? AND status='sending'",
+                    (json.dumps(evidence),job['run_id'],job['part_index']))
+        self.call(write)
+
+    def _corroborate_delivery(self,job,evidence):
+        local_id=evidence.get('local_id');created=evidence.get('create_time');milliseconds=evidence.get('timestamp_ms')
+        if (type(local_id) is not int or not 0<local_id<=0xffffffff
+            or type(created) is not int or not 0<created<=0xffffffff
+            or type(milliseconds) is not int or milliseconds//1000!=created
+            or not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}',str(evidence.get('source_uuid','')))
+            or not re.fullmatch(r'[0-9a-f]{32}',str(evidence.get('token','')))
+            or evidence.get('target')!=job['target']
+            or evidence.get('message_type')!={'image':3,'sticker':47}.get(job.get('kind'))): return None
+        rows=self.db.execute("SELECT m.message_id,m.payload,m.server_id FROM messages m WHERE m.account_id=? AND m.conversation_id=? AND m.local_id=? AND unixepoch(json_extract(m.payload,'$.sent_at'))=? AND EXISTS(SELECT 1 FROM delivery_attempts a WHERE a.attempt_id=? AND unixepoch(a.started_at)<=unixepoch(json_extract(m.payload,'$.sent_at')))",
+            (job['account_id'],job['conversation_id'],local_id,created,job['attempt_id'])).fetchall()
+        matches=[r['message_id'] for r in rows if re.fullmatch(r'[1-9][0-9]{0,19}',r['server_id'] or '') and json.loads(r['payload']).get('is_self') is True and json.loads(r['payload']).get('type')==job['kind']
+                 and not self.db.execute('SELECT 1 FROM deliveries WHERE archive_message_id=? AND (run_id<>? OR part_index<>?)',(r['message_id'],job['run_id'],job['part_index'])).fetchone()]
+        return matches[0] if len(matches)==1 else None
+
+    def corroborate_delivery(self,job,evidence):
+        return self.call(self._corroborate_delivery,job,evidence)
 
     def update_delivery(self, aid, cid, rid, resolution=None):
         def write():

@@ -3,10 +3,16 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { api, type Conversation, type RunList } from "../api";
 import { onChange } from "../api/events";
 import { settingsError } from "../role-cards";
+import MediaPreview from "./MediaPreview.vue";
 const props = defineProps<{
   accountId: string;
   conversation: Pick<Conversation, "conversation_id" | "ai_enabled" | "name">;
 }>();
+function mediaFetcher(runId: string, index: number) {
+  const aid = props.accountId,
+    cid = props.conversation.conversation_id;
+  return () => api.replyMedia(aid, cid, runId, index);
+}
 const data = ref<RunList | null>(null);
 const error = ref("");
 const busy = ref(false);
@@ -24,7 +30,9 @@ const deliveryNames: Record<string, string> = {
 };
 const deliveryReasons: Record<string, string> = {
   native_completed: "微信原生接口已确认完成",
+  native_archive_confirmed: "原生完成结果与本会话归档已匹配",
   native_rejected: "微信原生接口拒绝了发送，明确未发出",
+  native_media_invalid: "待发送媒体校验失败，尚未提交微信",
   native_result_uncertain: "提交后未取得确定结果，需要核对微信",
   send_interrupted: "服务在发送结果确认前中断，需要核对微信",
   ai_disabled: "会话自动回复已关闭",
@@ -256,7 +264,36 @@ onBeforeUnmount(() => {
           {{ run.round_final ? "最终批次" : "分批记忆处理" }}
           <span v-if="run.chose_silence"> · AI 选择不发言</span>
         </p>
-        <p v-if="run.reply" class="ai-reply">{{ run.reply }}</p>
+        <div v-if="run.reply_parts?.length" class="reply-parts">
+          <div
+            v-for="part in run.reply_parts"
+            :key="part.index"
+            class="reply-part"
+          >
+            <small
+              >第 {{ part.index + 1 }} 条 ·
+              {{
+                deliveryNames[
+                  run.delivery?.parts?.find((p) => p.index === part.index)
+                    ?.status ?? "not_required"
+                ]
+              }}</small
+            >
+            <p v-if="part.kind === 'text'" class="ai-reply">{{ part.text }}</p>
+            <template v-else
+              ><span
+                >{{ part.kind === "sticker" ? "表情" : "图片" }} ·
+                {{ part.name }}</span
+              >
+              <MediaPreview
+                :identity="`${run.run_id}:${part.index}`"
+                :label="part.name || '回复图片'"
+                :fetcher="mediaFetcher(run.run_id, part.index)"
+              />
+            </template>
+          </div>
+        </div>
+        <p v-else-if="run.reply" class="ai-reply">{{ run.reply }}</p>
         <small v-if="run.status === 'completed'"
           >记忆版本 {{ run.memory_revision }} ·
           {{ deliveryNames[run.delivery?.status ?? "not_required"] }}
@@ -304,3 +341,21 @@ onBeforeUnmount(() => {
     </div>
   </details>
 </template>
+
+<style scoped>
+.reply-parts {
+  display: grid;
+  gap: 12px;
+  margin-block: 16px;
+}
+.reply-part {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #e3e9f1;
+  border-radius: 10px;
+}
+.reply-part .media-preview {
+  max-width: 300px;
+}
+</style>

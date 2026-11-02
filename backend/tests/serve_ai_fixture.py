@@ -20,6 +20,12 @@ from backend.app.diagnostics import record_source
 
 class BrowserProvider(FakeProvider):
     fail_next = False
+    reply_override = None
+
+    def generate(self,*args):
+        if self.reply_override is not None:
+            return dict(memory='合成媒体记忆',reply=self.reply_override)
+        return super().generate(*args)
 
     def respond(self, request):
         if self.fail_next:
@@ -64,6 +70,7 @@ def reset():
     store = app.state.store
     assert store.path == ":memory:"
     provider.fail_next = False
+    provider.reply_override = None
     sender.result = 'sent'
     def clear():
         with store.db:
@@ -110,6 +117,13 @@ def send_result(body: dict):
     assert app.state.store.path == ':memory:'
     assert body['status'] in ('sent','failed','unknown')
     sender.result=body['status']
+    return {'ok':True}
+
+
+@app.post('/test/reply')
+def reply(body:dict):
+    assert app.state.store.path == ':memory:'
+    provider.reply_override=body['reply']
     return {'ok':True}
 
 

@@ -30,6 +30,7 @@ class AccountLifecycleMixin:
                 for row in self.db.execute('SELECT key FROM metadata').fetchall():
                     if owned.intersection(row[0].split(':')): self.db.execute('DELETE FROM metadata WHERE key=?', (row[0],))
                 self.db.execute('DELETE FROM accounts WHERE account_id=?', (aid,))
+                self._media_collect()
             self.account_generation += 1
             self.source_versions = {k:v for k,v in self.source_versions.items() if k[0] != aid}
             self.notify(dict(type='changed', account_id=aid, resources=['accounts','account_deleted']))

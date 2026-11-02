@@ -46,7 +46,8 @@ class NativeTransport:
         return self.invoke(dict(binding,operation='inspect'))
 
     def send(self, binding, job):
-        return self.invoke(dict(binding,operation='send',target=job['target'],text=job['text']))
+        return self.invoke(dict(binding,operation='send',target=job['target'],text=job['text'],kind=job.get('kind','text'),
+                                **job.get('staged_media',{})))
 
 
 class DeliveryExecution:
@@ -83,23 +84,47 @@ class DeliveryExecution:
         except ConversationError as exc: code=exc.code
         except Exception: code='native_unavailable'
         return dict(account_id=aid,ready=code=='ready',code=code,message=MESSAGES.get(code,MESSAGES['native_unavailable']),
-                    profile_id=result.get('profile_id'),core_sha256=result.get('core_sha256'))
+                    profile_id=result.get('profile_id'),core_sha256=result.get('core_sha256'),
+                    **{name:bool(code=='ready' and result.get(name, name=='send_text')) for name in ('send_text','send_image','send_sticker')})
 
     def perform(self, candidate):
         job=None
+        invoked=False
         retry=True
         try:
             if self.stop.is_set(): return
             aid=candidate['account_id']
             self.bridge.compatibility.guard(aid)
-            if not self.capability(aid)['ready']: return
+            capability=self.capability(aid)
+            if not capability['ready'] or not capability.get('send_'+candidate.get('kind','text')): return
             binding=self.binding(aid)
             job=self.store.claim_delivery(candidate['run_id'],candidate['part_index'])
             if job is None: return
             queued_ms=max(0,(time.time()-datetime.fromisoformat(job['created_at']).timestamp())*1000)
             started=time.monotonic()
+            if job.get('kind','text')!='text':
+                from wechat_sender.media_files import stage
+                job['staged_media']=stage(job['attempt_id'],self.store.delivery_media(job))
+            invoked=True
             result=self.transport.send(binding,job)
+            if job.get('kind','text')!='text':
+                if result.get('status')=='accepted':
+                    self.store.save_delivery_evidence(job,result.get('evidence',{}))
+                    deadline=time.monotonic()+30
+                    while True:
+                        matched=self.store.corroborate_delivery(job,result.get('evidence',{}))
+                        if matched:
+                            result.update(status='sent',code='native_archive_confirmed'); break
+                        if self.stop.is_set() or time.monotonic()>=deadline:
+                            result.update(status='unknown',code='native_result_uncertain'); break
+                        self.stop.wait(.2)
+                elif result.get('status')=='sent':
+                    result.update(status='unknown',code='native_result_uncertain')
             self.store.finish_delivery(job,result)
+            if job.get('staged_media') and result.get('resources_released') and result.get('status') in ('sent','failed'):
+                from wechat_sender.media_files import release
+                try: release(job['staged_media'])
+                except OSError: pass
             record_source(self.store,"delivery",dict(part_index=job['part_index'],timings_ms=dict(queue_to_claim=round(queued_ms,3))),result,
                           aid=aid,cid=job['conversation_id'],task_id=job['run_id'],automatic=True,elapsed=time.monotonic()-started)
             retry=result.get('status')!='sent'
@@ -107,7 +132,7 @@ class DeliveryExecution:
                 with self.lock: self.cache.clear()
         except Exception:
             if job:
-                self.store.finish_delivery(job,dict(status='unknown',code='native_result_uncertain'))
+                self.store.finish_delivery(job,dict(status='unknown' if invoked else 'failed',code='native_result_uncertain' if invoked else 'native_media_invalid'))
         finally:
             with self.lock:
                 self.pending.discard(candidate['account_id'])

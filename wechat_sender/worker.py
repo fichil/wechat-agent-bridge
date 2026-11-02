@@ -114,7 +114,8 @@ def code_windows(path):
         count=struct.unpack_from('<H',head,pe+6)[0]; optional=struct.unpack_from('<H',head,pe+20)[0]
         sections=[struct.unpack_from('<8sIIII',head,pe+24+optional+i*40) for i in range(count)]
         result={}
-        for rva in (native['app_entry'], *(native['rvas'][n] for n in
+        media_calls = [rva for name,rva in native.get('media',{}).items() if not name.endswith('_vtable')]
+        for rva in (native['app_entry'], *media_calls, *(native['rvas'][n] for n in
                     ('app_get','scheduler_get','schedule','context_get','text_builder','allocate','free'))):
             for _,vs,va,rs,rp in sections:
                 if va<=rva<va+max(vs,rs):
@@ -166,13 +167,13 @@ def inspect(request):
         dll_hash=build_identity()
         return dict(core_sha256=core_hash,dll_sha256=dll_hash,profile_id=profile['id'],
                     profile_digest=profile_digest(profile),native_profile_id=profile['native']['id'],
-                    ready=True)
+                    ready=True, **{name:profile['capabilities'][name] for name in ('send_text','send_image','send_sticker')})
     finally: K.CloseHandle(process)
 
 
 def send(request):
     status='failed'; submitted=False; pending=False; process=None; allocations=[]; mutex=None; owned=False
-    loaded=None; exports={}; cleanup=False; module_owned=False
+    loaded=None; exports={}; cleanup=False; module_owned=False; outcome={}; receipt={}
     from bridge_paths import RECEIPTS
     RECEIPTS.mkdir(parents=True, exist_ok=True)
     token=uuid4().hex; report=RECEIPTS/('receipt-'+token+'.json')
@@ -193,11 +194,18 @@ def send(request):
         return address
     try:
         identity=inspect(request)
-        target=request['target']; text=request['text']; encoded=text.encode('utf-8')
+        target=request['target']; kind=request.get('kind','text')
+        if kind not in ('text','image','sticker') or not identity.get('send_'+kind):
+            raise ValueError('native_version_unsupported')
+        if kind=='text': text=request['text']
+        else:
+            from .media_files import resolve
+            text=str(resolve(request))
+        encoded=text.encode('utf-8')
         if not re.fullmatch(r'[A-Za-z0-9_.@-]{1,127}',target) or not 0<len(encoded)<=1023 or b'\0' in encoded:
             raise ValueError('native_text_invalid')
         testing=request.get('acceptance_test') is True
-        if testing and (target!='filehelper' or not text.startswith('BRIDGE_TEST_')):
+        if testing and (kind!='text' or target!='filehelper' or not text.startswith('BRIDGE_TEST_')):
             raise ValueError('acceptance_target_invalid')
         if not identity['ready'] and not testing: raise ValueError('native_unavailable')
         pid=int(request['pid']); created=int(request['created'])
@@ -225,7 +233,7 @@ def send(request):
         parameter=allocate(bytes(config))
         # From this point a lost response is ambiguous, never a retryable failure.
         submitted=True
-        code=call(loaded[0]+exports['WxSendText'],parameter)
+        code=call(loaded[0]+exports[{'text':'WxSendText','image':'WxSendImage','sticker':'WxSendSticker'}[kind]],parameter)
         if code in (4,21,87,170):
             status='failed'
         else:
@@ -233,14 +241,21 @@ def send(request):
             while time.monotonic()<deadline:
                 try:
                     receipt=json.loads(report.read_text(encoding='utf-8'))
-                    if receipt.get('token')==token and receipt.get('status') in ('sent','failed','unknown'):
+                    if receipt.get('token')==token and receipt.get('status') in ('sent','failed','unknown','accepted'):
                         status=receipt['status']; break
                 except (OSError,ValueError): pass
                 time.sleep(.05)
-        return dict(status=status,code='native_completed' if status=='sent' else 'native_result_uncertain' if status=='unknown' else 'native_rejected',**identity)
+        if kind!='text' and status=='sent': status='unknown'
+        outcome.update(status=status,code='native_completed' if status=='sent' else 'native_accepted' if status=='accepted' else 'native_rejected' if status=='failed' else 'native_result_uncertain',**identity)
+        if kind!='text' and receipt.get('token')==token:
+            outcome.update(native_stage=receipt.get('stage'),native_exception=receipt.get('exception'))
+        if kind!='text' and status=='accepted':
+            outcome['evidence']={k:receipt.get(k) for k in ('token','local_id','create_time','timestamp_ms','source_uuid','message_type','target')}
+        return outcome
     except Exception as exc:
-        return dict(status='unknown' if submitted else 'failed',code='native_result_uncertain' if submitted else
+        outcome.update(status='unknown' if submitted else 'failed',code='native_result_uncertain' if submitted else
                     str(exc) if isinstance(exc,ValueError) else 'native_unavailable')
+        return outcome
     finally:
         if process and not pending:
             try:
@@ -259,6 +274,7 @@ def send(request):
         if cleanup:
             try: report.unlink(missing_ok=True)
             except OSError: pass
+        outcome['resources_released']=not pending and (cleanup or not loaded)
 
 
 if __name__=='__main__':

@@ -23,6 +23,8 @@ from .compatibility_storage import CompatibilityStoreMixin, upgrade_v9
 from .account_lifecycle import AccountLifecycleMixin
 from .notification_storage import NotificationStoreMixin
 from .reliability_schema import upgrade_v10
+from .media_schema import upgrade_v11
+from .media_storage import MediaStoreMixin
 from .ai_retry_storage import AiRetryStoreMixin
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -89,7 +91,7 @@ CREATE TABLE cursors(token TEXT PRIMARY KEY, account_id TEXT NOT NULL, conversat
 """
 
 
-class Store(AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, AiRoutingStoreMixin, CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
+class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, AiRoutingStoreMixin, CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
     def __init__(self, path=DEFAULT_PATH, settings=None, image_limit=IMAGE_LIMIT):
         self.path, self.image_limit = Path(path) if str(path) != ":memory:" else path, image_limit
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="archive-db")
@@ -169,10 +171,10 @@ class Store(AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, Ai
         if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
             self.db.close()
             raise ConversationError("storage_version_unsupported", "数据库版本高于当前程序，请使用匹配版本。", 503)
-        if 0 < version < 10 and str(self.path) != ':memory:':
+        if 0 < version < 11 and str(self.path) != ':memory:':
             backup_dir = self.path.parent / 'migration-backups'
             backup_dir.mkdir(exist_ok=True)
-            backup_path = backup_dir / ('before-v10-' + uuid4().hex + '.sqlite3')
+            backup_path = backup_dir / ('before-v11-' + uuid4().hex + '.sqlite3')
             with closing(sqlite3.connect(backup_path)) as backup:
                 self.db.backup(backup)
                 if backup.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
@@ -244,12 +246,16 @@ class Store(AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, Ai
                 self.db.execute('PRAGMA user_version=8')
         upgrade_v9(self.db)
         upgrade_v10(self.db)
+        upgrade_v11(self.db)
+        self._seed_stickers()
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             self.db.close()
             raise ConversationError("storage_corrupt", "数据库校验失败，请保留原文件后恢复备份。", 503)
         try:
             with self.db:
                 self._ai_recover()
+                self.db.execute("DELETE FROM reply_candidates WHERE run_id IN (SELECT run_id FROM ai_runs WHERE status NOT IN ('queued','running'))")
+                self._media_collect()
                 self._notification_recover()
                 self._delivery_recover()
                 self._log_recover()
@@ -655,6 +661,9 @@ class Store(AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, Ai
     def image(self, aid, cid, mid, value=None):
         self.reference(aid, cid, mid)
         def query():
+            sent=self.db.execute("SELECT m.mime_type,m.data FROM deliveries d JOIN reply_media m USING(media_id) WHERE d.account_id=? AND d.conversation_id=? AND d.archive_message_id=? AND d.status='sent' AND d.confirmation='native_archive'",(aid,cid,mid)).fetchone()
+            if sent:
+                return dict(message_id=mid,status='available',mime_type=sent['mime_type'],data_base64=base64.b64encode(sent['data']).decode(),quality='original',needs_sync=False)
             key = "image:"+mid
             event = None
             with self.db:

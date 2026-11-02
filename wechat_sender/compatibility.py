@@ -23,7 +23,7 @@ def build_identity():
     manifest = json.loads((BUILD / "build.json").read_text(encoding="utf-8-sig"))
     if digest(DLL) != manifest["dll_sha256"]:
         raise ValueError("native_build_changed")
-    for name in ("text_bridge.cpp", "core_version.h"):
+    for name in ("text_bridge.cpp", "core_version.h", "media_send.h"):
         if digest(ROOT / "native_send" / name) != manifest["sources"][name]:
             raise ValueError("native_build_stale")
     if manifest.get('compatibility_sha256') != digest(REGISTRY):

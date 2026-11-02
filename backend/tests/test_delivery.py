@@ -201,7 +201,7 @@ class DeliveryTests(RoleTestCase):
         with closing(Store(self.path)) as store:
             self.assertEqual(store.ai_run(self.ids[0],self.cids[0],run['run_id'])['delivery']['status'],'not_required')
             self.assertEqual(store.preferences(self.ids[0],self.cids[0])['memory_revision'],1)
-        self.assertTrue(list((self.path.parent/'migration-backups').glob('before-v10-*.sqlite3')))
+        self.assertTrue(list((self.path.parent/'migration-backups').glob('before-v11-*.sqlite3')))
 
     def test_mentions_parse_plain_compressed_and_malformed(self):
         xml='<msgsource><atuserlist><![CDATA[wxid_a,wxid_ab]]></atuserlist></msgsource>'

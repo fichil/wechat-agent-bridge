@@ -13,6 +13,7 @@ import ConversationSettingsPanel from "../components/ConversationSettingsPanel.v
 import RoleCardsPanel from "../components/RoleCardsPanel.vue";
 import ApiProfilesPanel from "../components/ApiProfilesPanel.vue";
 import LogsPanel from "../components/LogsPanel.vue";
+import StickersPanel from "../components/StickersPanel.vue";
 import { useAccountsStore } from "../stores/accounts";
 import { formatTime, reasonText } from "../reasons";
 const route = useRoute();
@@ -53,6 +54,7 @@ const entries = [
   { key: "conversations", label: "会话", icon: "◌" },
   { key: "role-cards", label: "角色卡", icon: "▤" },
   { key: "agents", label: "Agent", icon: "◇" },
+  { key: "stickers", label: "表情包", icon: "☺" },
   { key: "settings", label: "设置", icon: "⚙" },
   { key: "logs", label: "日志", icon: "▦" },
 ];
@@ -128,7 +130,8 @@ watch(
         class="workspace-content"
         :aria-label="title"
       >
-        <template v-if="section === 'overview'"
+        <StickersPanel v-if="section === 'stickers'" />
+        <template v-else-if="section === 'overview'"
           ><p class="intro-copy">查看当前账号资料与本机客户端实例。</p>
           <div class="detail-grid">
             <div>

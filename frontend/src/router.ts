@@ -13,7 +13,7 @@ export const router = createRouter({
     { path: "/accounts", component: AccountsPage },
     { path: "/settings/notifications", component: NotificationSettingsPage },
     {
-      path: "/workspace/:accountId/:section(overview|conversations|role-cards|agents|settings|logs)?",
+      path: "/workspace/:accountId/:section(overview|conversations|role-cards|agents|stickers|settings|logs)?",
       component: WorkspacePage,
     },
     { path: "/:pathMatch(.*)*", redirect: "/accounts" },

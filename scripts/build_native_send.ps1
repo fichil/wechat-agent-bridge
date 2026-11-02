@@ -10,7 +10,7 @@ if (-not $vsInstall) { throw 'MSVC x64 Build Tools are required.' }
 $vcvarsPath = Join-Path $vsInstall 'VC\Auxiliary\Build\vcvars64.bat'
 Push-Location $buildPath
 try {
-    $compileCommand = 'call "' + $vcvarsPath + '" >nul && cl.exe /nologo /std:c++17 /EHsc /W4 /utf-8 /LD /MD /O2 /DNDEBUG /Brepro "..\..\native_send\text_bridge.cpp" /Fe:bridge_text.dll /Fo:bridge_text.obj /link /MACHINE:X64 /INCREMENTAL:NO bcrypt.lib'
+    $compileCommand = 'call "' + $vcvarsPath + '" >nul && cl.exe /nologo /std:c++17 /EHsc /W4 /utf-8 /LD /MT /O2 /DNDEBUG /Brepro "..\..\native_send\text_bridge.cpp" /Fe:bridge_text.dll /Fo:bridge_text.obj /link /MACHINE:X64 /INCREMENTAL:NO bcrypt.lib'
     & $env:ComSpec /d /s /c $compileCommand
     if ($LASTEXITCODE -ne 0) { throw 'Native text bridge compilation failed.' }
     $manifest = @{
@@ -18,7 +18,7 @@ try {
         sources = @{}
         compatibility_sha256 = (Get-FileHash -LiteralPath (Join-Path $projectRoot 'wechat_compatibility\profiles.json') -Algorithm SHA256).Hash.ToLower()
     }
-    foreach ($file in @('text_bridge.cpp','core_version.h')) {
+    foreach ($file in @('text_bridge.cpp','core_version.h','media_send.h')) {
         $manifest.sources[$file] = (Get-FileHash -LiteralPath (Join-Path $projectRoot "native_send\$file") -Algorithm SHA256).Hash.ToLower()
     }
     $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath 'build.json' -Encoding utf8
