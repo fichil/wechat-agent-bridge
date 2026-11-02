@@ -221,14 +221,34 @@ onBeforeUnmount(() => {
           {{ new Date(run.started_at).toLocaleString("zh-CN") }}
         </summary>
         <p v-if="run.message">{{ run.message }}</p>
+        <p v-if="run.profile_name" class="settings-note">
+          执行 Agent：{{ run.profile_name }}
+        </p>
         <p class="settings-note">
-          已请求 {{ run.attempt_count }} 次 · 最多额外重试
-          {{ run.max_retries }} 次<span v-if="run.next_retry_at">
+          已请求 {{ run.attempt_count }} 次 · 额外重试
+          {{ run.retry_count ?? 0 }}/{{ run.max_retries }} 次<span
+            v-if="run.next_retry_at"
+          >
             · 下次重试：{{
               new Date(run.next_retry_at * 1000).toLocaleString("zh-CN")
             }}</span
           >
         </p>
+        <ul v-if="run.profile_attempts?.length" aria-label="Agent 调用记录">
+          <li v-for="attempt in run.profile_attempts" :key="attempt.attempt">
+            第 {{ attempt.attempt }} 次 · {{ attempt.profile_name }} ·
+            {{
+              attempt.status === "completed"
+                ? "成功"
+                : attempt.status === "running"
+                  ? "请求中"
+                  : attempt.status === "interrupted"
+                    ? "已中断"
+                    : "失败"
+            }}
+            <span v-if="attempt.error">（{{ attempt.error }}）</span>
+          </li>
+        </ul>
         <p v-if="run.round_id" class="settings-note">
           {{ run.trigger_reason === "mention" ? "@ 触发" : "累计条数触发" }} ·
           第 {{ run.batch_index }} 批 · 已处理

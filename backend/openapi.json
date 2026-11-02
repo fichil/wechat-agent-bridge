@@ -7551,6 +7551,40 @@
       },
       "AiRun": {
         "properties": {
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "profile_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Name"
+          },
+          "profile_attempts": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileAttempt"
+            },
+            "type": "array",
+            "title": "Profile Attempts"
+          },
+          "retry_count": {
+            "type": "integer",
+            "title": "Retry Count",
+            "default": 0
+          },
           "attempt_count": {
             "type": "integer",
             "title": "Attempt Count",
@@ -9391,6 +9425,28 @@
       },
       "EffectiveConfiguration": {
         "properties": {
+          "active_api_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Api Profile Id"
+          },
+          "active_api_profile_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Api Profile Name"
+          },
           "role_card_code": {
             "anyOf": [
               {
@@ -11760,6 +11816,67 @@
           "base_url"
         ],
         "title": "PresetOption"
+      },
+      "ProfileAttempt": {
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "profile_name": {
+            "type": "string",
+            "title": "Profile Name"
+          },
+          "attempt": {
+            "type": "integer",
+            "title": "Attempt"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "completed",
+              "failed",
+              "interrupted"
+            ],
+            "title": "Status"
+          },
+          "started_at": {
+            "type": "string",
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile_id",
+          "profile_name",
+          "attempt",
+          "status",
+          "started_at"
+        ],
+        "title": "ProfileAttempt"
       },
       "ProfileCreate": {
         "properties": {

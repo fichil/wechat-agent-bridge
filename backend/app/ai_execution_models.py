@@ -57,7 +57,21 @@ class RunQuery(PreferencesQuery):
 class RunRetry(RunQuery):
     request_id: str = Field(min_length=1, max_length=128)
 
+class ProfileAttempt(BaseModel):
+    profile_id: str
+    profile_name: str
+    attempt: int
+    status: Literal['running', 'completed', 'failed', 'interrupted']
+    started_at: str
+    completed_at: str | None = None
+    error: str | None = None
+
+
 class AiRun(BaseModel):
+    profile_id: str | None = None
+    profile_name: str | None = None
+    profile_attempts: list[ProfileAttempt] = Field(default_factory=list)
+    retry_count: int = 0
     attempt_count: int = 0
     max_retries: int = 0
     next_retry_at: float | None = None

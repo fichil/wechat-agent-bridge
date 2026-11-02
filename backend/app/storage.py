@@ -14,6 +14,7 @@ from .conversations import ConversationError
 from .role_storage import RoleStoreMixin, ROLE_SCHEMA
 from .ai_storage import AiStoreMixin, AI_SCHEMA
 from .ai_execution_storage import AiExecutionStoreMixin, EXECUTION_SCHEMA
+from .ai_routing_storage import AiRoutingStoreMixin
 from .ai_execution_models import DEFAULT_INSTRUCTIONS
 from .log_storage import LogStoreMixin, LOG_SCHEMA
 from .delivery_storage import DeliveryStoreMixin, DELIVERY_SCHEMA
@@ -88,7 +89,7 @@ CREATE TABLE cursors(token TEXT PRIMARY KEY, account_id TEXT NOT NULL, conversat
 """
 
 
-class Store(AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
+class Store(AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, AiRoutingStoreMixin, CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
     def __init__(self, path=DEFAULT_PATH, settings=None, image_limit=IMAGE_LIMIT):
         self.path, self.image_limit = Path(path) if str(path) != ":memory:" else path, image_limit
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="archive-db")
@@ -490,7 +491,7 @@ class Store(AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, Co
             start = anchor.get("offset", 0)
             items = []
             preferences = {r["conversation_id"]: r for r in self.db.execute(
-                "SELECT conversation_id,ai_enabled,revision,role_card_code,api_profile_id FROM conversation_preferences WHERE account_id=? AND conversation_id IN ("
+                "SELECT account_id,conversation_id,ai_enabled,revision,role_card_code,api_profile_id FROM conversation_preferences WHERE account_id=? AND conversation_id IN ("
                 + ",".join("?" for _ in ids[start:start+size]) + ")", (aid, *ids[start:start+size])).fetchall()}
             for cid in ids[start:start+size]:
                 row = self._conversation(aid, cid)

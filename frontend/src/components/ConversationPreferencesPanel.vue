@@ -275,8 +275,9 @@ defineExpose({ beforeLeave });
             :disabled="busy"
             class="editor-input"
           /><small
-            >默认额外重试 10 次，共最多 11 次；0
-            为关闭。修改对下一轮请求生效，重试可能增加 API 用量。</small
+            >先依次尝试适用的 Agent，全部失败后默认再重试 10 次，次数由所有
+            Agent 共用。 0
+            为关闭额外重试，仍会尝试备用。修改对下一轮请求生效。</small
           ></label
         >
         <label class="editor-field">
@@ -397,6 +398,13 @@ defineExpose({ beforeLeave });
           API 列表读取失败，当前选择已保留。<ElButton @click="config.load"
             >重试 API 配置</ElButton
           >
+        </p>
+        <p
+          v-if="original.effective?.active_api_profile_name"
+          class="settings-note"
+        >
+          当前运行 Agent：{{ original.effective.active_api_profile_name }}。
+          失败后按 Agent 列表顺序切换，成功后此会话继续使用。
         </p>
         <label class="editor-field memory-field"
           ><span>记忆 <small>可随时编辑，保存后仅存于本机</small></span

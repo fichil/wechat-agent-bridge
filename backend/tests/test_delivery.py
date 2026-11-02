@@ -140,12 +140,16 @@ class DeliveryTests(RoleTestCase):
         value=self.store.ai_run(self.ids[0],self.cids[0],run['run_id'])
         self.assertEqual(value['delivery']['parts'][0]['attempts'],2)
 
-    def test_empty_reply_consumes_trigger_and_never_sends(self):
+    def test_empty_private_reply_preserves_trigger_and_memory(self):
         self.configured();self.delta()
+        self.update(self.preferences()['revision'],ai_max_retries=0)
         with patch.object(self.provider,'generate',return_value={'reply':'','memory':'observed'}): run=self.wait_run(self.start())
+        self.assertEqual(run['status'],'failed')
+        self.assertEqual(run['error'],'ai_empty_reply')
         self.assertEqual(run['delivery']['status'],'not_required')
-        self.delta(content={'text':'edited'})
-        self.assertEqual(self.wait_run(self.start())['delivery']['status'],'not_required')
+        self.assertEqual(self.preferences()['memory_revision'],0)
+        self.assertIsNone(self.store.call(lambda:self.store.db.execute('SELECT consumed_run_id FROM reply_triggers').fetchone()[0]))
+        self.assertEqual(self.wait_run(self.start())['delivery']['status'],'queued')
 
     def test_utf8_parts_and_partial_failure_never_resend_success(self):
         text='汉🙂\n'*600
