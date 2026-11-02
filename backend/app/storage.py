@@ -540,12 +540,31 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
         valid_sid = sid.isdecimal() and int(sid) > 0
         identity = "s:"+sid if valid_sid else dump([generation, ref["shard"], ref["local_id"]])
         old = self.db.execute("SELECT message_id,payload,source_ref FROM messages WHERE account_id=? AND conversation_id=? AND identity_key=?", (aid, cid, identity)).fetchone()
+        promote = False
+        if not old and row.get('is_self') is True:
+            # A local outgoing message first appears with server_id=0. Keep its
+            # archive ID (and media/delivery references) when the server confirms it.
+            candidates = self.db.execute("SELECT message_id,payload,source_ref,server_id FROM messages WHERE account_id=? AND conversation_id=? AND shard=? AND generation=? AND local_id=?",
+                (aid,cid,ref['shard'],generation,ref['local_id'])).fetchall()
+            matches = [candidate for candidate in candidates if
+                (previous := json.loads(candidate['payload'])).get('is_self') is True and
+                previous.get('sent_at') == row.get('sent_at') and previous.get('type') == row.get('type')]
+            if len(matches) == 1:
+                candidate = matches[0]
+                previous_sid = candidate['server_id']
+                if valid_sid and previous_sid == '0':
+                    old, promote = candidate, True
+                elif not valid_sid and previous_sid.isdecimal() and int(previous_sid) > 0:
+                    # A slower history read must not recreate the provisional row.
+                    return False
         if old and read_revision is not None and self.source_versions.get((aid,old[0]), 0) > read_revision:
             # A newer source read won the race; retain its content but grant live eligibility.
             eligible = bool(self._delivery_note_message(aid, cid, json.loads(old[1]), json.loads(old[2]), incremental))
             if eligible:
                 self.db.execute("UPDATE messages SET change_seq=(SELECT revision+1 FROM accounts WHERE account_id=?) WHERE message_id=?", (aid,old[0]))
             return eligible
+        if promote:
+            self.db.execute('UPDATE messages SET identity_key=?,server_id=? WHERE message_id=?', (identity,sid,old[0]))
         mid = old[0] if old else uuid4().hex
         row.update(message_id=mid, sort_key=order_key(key))
         payload = dump(row)
@@ -558,7 +577,7 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
             return eligible
         revision = self.db.execute("SELECT revision+1 FROM accounts WHERE account_id=?",(aid,)).fetchone()[0]
         self.db.execute("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,conversation_id,identity_key) DO UPDATE SET "
-            "shard=excluded.shard,generation=excluded.generation,local_id=excluded.local_id,sort_key=excluded.sort_key,payload=excluded.payload,source_ref=excluded.source_ref,source_key=excluded.source_key,updated_at=excluded.updated_at,change_seq=excluded.change_seq",
+            "server_id=excluded.server_id,shard=excluded.shard,generation=excluded.generation,local_id=excluded.local_id,sort_key=excluded.sort_key,payload=excluded.payload,source_ref=excluded.source_ref,source_key=excluded.source_key,updated_at=excluded.updated_at,change_seq=excluded.change_seq",
             (mid, aid, cid, identity, sid, ref["shard"], generation, ref["local_id"], row["sort_key"], payload, dump(ref), dump(key), now(),revision))
         if source_updates is not None:
             source_updates[(aid,mid)] = revision
