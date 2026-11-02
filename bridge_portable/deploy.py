@@ -121,14 +121,19 @@ def unpack(archive, destination, expected_hash, commit):
             raise
 
 
-def database_check(data, expected_schema=9):
+def database_check(data, expected_schema=(9, 10)):
+    allowed = (expected_schema,) if isinstance(expected_schema, int) else expected_schema
     for name in ('bridge.sqlite3', 'auth.sqlite3'):
         path = Path(data) / name
         with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=10)) as db:
             if db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
                 raise ValueError('Database integrity check failed')
-            if name == 'bridge.sqlite3' and db.execute('PRAGMA user_version').fetchone()[0] != expected_schema:
+            if name == 'bridge.sqlite3' and db.execute('PRAGMA user_version').fetchone()[0] not in allowed:
                 raise ValueError('Automatic deployment requires the same rollback-compatible database schema')
+
+
+def compatible_schemas(manifest):
+    return manifest.get('database_compatible_schemas', [manifest.get('database_schema')])
 
 
 def owner(data, release):
@@ -277,10 +282,13 @@ class Deployment:
         if shutil.disk_usage(root).free < size + archive.stat().st_size * 4 + 512 * 1024**2:
             raise ValueError('Insufficient space for release and data backup')
         manifest = unpack(archive, destination, request['sha256'], request['commit'])
-        if manifest.get('database_schema') != 9: raise ValueError('Incompatible release database schema')
-        database_check(root / 'data', manifest['database_schema'])
+        if manifest.get('database_schema') not in (9, 10): raise ValueError('Incompatible release database schema')
+        database_check(root / 'data', compatible_schemas(manifest))
         current = read(root / 'current.json')
         verify_release(root / 'releases' / current['commit'], current['commit'])
+        previous = read(root / 'releases' / current['commit'] / 'portable-manifest.json')
+        if manifest['database_schema'] not in compatible_schemas(previous):
+            raise ValueError('Install the schema-compatible bridge release before upgrading')
         return current
 
     def apply(self, request):
@@ -334,7 +342,8 @@ class Deployment:
             switched = True
             start_task(TASK_RUN, root)
             wait_healthy(root, request['commit'], active=False)
-            database_check(data)
+            candidate = read(root / 'releases' / request['commit'] / 'portable-manifest.json')
+            database_check(data, candidate.get('database_output_schemas', [candidate['database_schema']]))
             self.record(request, 'activating')
             # From this point onward old snapshots must never replace live data.
             activated = True

@@ -72,6 +72,38 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(self.manager.apply(self.request)['stage'], 'failed')
             stop.assert_not_called()
 
+    def stage_upgrade(self, compatible_previous):
+        previous = self.root / 'releases' / self.old / 'portable-manifest.json'
+        if compatible_previous:
+            write(previous, {**read(previous), 'database_compatible_schemas': [9, 10], 'database_output_schemas': [9, 10]})
+        manifest = self.stage / 'portable-manifest.json'
+        write(manifest, {**read(manifest), 'database_schema': 10, 'database_compatible_schemas': [9, 10]})
+        with zipfile.ZipFile(self.archive, 'w') as z:
+            for p in self.stage.iterdir(): z.write(p, 'package/' + p.name)
+        self.request['sha256'] = digest(self.archive)
+
+    def test_upgrade_requires_compatible_previous_release(self):
+        self.stage_upgrade(False)
+        with patch('bridge_portable.deploy.stop') as stop:
+            result = self.manager.apply(self.request)
+            self.assertEqual(result['stage'], 'failed')
+            self.assertIn('bridge release', result['error'])
+            stop.assert_not_called()
+
+    def test_upgrade_and_post_activation_rollback_keep_v10_and_new_data(self):
+        self.stage_upgrade(True)
+        def healthy(root, commit, *, active, **kwargs):
+            if commit == self.new:
+                with closing(sqlite3.connect(root / 'data/bridge.sqlite3')) as db, db:
+                    db.execute('PRAGMA user_version=10')
+                    if active: db.execute("INSERT INTO evidence VALUES('new-send-result')")
+                if active: raise TimeoutError('candidate failure')
+        with patch('bridge_portable.deploy.stop'), patch('bridge_portable.deploy.start_task'), patch('bridge_portable.deploy.wait_healthy', side_effect=healthy):
+            self.assertEqual(self.manager.apply(self.request)['stage'], 'rolled_back')
+        self.assertEqual(self.evidence(), ['preserve', 'new-send-result'])
+        with closing(sqlite3.connect(self.root / 'data/bridge.sqlite3')) as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 10)
+
     def test_start_failure_rolls_back_with_current_data(self):
         def healthy(root, commit, **kwargs):
             if commit == self.new: raise TimeoutError('candidate startup failed')
