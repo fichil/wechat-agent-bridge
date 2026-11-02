@@ -24,9 +24,12 @@ class AiRetryStoreMixin:
             if prefs['memory_revision'] != run['memory_revision']:
                 return ('conflicted','ai_memory_conflict','记忆已被手工修改，旧请求已停止，请重试。')
             effective = self._effective(prefs)
-            if (effective['role_card_code'] != run['role_card_code'] or effective['api_profile_id'] != run['profile_id']
+            profile = self.db.execute('SELECT revision FROM api_profiles WHERE profile_id=?', (run['profile_id'],)).fetchone()
+            configuration_changed = (self._route_configuration(prefs) != run['route_configuration']
+                                     if 'route_configuration' in run else effective['api_profile_id'] != run['profile_id'])
+            if (effective['role_card_code'] != run['role_card_code'] or configuration_changed
                     or self._card(run['role_card_code'])['revision'] != run['role_revision']
-                    or self._profile(run['profile_id'])['revision'] != run['profile_revision']
+                    or not profile or profile[0] != run['profile_revision']
                     or self.db.execute('SELECT revision FROM ai_settings').fetchone()[0] != run['settings_revision']):
                 return ('conflicted','ai_configuration_changed','角色、API 或提示词已更新，旧请求已停止，请重试。')
         return None
@@ -36,6 +39,7 @@ class AiRetryStoreMixin:
         if not invalid: return False
         status,code,message = invalid
         run.update(status=status,error=code,message=message,completed_at=stamp(),next_retry_at=None)
+        self._route_attempt_result(run, 'interrupted', code)
         self._ai_write_run(run)
         self.db.execute('DELETE FROM ai_request_snapshots WHERE run_id=?',(run['run_id'],))
         self.db.execute("UPDATE ai_message_state SET status=? WHERE run_id=? AND status='processing'", ('pending' if status=='cancelled' else 'failed',run['run_id']))
@@ -57,12 +61,18 @@ class AiRetryStoreMixin:
         row = self.db.execute('SELECT payload FROM ai_request_snapshots WHERE run_id=?',(run['run_id'],)).fetchone()
         if not row: return None
         value = json.loads(row[0])
+        if 'route_candidates' in run:
+            vision = any(m['content'].get('image') for m in value['envelope']['messages'])
+            if self._route_candidate(dict(profile_id=run['profile_id'], revision=run['profile_revision']), vision) is None:
+                raise ConversationError('api_profile_unavailable', '候选 Agent 已不可用，尝试下一条配置。', 409)
         secret = self.db.execute('SELECT secret FROM api_profiles WHERE profile_id=?',(run['profile_id'],)).fetchone()[0]
         run.update(status='running',next_retry_at=None)
         self._ai_write_run(run)
         return dict(value, encrypted_key=bytes(secret), resumed=True)
 
     def _schedule_ai_retry(self, run, error):
+        if 'route_candidates' in run:
+            return self._schedule_route_retry(run, error)
         retryable = getattr(error,'retryable',error.code in ('ai_network_error','ai_response_invalid'))
         if (not retryable or not run.get('attempt_count') or run['attempt_count'] > run.get('max_retries',0)
                 or not self.db.execute('SELECT 1 FROM ai_request_snapshots WHERE run_id=?',(run['run_id'],)).fetchone()): return False
@@ -89,6 +99,8 @@ class AiRetryStoreMixin:
     def _recover_retry(self, run):
         if 'max_retries' not in run: return False  # Preserve legacy paused/interrupted semantics.
         snapshot = self.db.execute('SELECT 1 FROM ai_request_snapshots WHERE run_id=?',(run['run_id'],)).fetchone()
+        if 'route_candidates' in run:
+            return self._recover_route(run, snapshot)
         if run.get('attempt_count',0) > run['max_retries']:
             return False
         if not snapshot:

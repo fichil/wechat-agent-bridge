@@ -97,10 +97,17 @@ class DeliveryStoreMixin:
                     self._account(aid)['wxid'] not in item.get('mentioned_wxids',[])): return counted
         elif conv['category'] not in ('contact','enterprise_contacts'):
             return
+        # Messages already owned by a running batch do not extend the next batch's merge window.
+        pending = self.db.execute("SELECT 1 FROM reply_triggers t WHERE t.account_id=? AND t.conversation_id=? "
+                                  "AND t.epoch=? AND t.consumed_run_id IS NULL AND NOT EXISTS ("
+                                  "SELECT 1 FROM ai_run_messages rm JOIN ai_runs r USING(run_id) "
+                                  "WHERE rm.message_id=t.message_id AND r.status IN ('queued','running')) LIMIT 1",
+                                  (aid, cid, self._ai_session(aid,cid)['epoch'])).fetchone()
         inserted=self.db.execute('INSERT OR IGNORE INTO reply_triggers VALUES(?,?,?,?,NULL)',
             (item['message_id'],aid,cid,self._ai_session(aid,cid)['epoch'])).rowcount
         if inserted:
-            self.db.execute('UPDATE delivery_sessions SET last_trigger_at=? WHERE account_id=? AND conversation_id=?',(time.time(),aid,cid))
+            if not pending:
+                self.db.execute('UPDATE delivery_sessions SET last_trigger_at=? WHERE account_id=? AND conversation_id=?',(time.time(),aid,cid))
             # A history refresh may have memorized this message before the live cursor reaches it.
             self.db.execute("UPDATE ai_message_state SET status='pending',memorized_at=NULL WHERE message_id=? AND status='memorized'",(item['message_id'],))
             self.db.execute('UPDATE ai_sessions SET auto_pending=1 WHERE account_id=? AND conversation_id=?',(aid,cid))

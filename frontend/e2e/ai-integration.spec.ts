@@ -61,6 +61,76 @@ async function toggle(page: Page) {
     .click();
 }
 
+test("Agent failure switches once, combines private messages and retains the working Agent", async ({
+  page,
+}) => {
+  await page.goto(`/workspace/${ids[0]!.account_id}/agents`);
+  await addApi(page, "首选连接");
+  await addApi(page, "备用连接", "anthropic");
+  const card = blankCard();
+  card.data.name = "自动切换测试角色";
+  await post(page, "role-cards/create", { card });
+  await post(page, "conversation-preferences/update", {
+    ...ids[0]!,
+    expected_revision: 0,
+    ai_enabled: true,
+    ai_max_retries: 0,
+  });
+  for (const index of [1, 2, 3])
+    await fixturePost(page, service + "/test/message", { data: { index } });
+  await fixturePost(page, service + "/test/fail-next", { data: {} });
+  await page.goto(`/workspace/${ids[0]!.account_id}/logs`);
+  await page
+    .getByLabel("会话", { exact: true })
+    .selectOption(ids[0]!.conversation_id);
+  await page
+    .getByRole("button", { name: "处理未处理消息", exact: true })
+    .click();
+  await expect
+    .poll(
+      async () =>
+        (await post(page, "ai-runs/list", ids[0]!)).items[0]?.profile_name,
+    )
+    .toBe("备用连接");
+  await fixturePost(page, service + "/test/ai-tick", { data: {} });
+  await expect(page.locator(".ai-runs")).toContainText("执行 Agent：备用连接");
+  await expect(page.getByLabel("Agent 调用记录")).toContainText(
+    "首选连接 · 失败",
+  );
+  await expect(page.getByLabel("Agent 调用记录")).toContainText(
+    "备用连接 · 成功",
+  );
+  await expect(page.locator(".ai-runs")).toContainText("已发送");
+  const first = (await post(page, "ai-runs/list", ids[0]!)).items[0];
+  expect(first).toMatchObject({
+    status: "completed",
+    message_count: 3,
+    attempt_count: 2,
+    retry_count: 0,
+  });
+  expect(first.delivery.total_parts).toBe(1);
+  const prefs = await post(page, "conversation-preferences/query", ids[0]!);
+  expect(prefs.effective).toMatchObject({
+    api_profile_name: "首选连接",
+    active_api_profile_name: "备用连接",
+  });
+  expect(prefs.memory_revision).toBe(1);
+  await fixturePost(page, service + "/test/message", { data: { index: 4 } });
+  await page
+    .getByRole("button", { name: "处理未处理消息", exact: true })
+    .click();
+  await expect
+    .poll(
+      async () => (await post(page, "ai-runs/list", ids[0]!)).items[0]?.status,
+    )
+    .toBe("completed");
+  expect((await post(page, "ai-runs/list", ids[0]!)).items[0]).toMatchObject({
+    profile_name: "备用连接",
+    attempt_count: 1,
+    message_count: 1,
+  });
+});
+
 test("uncertain delivery requires a decision and failed delivery retries the existing reply", async ({
   page,
 }) => {

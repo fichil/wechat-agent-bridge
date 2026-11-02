@@ -129,6 +129,8 @@ class AiStoreMixin:
                         raise ConversationError("api_key_unreadable", "密钥无法读取，请在 Agent 中重新填写。", 409)
                 current = {**previous, **patch}
                 if current != previous:
+                    if current['api_profile_id'] != previous['api_profile_id']:
+                        self.db.execute("DELETE FROM metadata WHERE key GLOB 'ai_agent_route:*' AND json_extract(value,'$.configuration.source')='default'")
                     self.db.execute("UPDATE ai_defaults SET role_card_code=?,api_profile_id=?,revision=revision+1 WHERE singleton=1",
                                     (current["role_card_code"], current["api_profile_id"]))
                     changed = True
@@ -147,14 +149,17 @@ class AiStoreMixin:
         if not role:
             issues.append(dict(code="default_role_card_missing", message="未配置默认角色卡，请选择角色卡或先设置全局默认角色卡。"))
         api = self._profile(profile) if profile else None
+        candidates = self._routing_profiles(preferences)
         if not api:
             issues.append(dict(code="default_api_profile_missing", message="未配置默认 API，请选择 API 配置或先在 Agent 中设置全局默认 API。"))
-        elif not api["key_readable"]:
+        elif not candidates and not api["key_readable"]:
             issues.append(dict(code="api_key_unreadable", message="API 密钥无法读取，请在 Agent 中重新填写。"))
-        elif api["verification"]["status"] != "passed":
+        elif not candidates and api["verification"]["status"] != "passed":
             issues.append(dict(code="api_profile_unverified", message="API 尚未通过可用性测试，请在 Agent 中测试后再启用。"))
         return dict(role_card_code=role, role_card_name=role_name, api_profile_id=profile,
                     api_profile_name=api["name"] if api else None,
+                    active_api_profile_id=candidates[0]['profile_id'] if candidates else None,
+                    active_api_profile_name=candidates[0]['name'] if candidates else None,
                     role_source="explicit" if preferences["role_card_code"] else "default",
                     api_source="explicit" if preferences["api_profile_id"] else "default",
                     ready=not issues, issues=issues)

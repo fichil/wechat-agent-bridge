@@ -20,6 +20,7 @@ CONTRACT = ('The mandatory output contract is exactly one JSON object with two s
             'No additional fields, markdown, tools or external actions. memory must be the complete updated memory, '
             'including this reply as generated but NOT yet sent to WeChat. The deliveries field is the authoritative '
             'record of prior reply transmission; never infer delivery from memory or a generated reply. '
+            'When reply_required is true, provide a non-empty reply addressing every reply_target_id; consecutive messages may share one reply. '
             'When reply_allowed is false, return an empty reply and only update memory from real messages, '
             'without inventing an assistant response. When true and trigger_reason is group_threshold, decide whether a natural, '
             'useful contribution fits the character and current group discussion; an empty reply is valid. '
@@ -180,6 +181,8 @@ class Provider:
         capture = Capture(profile, key, envelope, mode, url, body)
         try:
             result = self._request(profile, url, headers, body, capture)
+            if envelope.get('reply_required') and not result['reply'].strip():
+                raise failure('ai_empty_reply', '私聊回复为空，消息仍等待回复。')
             capture.finish(result=result)
             return result
         except ConversationError as exc:

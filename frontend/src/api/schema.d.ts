@@ -1082,6 +1082,17 @@ export interface components {
         };
         /** AiRun */
         AiRun: {
+            /** Profile Id */
+            profile_id?: string | null;
+            /** Profile Name */
+            profile_name?: string | null;
+            /** Profile Attempts */
+            profile_attempts?: components["schemas"]["ProfileAttempt"][];
+            /**
+             * Retry Count
+             * @default 0
+             */
+            retry_count: number;
             /**
              * Attempt Count
              * @default 0
@@ -1762,6 +1773,10 @@ export interface components {
         };
         /** EffectiveConfiguration */
         EffectiveConfiguration: {
+            /** Active Api Profile Id */
+            active_api_profile_id?: string | null;
+            /** Active Api Profile Name */
+            active_api_profile_name?: string | null;
             /** Role Card Code */
             role_card_code: string | null;
             /** Role Card Name */
@@ -2530,6 +2545,26 @@ export interface components {
             protocol: "openai_responses" | "openai_chat_completions" | "anthropic_messages" | "gemini_generate_content";
             /** Base Url */
             base_url: string;
+        };
+        /** ProfileAttempt */
+        ProfileAttempt: {
+            /** Profile Id */
+            profile_id: string;
+            /** Profile Name */
+            profile_name: string;
+            /** Attempt */
+            attempt: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "completed" | "failed" | "interrupted";
+            /** Started At */
+            started_at: string;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Error */
+            error?: string | null;
         };
         /** ProfileCreate */
         ProfileCreate: {

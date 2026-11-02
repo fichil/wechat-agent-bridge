@@ -141,6 +141,8 @@ class ConfigurationIssue(BaseModel):
 
 
 class EffectiveConfiguration(BaseModel):
+    active_api_profile_id: str | None = None
+    active_api_profile_name: str | None = None
     role_card_code: str | None
     role_card_name: str | None
     api_profile_id: str | None

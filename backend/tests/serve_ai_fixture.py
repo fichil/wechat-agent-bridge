@@ -75,6 +75,7 @@ def reset():
             store.db.execute("DELETE FROM ai_run_messages")
             store.db.execute("DELETE FROM ai_runs")
             store.db.execute("DELETE FROM ai_sessions")
+            store.db.execute("DELETE FROM metadata WHERE key GLOB 'ai_agent_route:*'")
             store.db.execute("DELETE FROM ai_message_state")
             store.db.execute("DELETE FROM messages")
             store.db.execute("DELETE FROM history_ranges")
@@ -117,6 +118,13 @@ def fail_next():
     assert app.state.store.path == ":memory:"
     provider.fail_next = True
     return {"ok": True}
+
+
+@app.post('/test/ai-tick')
+def ai_tick():
+    assert app.state.store.path == ':memory:'
+    app.state.ai.tick()
+    return {'ok': True}
 
 
 @app.post("/test/source-logs")

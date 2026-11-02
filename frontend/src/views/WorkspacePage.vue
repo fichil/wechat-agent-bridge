@@ -1,6 +1,11 @@
 <script setup lang="ts">
-import { computed, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { computed, nextTick, ref, watch } from "vue";
+import {
+  isNavigationFailure,
+  NavigationFailureType,
+  useRoute,
+  useRouter,
+} from "vue-router";
 import AccountAvatar from "../components/AccountAvatar.vue";
 import BrandHeader from "../components/BrandHeader.vue";
 import ConversationsPanel from "../components/ConversationsPanel.vue";
@@ -12,6 +17,32 @@ import { useAccountsStore } from "../stores/accounts";
 import { formatTime, reasonText } from "../reasons";
 const route = useRoute();
 const router = useRouter();
+const content = ref<HTMLElement | null>(null);
+async function resetScroll() {
+  await nextTick();
+  if (content.value) content.value.scrollTop = 0;
+}
+async function navigateMenu(
+  event: MouseEvent,
+  navigate: (event: MouseEvent) => Promise<unknown>,
+) {
+  if (
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey ||
+    event.altKey ||
+    event.button !== 0
+  )
+    return;
+  const failure = await navigate(event);
+  if (
+    failure &&
+    !isNavigationFailure(failure, NavigationFailureType.duplicated)
+  )
+    return;
+  await resetScroll();
+}
+watch(() => route.fullPath, resetScroll, { flush: "post" });
 const store = useAccountsStore();
 const account = computed(() =>
   store.accounts.find((item) => item.account_id === route.params.accountId),
@@ -60,12 +91,20 @@ watch(
           <nav aria-label="工作台导航">
             <RouterLink
               v-for="entry in entries"
+              v-slot="{ href, navigate }"
               :key="entry.key"
               :to="`/workspace/${account.account_id}/${entry.key}`"
-              :class="{ active: section === entry.key }"
-              ><span aria-hidden="true">{{ entry.icon }}</span
-              >{{ entry.label }}</RouterLink
+              custom
             >
+              <a
+                :href="href"
+                :class="{ active: section === entry.key }"
+                @click="navigateMenu($event, navigate)"
+              >
+                <span aria-hidden="true">{{ entry.icon }}</span
+                >{{ entry.label }}
+              </a>
+            </RouterLink>
           </nav>
           <div class="sidebar-note">
             会话与记忆按账号独立<br />角色卡、API 及默认选择全账号共用
@@ -85,6 +124,7 @@ watch(
       </div>
       <section
         v-else-if="account"
+        ref="content"
         class="workspace-content"
         :aria-label="title"
       >

@@ -268,6 +268,8 @@ onBeforeUnmount(() => {
   </div>
   <p class="ai-placeholder-note">
     保存前会测试文本与 JSON 输出，图片能力单独检测。所有微信账号共用。
+    调用失败时按列表顺序尝试下一条适用配置，末尾回到开头；成功后当前会话继续使用该
+    Agent。
   </p>
   <p v-if="config.error" class="conversation-alert" role="alert">
     {{ config.error }} <ElButton @click="config.load">重新加载配置</ElButton>

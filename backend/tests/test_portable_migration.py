@@ -66,6 +66,7 @@ class MigrationTests(unittest.TestCase):
 
     def test_v10_import_preserves_retry_config_but_quarantines_mail_and_snapshots(self):
         with closing(sqlite3.connect(self.source/'bridge.sqlite3')) as db, db:
+            db.execute('INSERT INTO metadata VALUES(?,?)', (f'ai_agent_route:{self.aid}:{self.cid}', '{}'))
             db.execute('INSERT INTO ai_request_snapshots VALUES(?,?)', ('r', '{}'))
             db.execute("UPDATE notification_settings SET payload=?,secret=?", (json.dumps(dict(enabled=True, recipient='synthetic@example.test')), b'opaque'))
             for state in ('queued', 'sending', 'sent'):
@@ -75,6 +76,7 @@ class MigrationTests(unittest.TestCase):
         with closing(sqlite3.connect(self.target/'bridge.sqlite3')) as db:
             self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 10)
             self.assertEqual(db.execute('SELECT count(*) FROM ai_request_snapshots').fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM metadata WHERE key GLOB 'ai_agent_route:*'").fetchone()[0], 0)
             settings = json.loads(db.execute('SELECT payload FROM notification_settings').fetchone()[0])
             self.assertFalse(settings['enabled'])
             self.assertEqual(settings['recipient'], 'synthetic@example.test')

@@ -244,6 +244,60 @@ async function addRole(page: Page, name = "工作助手") {
   ).toBeVisible();
 }
 
+for (const width of [1280, 390]) {
+  test(`workspace menu resets the content scroll including the current entry at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await mockWorkspace(page);
+    await page.goto("/workspace/synthetic-account-1/role-cards");
+    await addRole(page);
+    const content = page.locator(".workspace-content");
+    await content.evaluate((el) => {
+      el.scrollTop = 180;
+    });
+    await expect
+      .poll(() => content.evaluate((el) => el.scrollTop))
+      .toBeGreaterThan(50);
+    await page.getByRole("link", { name: "角色卡", exact: true }).click();
+    await expect.poll(() => content.evaluate((el) => el.scrollTop)).toBe(0);
+    await content.evaluate((el) => {
+      el.scrollTop = 180;
+    });
+    await page.getByRole("link", { name: "会话", exact: true }).click();
+    await expect(content).toHaveAttribute("aria-label", "会话");
+    await expect.poll(() => content.evaluate((el) => el.scrollTop)).toBe(0);
+  });
+}
+
+test("cancelled workspace navigation preserves scroll and the unsaved draft", async ({
+  page,
+}) => {
+  await mockWorkspace(page);
+  await page.goto("/workspace/synthetic-account-1/role-cards");
+  await addRole(page);
+  await page.getByLabel("系统提示词", { exact: true }).fill("保留未保存草稿");
+  const content = page.locator(".workspace-content");
+  await content.evaluate((el) => {
+    el.scrollTop = 180;
+  });
+  const before = await content.evaluate((el) => el.scrollTop);
+  expect(before).toBeGreaterThan(50);
+  await page.getByRole("link", { name: "会话", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Close this dialog", exact: true })
+    .click();
+  await expect(content).toHaveAttribute("aria-label", "角色卡");
+  await expect.poll(() => content.evaluate((el) => el.scrollTop)).toBe(before);
+  await expect(page.getByLabel("系统提示词", { exact: true })).toHaveValue(
+    "保留未保存草稿",
+  );
+  await page.getByRole("link", { name: "会话", exact: true }).click();
+  await page.getByRole("button", { name: "放弃修改", exact: true }).click();
+  await expect(content).toHaveAttribute("aria-label", "会话");
+  await expect.poll(() => content.evaluate((el) => el.scrollTop)).toBe(0);
+});
+
 test("private scan interval saves independently while AI is off", async ({
   page,
 }) => {

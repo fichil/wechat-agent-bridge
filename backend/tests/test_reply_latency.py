@@ -33,7 +33,7 @@ class ReplyWakeTests(RoleTestCase):
             service.thread = threading.Thread(target=service.loop, daemon=True)
             service.thread.start()
 
-    def test_exact_one_second_trailing_window_and_reply_priority(self):
+    def test_exact_one_second_fixed_window_and_reply_priority(self):
         self.configured(); self.update(index=1, ai_enabled=True)
         self.ingest(account=0)
         self.delta(account=1)
@@ -43,13 +43,15 @@ class ReplyWakeTests(RoleTestCase):
         with patch('backend.app.delivery_storage.time.time', return_value=first+1.001):
             self.assertEqual([c['account_id'] for c in self.store.ai_candidates()], [self.ids[1], self.ids[0]])
         # Windows wall-clock samples can be identical for fast successive writes.
-        # Advance the synthetic clock explicitly to test the trailing window.
+        # Later arrivals must not extend the first pending message's window.
         with patch('backend.app.delivery_storage.time.time', return_value=first+.25):
             self.delta(2, account=1)
         second = self.store.call(lambda: self.store.db.execute('SELECT last_trigger_at FROM delivery_sessions WHERE account_id=?', (self.ids[1],)).fetchone()[0])
-        self.assertGreater(second, first)
+        self.assertEqual(second, first)
         with patch('backend.app.delivery_storage.time.time', return_value=second+.999):
             self.assertFalse(any(c['account_id'] == self.ids[1] for c in self.store.ai_candidates()))
+        with patch('backend.app.delivery_storage.time.time', return_value=first+1.001):
+            self.assertEqual([c['account_id'] for c in self.store.ai_candidates()], [self.ids[1], self.ids[0]])
 
     def test_failed_images_do_not_starve_images_after_first_four(self):
         self.configured()

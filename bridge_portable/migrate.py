@@ -115,6 +115,7 @@ def quarantine(db, reset_compatibility=False):
         db.execute("UPDATE ai_message_state SET status='failed' WHERE status='processing'")
         # The persistent migration marker is a separate hold. Keep user pauses.
         db.execute('UPDATE ai_sessions SET epoch=epoch+1,auto_pending=0')
+        db.execute("DELETE FROM metadata WHERE key GLOB 'ai_agent_route:*'")
         db.execute("UPDATE deliveries SET status='cancelled',code='migration_cancelled' WHERE status IN ('queued','failed')")
         db.execute("UPDATE deliveries SET status='unknown',code='send_interrupted' WHERE status='sending'")
         db.execute("UPDATE delivery_attempts SET status='unknown',code='send_interrupted',completed_at=? WHERE status='sending'", (timestamp,))

@@ -130,7 +130,7 @@ class AiExecution:
             if snapshot is None:
                 return
             profile, envelope = snapshot["profile"], snapshot["envelope"]
-            key = secret_protection.reveal(snapshot.pop("encrypted_key"))
+            encrypted_key = snapshot.pop("encrypted_key")
             for item in envelope["messages"]:
                 content = item["content"]
                 if "_image_bytes" in content:
@@ -138,10 +138,11 @@ class AiExecution:
             mode = profile["verification"]["output_mode"]
             while True:
                 try:
-                    build_request(profile, key, envelope, mode)
+                    # Request sizing does not need credentials; persist the input before decrypting.
+                    build_request(profile, "", envelope, mode)
                     break
                 except ConversationError as exc:
-                    if exc.code != "ai_input_too_large" or len(envelope["messages"]) <= 1:
+                    if snapshot.get('resumed') or exc.code != "ai_input_too_large" or len(envelope["messages"]) <= 1:
                         raise
                     envelope["messages"].pop()
             if not snapshot.get('resumed'):
@@ -152,6 +153,7 @@ class AiExecution:
             if not self.store.save_ai_snapshot(aid,cid,rid,profile,envelope): return
             # Closing AI while preparing must not launch a new remote request.
             self.bridge.compatibility.guard(aid)
+            key = secret_protection.reveal(encrypted_key)
             if not self.store.mark_ai_attempt(aid, cid, rid):
                 return
             run = self.store.ai_run(aid, cid, rid)
@@ -159,6 +161,7 @@ class AiExecution:
             timings = dict(trigger_to_request=max(0, round((time.time()-trigger_at[0])*1000, 3))) if reply_ids and trigger_at and trigger_at[0] else {}
             with log_context(self.store, timings_ms=timings, account_id=aid, conversation_id=cid, task_id=rid,
                 attempt_count=run.get('attempt_count'), max_retries=run.get('max_retries'),
+                profile_id=profile['profile_id'], profile_revision=profile['revision'],
                 operation="conversation", trigger=run["trigger"], memory_revision=run["memory_revision"],
                 role_revision=run["role_revision"], settings_revision=run["settings_revision"]):
                 result = self.provider.generate(profile, key, envelope, mode)

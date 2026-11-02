@@ -298,7 +298,11 @@ class ReliabilityTests(RoleTestCase):
                 self.assertEqual(exc.exception.retry_after,125 if expected else 0)
         self.configured();self.ingest()
         error=ConversationError('ai_provider_error','temporary');error.retryable=True;error.retry_after=125
-        with patch('time.time',return_value=1000),patch.object(self.provider,'generate',side_effect=error):run=self.run_once()
+        with patch('time.time',return_value=1000),patch.object(self.provider,'generate',side_effect=error):
+            run=self.run_once()
+            self.assertEqual(run['next_retry_at'],1000)  # Untouched backup bypasses the first provider's wait.
+            self.app.state.ai.perform(self.ids[0],self.cids[0],run['run_id'])
+            run=self.store.ai_run(self.ids[0],self.cids[0],run['run_id'])
         self.assertEqual(run['next_retry_at'],1125)
 
     def test_config_change_and_compatibility_wait_do_not_spend_attempts(self):
