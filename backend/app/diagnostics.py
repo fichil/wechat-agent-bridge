@@ -14,6 +14,7 @@ PRIVATE = {"authorization", "cookie", "setcookie", "apikey", "xapikey", "xgoogap
            "dbkey", "dbkeys", "keyhex", "encryptionkey", "decryptionkey", "sessionkey"}
 DATA_URI = re.compile(r"data:([^;,\s]+);base64,([A-Za-z0-9+/=\r\n]+)")
 MEDIA_MARKER = re.compile(r'\[\[(?:IMAGE|STICKER):(data:[\s\S]*?)(?:\]\]|$)',re.I)
+BARE_IMAGE_BASE64 = re.compile(r'(?:iVBORw0KGgo|/9j/|R0lGOD[dh]|UklGR)[A-Za-z0-9+/=]{24,}')
 CREDENTIAL = re.compile(r"\b(?:sk-|xai-)[A-Za-z0-9_-]{8,}")
 
 def image_summary(data, mime=None):
@@ -58,7 +59,8 @@ def sanitize(value, secrets=()):
             summary=image_summary(uri[2],uri[1]) if uri else dict(omitted='binary_data')
             return json.dumps(summary,separators=(',',':'))
         value=MEDIA_MARKER.sub(media_marker,value)
-        return DATA_URI.sub(lambda m: json.dumps(image_summary(m[2], m[1]), separators=(",", ":")), value)
+        value=DATA_URI.sub(lambda m: json.dumps(image_summary(m[2], m[1]), separators=(",", ":")), value)
+        return BARE_IMAGE_BASE64.sub(lambda m:json.dumps(image_summary(m[0]),separators=(',',':')),value)
     return value
 
 @contextmanager

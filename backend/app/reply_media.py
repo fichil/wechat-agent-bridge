@@ -91,6 +91,9 @@ def parse_reply(reply):
             else: invalid('媒体引用格式无效。')
         else:
             if RESERVED.search(segment): invalid('媒体标记和分隔符必须完整且独占消息段。')
+            from .diagnostics import BARE_IMAGE_BASE64
+            if re.search(r'data:image/[^\s,]*;base64',segment,re.I) or BARE_IMAGE_BASE64.search(segment):
+                invalid('图片 Base64 必须放在独占消息段的 IMAGE 或 STICKER 标记中。')
             parts.append(dict(kind='text', text=segment))
     if sum(len(p.get('text','').encode()) for p in parts) > 64 * 1024:
         invalid('回复文字超过 64 KiB。')

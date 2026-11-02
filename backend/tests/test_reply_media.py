@@ -55,6 +55,9 @@ class ReplyGrammarTests(unittest.TestCase):
             with self.assertRaises(ConversationError): validate_media(data,mime=mime)
         with self.assertRaises(ConversationError): decode_base64('A'*(12*1024*1024))
         with self.assertRaises(ConversationError): validate_media(picture(size=(1025,2)),'sticker')
+        for raw in (encoded(),'前文 data:image/png;base64,'+encoded(),'data:image/png;base64,@@bad'):
+            with self.assertRaises(ConversationError): parse_reply(raw)
+        self.assertNotIn(encoded(),sanitize(encoded()))
 
     def test_static_converted_and_gif_animation_preserved(self):
         result=validate_media(picture(),'sticker','image/png')
