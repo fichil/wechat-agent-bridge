@@ -81,6 +81,21 @@ async function enter(id: string) {
       class="status-alert"
     />
     <CompatibilityPanel />
+    <ElAlert
+      v-if="store.connectionError"
+      title="连接中断，账号状态尚未确认"
+      type="error"
+      :closable="false"
+      show-icon
+      class="status-alert"
+    >
+      {{ store.connectionError }}
+      <template v-if="store.lastCheckedAt"
+        >最后成功检查：{{
+          formatTime(store.lastCheckedAt)
+        }}；下方为历史账号信息。</template
+      >
+    </ElAlert>
     <section class="accounts-panel" aria-label="微信账号列表">
       <div class="panel-heading">
         <h2>
@@ -131,18 +146,26 @@ async function enter(id: string) {
                 </h3>
               </div>
               <ElTag
-                :type="account.status === 'complete' ? 'success' : 'warning'"
+                :type="
+                  store.connectionError
+                    ? 'info'
+                    : account.status === 'complete'
+                      ? 'success'
+                      : 'warning'
+                "
                 effect="plain"
                 round
                 >{{
-                  account.source_state === "offline" ||
-                  account.source_state === "unknown"
-                    ? "历史可用"
-                    : account.status === "complete"
-                      ? "已识别"
-                      : account.account_id
-                        ? "资料不完整"
-                        : "身份待确认"
+                  store.connectionError
+                    ? "历史状态"
+                    : account.source_state === "offline" ||
+                        account.source_state === "unknown"
+                      ? "历史可用"
+                      : account.status === "complete"
+                        ? "已识别"
+                        : account.account_id
+                          ? "资料不完整"
+                          : "身份待确认"
                 }}</ElTag
               >
             </div>
@@ -168,7 +191,11 @@ async function enter(id: string) {
                 v-if="account.account_id"
                 type="danger"
                 plain
-                :disabled="account.source_state !== 'offline' || !!deleting"
+                :disabled="
+                  !!store.connectionError ||
+                  account.source_state !== 'offline' ||
+                  !!deleting
+                "
                 :loading="deleting === account.account_id"
                 @click="remove(account)"
                 >删除本地账号</ElButton
@@ -195,7 +222,7 @@ async function enter(id: string) {
           <div class="empty-symbol" aria-hidden="true">◎</div>
           <h3>
             {{
-              store.error
+              store.error || store.connectionError
                 ? "暂时无法显示账号"
                 : store.snapshot?.summary.coverage_complete
                   ? "还没有发现已登录的微信"
@@ -204,7 +231,7 @@ async function enter(id: string) {
           </h3>
           <p>
             {{
-              store.error
+              store.error || store.connectionError
                 ? "检查本地服务后，点击上方“重新识别”。"
                 : "请先在本机登录微信，然后重新识别。"
             }}

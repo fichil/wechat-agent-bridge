@@ -240,7 +240,7 @@ test("network failure can be retried and mobile layout remains usable", async ({
   state.fail = true;
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  await expect(page.getByText(/无法连接本地服务/)).toBeVisible();
+  await expect(page.getByText(/连接中断/).first()).toBeVisible();
   state.fail = false;
   await page.getByRole("button", { name: "重新识别" }).click();
   await page.getByRole("button", { name: "进入工作台" }).click();

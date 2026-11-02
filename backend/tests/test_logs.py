@@ -168,7 +168,49 @@ class LogTests(RoleTestCase):
         old=self.store.log_write(dict(category="source",operation="old",account_id=self.ids[0]),{"text":"old"})
         age=(datetime.now(timezone.utc)-timedelta(days=8)).isoformat()
         self.store.call(lambda:self.store.db.execute("UPDATE diagnostic_logs SET updated_at=? WHERE log_id=?",(age,old)))
-        self.query();self.assertEqual(self.log(old).status_code,404)
+        with patch('backend.app.log_storage.time.monotonic',return_value=time.monotonic()+61): self.query()
+        self.assertEqual(self.log(old).status_code,404)
+
+    def test_poll_timings_merge_and_latest_timings_remain_available(self):
+        self.post('logs/clear',account_id=self.ids[0],scope='account')
+        for elapsed in (10,11,12):
+            record_source(self.store,'changes',{'timings_ms':{'queue_wait':elapsed}},
+                          {'unchanged':True,'timings_ms':{'source_read':elapsed}},
+                          aid=self.ids[0],automatic=True,elapsed=elapsed/1000)
+        rows=self.query(category='source',scope='account')['items']
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['count'],3)
+        self.assertEqual(rows[0]['duration_ms'],12)
+        details=self.log(rows[0]['log_id']).json()['details']
+        self.assertEqual(details['result']['timings_ms']['source_read'],12)
+        self.assertIn('log_write',details['timings_ms'])
+
+    def test_retention_is_bounded_and_runs_once_per_minute(self):
+        age=(datetime.now(timezone.utc)-timedelta(days=8)).isoformat()
+        def seed():
+            with self.store.db:
+                for n in range(450):
+                    identity=self.store._log_put(dict(category='source',operation='old'),{'n':n})
+                    self.store.db.execute('UPDATE diagnostic_logs SET updated_at=? WHERE log_id=?',(age,identity))
+                self.store._log_retention_due=0
+        self.store.call(seed)
+        def remaining():
+            return self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM diagnostic_logs WHERE updated_at=?',(age,)).fetchone()[0])
+        now=time.monotonic()
+        with patch('backend.app.log_storage.time.monotonic',return_value=now):
+            self.query();self.assertEqual(remaining(),250)
+            self.query();self.assertEqual(remaining(),250)
+        with patch('backend.app.log_storage.time.monotonic',return_value=now+61):
+            self.query();self.assertEqual(remaining(),50)
+
+    def test_batch_commits_once_and_size_query_uses_covering_index(self):
+        entries=[(dict(category='source',operation='batch',account_id=self.ids[0]),{'n':n},None) for n in range(7)]
+        with patch.object(self.store,'_log_prune',wraps=self.store._log_prune) as prune:
+            identities=self.store.log_write_many(entries)
+        self.assertEqual(len(identities),7)
+        self.assertEqual(prune.call_count,1)
+        plan=self.store.call(lambda:[r[3] for r in self.store.db.execute('EXPLAIN QUERY PLAN SELECT SUM(size_bytes) FROM diagnostic_details INDEXED BY logs_detail_sizes')])
+        self.assertIn('COVERING INDEX logs_detail_sizes',' '.join(plan))
         self.store.log_limit=120
         active=self.store.log_write(dict(category="source",operation="active",status="running"),{"text":"x"*100})
         finished=self.store.log_write(dict(category="source",operation="finished"),{"text":"y"*100})

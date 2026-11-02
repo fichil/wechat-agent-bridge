@@ -13,15 +13,39 @@ export const useAccountsStore = defineStore("accounts", () => {
   const initialized = ref(false);
   const error = ref("");
   const notice = ref("");
+  const connectionError = ref("");
+  const lastCheckedAt = ref<string | null>(null);
   const selectedId = ref(sessionStorage.getItem(selectionKey));
   const accounts = computed(() => snapshot.value?.accounts ?? []);
   let pending: Promise<void> | null = null;
   let refreshGeneration = 0;
+  let refreshPending: Promise<void> | null = null;
   const deletedIds = new Set<string>();
   async function refresh() {
+    if (refreshPending) return refreshPending;
     const generation = ++refreshGeneration;
-    const result = await api.accounts();
-    if (generation === refreshGeneration) accept(result);
+    refreshPending = (async () => {
+      try {
+        const result = await api.accounts();
+        if (generation === refreshGeneration) {
+          accept(result);
+          connectionError.value = "";
+          lastCheckedAt.value = new Date().toISOString();
+        }
+      } catch (cause) {
+        if (generation === refreshGeneration)
+          connectionError.value =
+            cause instanceof Error
+              ? cause.message
+              : "连接中断，请检查后台服务。";
+        throw cause;
+      }
+    })();
+    try {
+      await refreshPending;
+    } finally {
+      refreshPending = null;
+    }
   }
   function accept(result: Snapshot) {
     const missing = accounts.value
@@ -100,10 +124,10 @@ export const useAccountsStore = defineStore("accounts", () => {
           notice.value = "上次选择的账号已失效，请重新选择。";
         }
       } catch (cause) {
-        error.value =
-          cause instanceof ApiFailure
-            ? cause.message
-            : "无法连接本地服务，请检查服务后重新识别。";
+        if (cause instanceof ApiFailure) error.value = cause.message;
+        else
+          connectionError.value =
+            "连接中断：无法连接本地服务，请检查服务后重新识别。";
       } finally {
         initialized.value = true;
         scanning.value = false;
@@ -120,9 +144,14 @@ export const useAccountsStore = defineStore("accounts", () => {
       initialized.value = true;
       if (!accounts.value.length) void scan();
     } catch {
-      await scan();
+      initialized.value = true;
     }
   }
+
+  const polling = setInterval(() => {
+    if (initialized.value && !scanning.value) void refresh().catch(() => {});
+  }, 10_000);
+  onScopeDispose(() => clearInterval(polling));
 
   onScopeDispose(
     onChange((event) => {
@@ -167,6 +196,8 @@ export const useAccountsStore = defineStore("accounts", () => {
     initialized,
     error,
     notice,
+    connectionError,
+    lastCheckedAt,
     selectedId,
     accounts,
     select,

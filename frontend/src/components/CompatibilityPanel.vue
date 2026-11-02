@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
 import { api, type CompatibilitySnapshot } from "../api";
+import { formatTime } from "../reasons";
 
 const state = ref<CompatibilitySnapshot | null>(null);
 const error = ref("");
 const busy = ref(false);
+const lastCheckedAt = ref<string | null>(null);
 let timer: ReturnType<typeof setInterval> | undefined;
 const names: Record<string, string> = {
   account: "账号识别",
@@ -22,6 +24,7 @@ async function refresh() {
   try {
     state.value = await api.compatibility();
     error.value = "";
+    lastCheckedAt.value = new Date().toISOString();
   } catch (e) {
     error.value = e instanceof Error ? e.message : "兼容状态暂不可用";
   } finally {
@@ -48,8 +51,16 @@ onUnmounted(() => clearInterval(timer));
       :closable="false"
       show-icon
     />
+    <p v-if="error" role="status">
+      连接中断，当前兼容状态未确认。
+      <template v-if="lastCheckedAt"
+        >最后成功检查：{{
+          formatTime(lastCheckedAt)
+        }}；以下为历史状态。</template
+      >
+    </p>
     <template v-if="state?.enforced">
-      <p v-if="state.held || state.migration_pending" role="status">
+      <p v-if="!error && (state.held || state.migration_pending)" role="status">
         {{
           state.migration_pending
             ? "迁移账号正在自动检查；就绪的账号会独立恢复。"
@@ -72,23 +83,33 @@ onUnmounted(() => clearInterval(timer));
           }}</strong>
           <span class="subtle"> · {{ account.nickname || "未命名账号" }}</span>
         </div>
-        <p>{{ account.message }}</p>
+        <p v-if="!error">{{ account.message }}</p>
         <div class="compatibility-capabilities">
           <ElTag
             v-for="(supported, name) in account.capabilities"
             :key="name"
-            :type="supported ? 'success' : 'warning'"
+            :type="error ? 'info' : supported ? 'success' : 'warning'"
           >
             {{ names[name] || name }}：{{ supported ? "已适配" : "未适配" }}
           </ElTag>
         </div>
-        <ElTag :type="account.auto_state === 'ready' ? 'success' : 'warning'">
+        <ElTag
+          :type="
+            error
+              ? 'info'
+              : account.auto_state === 'ready'
+                ? 'success'
+                : 'warning'
+          "
+        >
           {{
-            account.auto_state === "ready"
-              ? "已就绪"
-              : account.auto_state === "checking"
-                ? "自动检查中"
-                : "等待条件恢复"
+            error
+              ? "状态未确认"
+              : account.auto_state === "ready"
+                ? "已就绪"
+                : account.auto_state === "checking"
+                  ? "自动检查中"
+                  : "等待条件恢复"
           }}
         </ElTag>
       </article>

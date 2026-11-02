@@ -2,6 +2,7 @@ from migration_helpers import remove_v10
 from contextlib import closing
 from copy import deepcopy
 import json
+from datetime import datetime
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -29,6 +30,7 @@ class CompatibilityTests(RoleTestCase):
     wait_run = execution.ExecutionTests.wait_run
     delta = delivery.DeliveryTests.delta
     finish = delivery.DeliveryTests.finish
+    settle = groups.GroupSchedulingTests.settle
 
     def test_background_reconcile_recovers_without_browser_or_manual_endpoint(self):
         manager = self.app.state.bridge.compatibility
@@ -49,12 +51,26 @@ class CompatibilityTests(RoleTestCase):
         manager.sender.capability.return_value = dict(ready=True, code='ready')
         with patch.object(manager, 'check_processes', return_value=True):
             bridge.discovery.scan()
+            pending=deepcopy(bridge.discovery.account(self.ids[0]))
+            pending.sync_pending=True
+            with patch.object(bridge.discovery,'account',return_value=pending):
+                manager.reconcile()
+                self.assertTrue(self.store.compatibility_blocked(self.ids[0]))
             for aid in self.ids:
                 self.store.save_conversations(aid, dict(items=rows(1), status='complete', issues=[]))
                 self.store.save_delta(aid, dict(groups=[dict(shard='@monitor', table_name='', generation='',
                                                            last_id=0, signature=[], items=[])], issues=[]))
             manager.reconcile()
             self.assertFalse(self.store.compatibility_blocked(self.ids[0]))
+            with patch.object(bridge.discovery,'account',return_value=pending):
+                manager.reconcile()
+                self.assertFalse(self.store.compatibility_blocked(self.ids[0]))
+                pending.sync_issues=['synthetic_sync_error']
+                manager.reconcile()
+                self.assertTrue(self.store.compatibility_blocked(self.ids[0]))
+                pending.sync_issues=[]
+                manager.reconcile()
+                self.assertFalse(self.store.compatibility_blocked(self.ids[0]))
             current = next(a for a in manager.query()['accounts'] if a['account_id'] == self.ids[0])
             self.assertEqual(current['auto_state'], 'ready')
             self.assertNotIn('resumable', current)
@@ -185,9 +201,118 @@ class CompatibilityTests(RoleTestCase):
         with patch.object(self.provider, 'generate', side_effect=finish_after_change):
             run = self.wait_run(self.start())
         self.assertEqual(run['status'], 'cancelled')
+        self.assertIn('代次已变化',run['message'])
         self.assertEqual(self.preferences()['memory'], previous)
         self.assertEqual(self.store.delivery_candidates(), [])
         self.assertTrue(self.store.compatibility_blocked(self.ids[0]))
+
+    def test_model_result_during_transient_hold_commits_memory_and_ordered_queue(self):
+        from test_reply_media import encoded
+        self.configured();self.enable()
+        aid,cid=self.ids[0],self.cids[0]
+        reply='第一条\n[[SPLIT]]\n[[IMAGE:data:image/png;base64,'+encoded()+']]\n[[SPLIT]]\n[[STICKER:data:image/png;base64,'+encoded()+']]'
+        for index,reason in enumerate(('native_busy','sync_pending','sync_error','native_unavailable'),1):
+            with self.subTest(reason=reason):
+                self.delta(index*100)
+                before=self.preferences()['memory_revision']
+                def generate(*args):
+                    self.store.compatibility_send_state(aid,False,reason)
+                    return dict(memory='暂停期间完成'+reason,reply=reply)
+                with patch.object(self.provider,'generate',side_effect=generate) as provider:
+                    run=self.wait_run(self.start())
+                self.assertEqual(run['status'],'completed',run)
+                self.assertEqual(self.preferences()['memory_revision'],before+1)
+                self.assertEqual([p['kind'] for p in run['reply_parts']],['text','image','sticker'])
+                self.assertEqual(run['delivery']['status'],'queued')
+                self.assertEqual(self.store.delivery_candidates(),[])
+                self.assertIsNone(self.store.claim_delivery(run['run_id'],0))
+                self.store.compatibility_send_state(aid,True,'ready');self.restore()
+                for part in range(3):
+                    self.assertEqual(self.store.delivery_candidates()[0]['part_index'],part)
+                    job=self.store.claim_delivery(run['run_id'],part)
+                    self.assertIsNone(self.store.claim_delivery(run['run_id'],part))
+                    evidence={}
+                    if part:
+                        item=self.delta(index*100+part,type=job['kind'],is_self=True,content={})
+                        created=int(datetime.fromisoformat(item['sent_at']).timestamp())
+                        self.store.call(lambda:self.store.db.execute('UPDATE messages SET server_id=? WHERE local_id=? AND account_id=?',(str(index*100+part),item['_ref']['local_id'],aid)))
+                        evidence=dict(token='f'*32,local_id=item['_ref']['local_id'],create_time=created,timestamp_ms=created*1000,
+                                      source_uuid='12345678-1234-1234-1234-123456789abc',message_type=3 if part==1 else 47,target=job['target'])
+                    self.store.finish_delivery(job,dict(status='sent',evidence=evidence))
+                self.assertEqual(self.store.delivery_candidates(),[])
+                self.assertEqual(provider.call_count,1)
+
+    def test_compatibility_diagnostics_record_only_changes_and_preserve_business_on_failure(self):
+        self.enable();aid=self.ids[0]
+        def count():
+            return self.store.call(lambda:self.store.db.execute("SELECT count(*) FROM diagnostic_logs WHERE json_extract(payload,'$.operation')='compatibility'").fetchone()[0])
+        before=count()
+        self.store.compatibility_send_state(aid,False,'native_busy')
+        self.assertGreater(count(),before)
+        before=count()
+        self.store.compatibility_send_state(aid,False,'native_busy')
+        self.assertEqual(count(),before)
+        with patch.object(self.store,'_log_put',side_effect=sqlite3.OperationalError('synthetic')):
+            self.store.compatibility_send_state(aid,False,'sync_error')
+        self.assertTrue(self.store.compatibility_blocked(aid))
+        self.assertIn('诊断未能保存',self.store.log_warning)
+
+    def test_group_threshold_model_finishes_during_sync_hold(self):
+        groups.GroupSchedulingTests.group(self,2);self.enable()
+        self.delta(1);self.delta(2)
+        def generate(*args):
+            self.store.compatibility_send_state(self.ids[0],False,'sync_pending')
+            return dict(memory='群聊新记忆',reply='收到大家的消息')
+        with patch.object(self.provider,'generate',side_effect=generate):
+            run=groups.GroupSchedulingTests.start(self)
+        self.assertEqual(run['status'],'completed',run)
+        self.assertEqual(run['trigger_reason'],'group_threshold')
+        self.assertEqual(run['delivery']['status'],'queued')
+        self.assertEqual(self.store.delivery_candidates(),[])
+        self.store.compatibility_send_state(self.ids[0],True,'ready');self.restore()
+        self.finish(run)
+        self.assertEqual(self.store.delivery_candidates(),[])
+
+    def test_paused_result_still_rejects_real_disable_or_configuration_change(self):
+        self.configured();self.enable();self.delta()
+        for disabled in (False,True):
+            with self.subTest(disabled=disabled):
+                before=self.preferences()['memory_revision']
+                def generate(*args):
+                    self.store.compatibility_send_state(self.ids[0],False,'native_busy')
+                    if disabled: self.update(self.preferences()['revision'],ai_enabled=False)
+                    else:
+                        def change():
+                            with self.store.db: self.store.db.execute('UPDATE ai_settings SET revision=revision+1')
+                        self.store.call(change)
+                    return dict(memory='不可应用的记忆',reply='不可发送')
+                with patch.object(self.provider,'generate',side_effect=generate):
+                    run=self.wait_run(self.start())
+                self.assertEqual(run['status'],'cancelled' if disabled else 'conflicted',run)
+                self.assertEqual(self.preferences()['memory_revision'],before)
+                self.assertEqual(run['delivery']['total_parts'],0)
+                self.store.compatibility_send_state(self.ids[0],True,'ready');self.restore()
+
+    def test_held_completed_reply_survives_restart_without_reinvoking_model(self):
+        self.configured();self.enable();self.delta()
+        def generate(*args):
+            self.store.compatibility_send_state(self.ids[0],False,'native_busy')
+            return dict(memory='已经保存',reply='待发送的回复')
+        with patch.object(self.provider,'generate',side_effect=generate):run=self.wait_run(self.start())
+        copy=self.path.with_name('held-restart.sqlite3')
+        def backup():
+            with closing(sqlite3.connect(copy)) as dest:self.store.db.backup(dest)
+        self.store.call(backup)
+        with closing(Store(copy)) as reopened:
+            reopened.compatibility_start();reopened.compatibility_observe(self.states,[])
+            self.assertEqual(reopened.delivery_candidates(),[])
+            state=reopened.compatibility_send_state(self.ids[0],True,'ready')
+            reopened.compatibility_resume(self.ids[0],state['revision'])
+            self.assertEqual(reopened.delivery_candidates()[0]['run_id'],run['run_id'])
+            job=reopened.claim_delivery(run['run_id'],0)
+            reopened.finish_delivery(job,dict(status='sent'))
+            self.assertEqual(reopened.delivery_candidates(),[])
+            self.assertEqual(reopened.ai_candidates(),[])
 
     def test_unknown_send_survives_recovery_and_old_queue_and_triggers_do_not_replay(self):
         self.configured(); self.enable(); self.delta()

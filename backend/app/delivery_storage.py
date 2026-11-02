@@ -150,7 +150,9 @@ class DeliveryStoreMixin:
 
     def _queue_delivery(self, run):
         aid,cid,rid=run['account_id'],run['conversation_id'],run['run_id']
-        if self._compatibility_blocked(aid):
+        # Capturing validated work is safe during transient holds. Claiming/sending
+        # remains gated by the stricter compatibility check below.
+        if not self._compatibility_capture_allowed(aid):
             run['reply']=''
             return
         mids=[r[0] for r in self.db.execute('SELECT message_id FROM ai_run_messages WHERE run_id=?',(rid,))]
