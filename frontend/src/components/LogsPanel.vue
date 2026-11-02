@@ -44,6 +44,7 @@ let generation = 0,
   listTicket = 0,
   messagesTicket = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
+let refreshPending = false;
 const stateNames: Record<string, string> = {
   pending: "待处理",
   processing: "处理中",
@@ -108,6 +109,12 @@ function query(next?: string | null): LogQuery {
   };
 }
 async function load(append = false, refresh = false) {
+  // A live refresh must include the page the user is currently loading.
+  // Wait for that response instead of invalidating it with a newer ticket.
+  if (refresh && loading.value) {
+    refreshPending = true;
+    return;
+  }
   const ticket = ++listTicket,
     version = generation;
   loading.value = true;
@@ -160,7 +167,13 @@ async function load(append = false, refresh = false) {
   } catch (cause) {
     if (version === generation) error.value = settingsError(cause);
   } finally {
-    if (version === generation && ticket === listTicket) loading.value = false;
+    if (version === generation && ticket === listTicket) {
+      loading.value = false;
+      if (refreshPending) {
+        refreshPending = false;
+        void load(false, true);
+      }
+    }
   }
 }
 async function loadSessions() {

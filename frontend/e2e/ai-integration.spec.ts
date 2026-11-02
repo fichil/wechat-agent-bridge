@@ -389,8 +389,33 @@ test("source logs paginate, filter by time and preserve loaded details across up
     .getByLabel("会话", { exact: true })
     .selectOption(ids[0]!.conversation_id);
   await expect(page.locator(".log-entry")).toHaveCount(30);
+  // Deliver a live change while the next page is still in flight.
+  let releaseNextPage!: () => void;
+  let nextPageStarted!: () => void;
+  const holdNextPage = new Promise<void>((resolve) => {
+    releaseNextPage = resolve;
+  });
+  const nextPageRequested = new Promise<void>((resolve) => {
+    nextPageStarted = resolve;
+  });
+  let blockNextPage = true;
+  await page.route("**/api/v1/logs/query", async (route) => {
+    if (!blockNextPage || !route.request().postDataJSON()?.cursor)
+      return route.continue();
+    blockNextPage = false;
+    const response = await route.fetch();
+    nextPageStarted();
+    await holdNextPage;
+    await route.fulfill({ response });
+  });
   await page.getByRole("button", { name: "加载更多日志", exact: true }).click();
-  await expect(page.locator(".log-entry")).toHaveCount(35);
+  await nextPageRequested;
+  await fixturePost(page, service + "/test/source-logs", {
+    data: { count: 1 },
+  });
+  await page.waitForTimeout(500); // Allow the live-event debounce while the page is held.
+  releaseNextPage();
+  await expect(page.locator(".log-entry")).toHaveCount(36);
   const oldest = page.locator(".log-entry").last();
   const id = await oldest.getAttribute("data-log-id");
   const anchored = page.locator(`[data-log-id="${id}"]`);
@@ -404,7 +429,7 @@ test("source logs paginate, filter by time and preserve loaded details across up
   await fixturePost(page, service + "/test/source-logs", {
     data: { count: 1 },
   });
-  await expect(page.locator(".log-entry")).toHaveCount(36);
+  await expect(page.locator(".log-entry")).toHaveCount(37);
   await expect(result.locator("pre")).toBeVisible();
   await page.getByLabel("开始时间", { exact: true }).fill("2099-01-01T00:00");
   await expect(page.locator(".log-entry")).toHaveCount(0);
