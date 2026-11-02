@@ -19,6 +19,7 @@ from backend.app.services import browser_values
 from test_conversations import accounts, rows
 import test_ai_execution as execution
 import test_delivery as delivery
+import test_group_scheduling as groups
 
 
 class CompatibilityTests(RoleTestCase):
@@ -120,6 +121,44 @@ class CompatibilityTests(RoleTestCase):
             reopened.compatibility_observe(self.states, [])
             self.assertTrue(reopened.compatibility_blocked(self.ids[0]))
         self.assertTrue(self.preferences()['ai_enabled'])
+
+    def test_transient_readiness_preserves_group_mentions_without_sending_while_held(self):
+        groups.GroupSchedulingTests.group(self,20);self.enable()
+        aid,cid=self.ids[0],self.cids[0]
+        wxid=self.store.account(aid)['wxid']
+        for index,reason in enumerate(('native_busy','sync_pending','native_unavailable'),1):
+            with self.subTest(reason=reason):
+                self.store.compatibility_send_state(aid,False,reason)
+                self.delta(index,mention_status='known',mentioned_wxids=[wxid],mentions_all=False)
+                self.assertEqual(self.store.ai_candidates(),[])
+                self.assertEqual(self.store.delivery_candidates(),[])
+                self.store.compatibility_send_state(aid,True,'ready');self.restore()
+                self.assertEqual(self.store.call(lambda:self.store._group_reason(aid,cid)),'mention')
+                groups.GroupSchedulingTests.settle(self)
+                self.assertEqual(len(self.store.ai_candidates()),1)
+                run=self.wait_run(self.app.state.ai.start(aid,cid,'resumed-'+reason,'auto'))
+                self.assertEqual(run['trigger_reason'],'mention')
+                self.assertEqual(run['delivery']['status'],'queued')
+                self.finish(run)
+        self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_triggers WHERE conversation_id=?',(cid,)).fetchone()[0]),3)
+
+    def test_transient_capture_does_not_bypass_identity_rebaseline(self):
+        self.configured();self.enable()
+        aid,cid=self.ids[0],self.cids[0]
+        self.store.compatibility_send_state(aid,False,'native_busy')
+        self.delta(1)
+        self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_triggers').fetchone()[0]),1)
+        # A subsequent identity change must discard the old epoch even if readiness
+        # temporarily overwrites its visible reason before the baseline is rebuilt.
+        self.states[aid]['fingerprint']='replacement-build'
+        self.store.compatibility_observe(self.states,[])
+        self.store.compatibility_send_state(aid,False,'native_busy')
+        self.delta(2)
+        self.store.compatibility_send_state(aid,True,'ready');self.restore()
+        epoch=self.store.call(lambda:self.store._ai_session(aid,cid)['epoch'])
+        self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_triggers WHERE epoch=?',(epoch,)).fetchone()[0]),0)
+        self.delta(3)
+        self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_triggers WHERE epoch=?',(epoch,)).fetchone()[0]),1)
 
     def test_inflight_ai_result_cannot_change_memory_or_queue_send_after_hold(self):
         self.configured(); self.enable(); self.delta()

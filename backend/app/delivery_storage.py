@@ -81,7 +81,7 @@ class DeliveryStoreMixin:
             return
         if not incremental or item.get('is_self') is not False or item.get('type') not in ('text','image','sticker','voice'):
             return
-        if self._compatibility_blocked(aid):
+        if not self._compatibility_capture_allowed(aid):
             return
         prefs=self._preferences(aid,cid)
         if not prefs['ai_enabled']: return

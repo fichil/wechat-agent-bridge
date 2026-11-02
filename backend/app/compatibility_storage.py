@@ -46,6 +46,18 @@ class CompatibilityStoreMixin:
     def compatibility_blocked(self, aid):
         return self.call(self._compatibility_blocked, aid)
 
+    def _compatibility_capture_allowed(self, aid):
+        if not self._compatibility_blocked(aid):
+            return True
+        # Transient readiness holds stop execution, not capture of new live messages.
+        # Identity/build/migration holds still discard eligibility until a new baseline.
+        if self.deployment_hold or self.migration_hold or self.migration_pending_for(aid) or self._compatibility_row('*')['held']:
+            return False
+        state = self._compatibility_row(aid)
+        snapshot = json.loads(state['snapshot'])
+        return bool(state['fingerprint'] and snapshot.get('readable') and snapshot.get('needs_baseline') is False
+                    and state['reason'] in ('native_busy','sync_pending','native_unavailable'))
+
     def _compatibility_require(self, aid):
         if self._compatibility_blocked(aid):
             raise ConversationError('compatibility_paused', '自动检查尚未通过，条件恢复后将自动继续。', 409)
