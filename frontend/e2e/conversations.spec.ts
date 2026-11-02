@@ -477,7 +477,13 @@ test("cache query contract, pagination, manual refresh, and mobile empty states"
       response.url().endsWith("/api/v1/conversations/query") &&
       response.request().postDataJSON().cursor === "50",
   );
-  await page.getByRole("button", { name: "加载更多" }).click();
+  // A reconnect refresh can begin between Playwright's enabled check and click.
+  // Retry the user action until the requested page arrives; never rely on timing.
+  await expect(async () => {
+    if (await page.locator('.conversation-row').count() === 50)
+      await page.getByRole("button", { name: "加载更多" }).click();
+    await expect(page.locator('.conversation-row')).toHaveCount(61);
+  }).toPass({ timeout: 10000 });
   const nextResponse = await nextQuery;
   expect(nextResponse.status()).toBe(200);
   expect(nextResponse.request().postDataJSON()).toEqual({
