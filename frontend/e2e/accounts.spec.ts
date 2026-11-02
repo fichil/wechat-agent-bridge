@@ -87,6 +87,7 @@ test("reload preserves cached selection; a genuinely missing archive returns to 
   const state = await mockApi(page);
   await page.goto("/");
   await page.getByRole("button", { name: "进入工作台" }).click();
+  await expect(page).toHaveURL(/workspace\/synthetic-account-1\/overview/);
   await page.reload();
   await expect(page.getByRole("region", { name: "账号概览" })).toBeVisible();
   expect(state.posts).toBe(0);
@@ -97,6 +98,7 @@ test("reload preserves cached selection; a genuinely missing archive returns to 
   await expect(page).toHaveURL(/\/accounts$/);
   await expect(page.getByText(/账号已失效/)).toBeVisible();
   await page.getByRole("button", { name: "进入工作台" }).click();
+  await expect(page).toHaveURL(/workspace\/new-backend-id\/overview/);
   state.snapshot = snapshot([]);
   await page.reload();
   await expect(page).toHaveURL(/\/accounts$/);
