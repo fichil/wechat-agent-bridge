@@ -106,6 +106,36 @@ class DeploymentTests(unittest.TestCase):
             unpack(self.archive, self.root / 'releases' / self.new, digest(self.archive), self.new)
         self.assertFalse((self.root / 'outside.txt').exists())
 
+    def test_upload_interruption_does_not_publish_or_schedule_request(self):
+        incoming = self.root / 'inbox/partial.zip.part'
+        incoming.write_bytes(b'incomplete upload')
+        with patch('bridge_portable.deploy.start_task') as start:
+            with self.assertRaisesRegex(ValueError, 'Incomplete upload'):
+                self.manager.submit('partial', self.new, self.request['sha256'])
+            start.assert_not_called()
+        self.assertFalse((self.root / 'inbox/partial.json').exists())
+        self.assertEqual(read(self.root / 'current.json')['commit'], self.old)
+
+    def test_pending_main_updates_only_apply_latest_request(self):
+        first = {**self.request, 'created_at': '2026-11-02T01:00:00'}
+        latest = {**self.request, 'request_id': 'run-2', 'created_at': '2026-11-02T01:00:01'}
+        for request in (first, latest):
+            write(self.root / 'inbox' / (request['request_id'] + '.json'), request)
+            self.manager.record(request, 'queued')
+        with patch.object(self.manager, 'apply', side_effect=lambda r: self.manager.record(r, 'succeeded')) as apply:
+            self.manager.pending()
+            apply.assert_called_once_with(latest)
+        self.assertEqual(self.manager.status('run-1')['stage'], 'superseded')
+
+    def test_duplicate_submission_preserves_identity_and_restarts_pending_task(self):
+        self.archive.rename(self.archive.with_suffix('.zip.part'))
+        with patch('bridge_portable.deploy.start_task') as start:
+            first = self.manager.submit('run-1', self.new, self.request['sha256'])
+            self.assertEqual(self.manager.submit('run-1', self.new, self.request['sha256']), first)
+            self.assertEqual(start.call_count, 2)
+            with self.assertRaisesRegex(ValueError, 'Conflicting request'):
+                self.manager.submit('run-1', self.old, self.request['sha256'])
+
 
 class BusinessActivationTests(unittest.TestCase):
     def test_checks_wait_for_deploy_barrier_then_start_without_browser(self):
