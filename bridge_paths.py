@@ -3,7 +3,9 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_DATA = ROOT / ('data' if (ROOT / 'portable-manifest.json').is_file() else '.local')
+# Managed releases share data; standalone portable packages remain self-contained.
+MANAGED_ROOT = ROOT.parent.parent if ROOT.parent.name == 'releases' and (ROOT.parent.parent / 'installation.json').is_file() else None
+DEFAULT_DATA = MANAGED_ROOT / 'data' if MANAGED_ROOT else ROOT / ('data' if (ROOT / 'portable-manifest.json').is_file() else '.local')
 DATA = Path(os.environ.get('BRIDGE_DATA_DIR', DEFAULT_DATA)).resolve()
 FRONTEND = ROOT / 'frontend/dist'
 NATIVE = ROOT / 'bin/native-send' if (ROOT / 'bin/native-send').is_dir() else DATA / 'native-send'

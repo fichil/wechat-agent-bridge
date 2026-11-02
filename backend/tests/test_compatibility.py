@@ -28,7 +28,7 @@ class CompatibilityTests(RoleTestCase):
     delta = delivery.DeliveryTests.delta
     finish = delivery.DeliveryTests.finish
 
-    def test_api_resume_requires_current_revision_sync_and_fresh_acceptance(self):
+    def test_background_reconcile_recovers_without_browser_or_manual_endpoint(self):
         manager = self.app.state.bridge.compatibility
         manager.enabled = True
         manager.store.compatibility_start()
@@ -51,25 +51,43 @@ class CompatibilityTests(RoleTestCase):
                 self.store.save_conversations(aid, dict(items=rows(1), status='complete', issues=[]))
                 self.store.save_delta(aid, dict(groups=[dict(shard='@monitor', table_name='', generation='',
                                                            last_id=0, signature=[], items=[])], issues=[]))
-            response = self.post('compatibility/query')
-            self.assertEqual(response.status_code, 200, response.text)
-            current = next(a for a in response.json()['accounts'] if a['account_id'] == self.ids[0])
-            self.assertTrue(current['resumable'], current)
-            stale = self.post('compatibility/resume', account_id=self.ids[0], expected_revision=current['revision']-1)
-            self.assertEqual(stale.json()['code'], 'revision_conflict')
-            manager.sender.capability.return_value = dict(ready=False, code='native_acceptance_required')
-            rejected = self.post('compatibility/resume', account_id=self.ids[0], expected_revision=current['revision'])
-            self.assertEqual(rejected.json()['code'], 'revision_conflict')
-            unavailable = next(a for a in self.post('compatibility/query').json()['accounts'] if a['account_id'] == self.ids[0])
-            rejected = self.post('compatibility/resume', account_id=self.ids[0], expected_revision=unavailable['revision'])
-            self.assertEqual(rejected.json()['code'], 'compatibility_not_ready')
-            self.assertTrue(any(c.kwargs.get('refresh') is True for c in manager.sender.capability.call_args_list))
-            manager.sender.capability.return_value = dict(ready=True, code='ready')
-            current = next(a for a in self.post('compatibility/query').json()['accounts'] if a['account_id'] == self.ids[0])
-            restored = self.post('compatibility/resume', account_id=self.ids[0], expected_revision=current['revision'])
-            self.assertEqual(restored.status_code, 200, restored.text)
+            manager.reconcile()
             self.assertFalse(self.store.compatibility_blocked(self.ids[0]))
-            self.assertTrue(self.store.compatibility_blocked(self.ids[1]))
+            current = next(a for a in manager.query()['accounts'] if a['account_id'] == self.ids[0])
+            self.assertEqual(current['auto_state'], 'ready')
+            self.assertNotIn('resumable', current)
+            self.assertEqual(self.post('compatibility/resume', account_id=self.ids[0], expected_revision=0).status_code, 404)
+            manager.sender.capability.return_value = dict(ready=False, code='native_code_changed')
+            manager.reconcile()
+            self.assertTrue(self.store.compatibility_blocked(self.ids[0]))
+            manager.sender.capability.return_value = dict(ready=True, code='ready')
+            manager.reconcile()
+            self.assertFalse(self.store.compatibility_blocked(self.ids[0]))
+            self.assertTrue(any(c.kwargs.get('refresh') for c in manager.sender.capability.call_args_list))
+
+    def test_restart_with_same_identity_preserves_queued_reply_and_epoch(self):
+        self.configured(); self.enable(); self.delta()
+        run = self.wait_run(self.start())
+        before = self.store.call(lambda: dict(self.store._ai_session(self.ids[0], self.cids[0])))
+        self.store.compatibility_start()
+        self.store.compatibility_observe(self.states, [])
+        self.restore()
+        after = self.store.call(lambda: dict(self.store._ai_session(self.ids[0], self.cids[0])))
+        self.assertEqual(before, after)
+        self.assertEqual([x['run_id'] for x in self.store.delivery_candidates()], [run['run_id']])
+
+    def test_migration_accounts_recover_independently_and_persist_token(self):
+        self.enable()
+        self.store.migration_token = 'import-1'
+        self.assertTrue(all(self.store.compatibility_blocked(aid) for aid in self.ids))
+        self.restore(self.ids[0])
+        self.assertFalse(self.store.compatibility_blocked(self.ids[0]))
+        self.assertTrue(self.store.compatibility_blocked(self.ids[1]))
+        self.store.compatibility_start()
+        self.store.compatibility_observe(self.states, [])
+        self.assertFalse(self.store.compatibility_blocked(self.ids[0]))
+        self.store.migration_token = 'import-2'
+        self.assertTrue(self.store.compatibility_blocked(self.ids[0]))
 
     def enable(self):
         self.states = {aid: dict(fingerprint='build-'+aid, readable=True, instances=[], capabilities={}) for aid in self.ids}

@@ -5,6 +5,7 @@ import json
 import threading
 
 from pydantic import BaseModel, Field
+from typing import Literal
 from .models import Instance
 from .role_models import JsonRequest
 from .conversations import ConversationError
@@ -15,10 +16,13 @@ REASONS = {
     'not_checked': '尚未完成兼容检查。',
     'unidentified_client': '存在未确认的微信实例，自动处理已暂停。',
     'process_changed': '微信进程或构建已变化，正在重新识别。',
-    'build_changed': '微信构建或运行实例已变化，请检查后恢复。',
+    'build_changed': '微信构建或运行实例已变化，正在自动检查。',
     'unsupported_build': '当前精确构建尚未完成适配。',
     'source_offline': '微信离线，历史归档仍可使用。',
-    'native_acceptance_required': '读取可用，请在启动器完成本机发送验收。',
+    'sync_pending': '等待同步完成后自动继续。',
+    'source_ambiguous': '等待账号唯一绑定。',
+    'configuration_pending': '部分会话配置未就绪；其他就绪会话继续运行。',
+    'native_unavailable': '发送检查暂未通过，将自动重试。',
     'native_build_stale': '发送组件与兼容档案不一致，请更新完整程序包。',
     'native_build_changed': '发送组件校验失败。',
     'native_code_changed': '微信已加载代码发生变化。',
@@ -33,7 +37,7 @@ class CompatibilityAccount(BaseModel):
     held: bool
     reason: str
     message: str
-    resumable: bool = False
+    auto_state: Literal["checking", "ready", "blocked"] = "checking"
     capabilities: dict[str, bool]
     instances: list[Instance] = Field(default_factory=list)
     send_ready: bool = False
@@ -47,11 +51,6 @@ class CompatibilitySnapshot(BaseModel):
     migration_pending: bool
     accounts: list[CompatibilityAccount]
     unresolved_instances: list[Instance]
-
-
-class CompatibilityResume(JsonRequest):
-    account_id: str = Field(min_length=1, max_length=128)
-    expected_revision: int = Field(ge=0)
 
 
 def signature(instances):
@@ -128,49 +127,58 @@ class Compatibility:
             self.store.compatibility_pause(aid, capability['code'])
             self.store.call(self.store._compatibility_require, aid)
 
+    def reconcile(self):
+        """Run by the background readiness owner, never dependent on a browser query."""
+        if not self.enabled or self.sender is None or self.store.deployment_hold:
+            return
+        with self.lock:
+            if not self.check_processes():
+                return
+            rows = self.store.compatibility_rows()
+            for row in rows:
+                aid = row['scope']
+                if aid == '*':
+                    continue
+                try:
+                    snapshot = json.loads(row['snapshot'])
+                    account = self.bridge.discovery.account(aid)
+                    caps = snapshot.get('capabilities', {})
+                    reason = ('source_offline' if account.source_state != 'online' else
+                              'source_ambiguous' if len(account.instances) != 1 else
+                              'unsupported_build' if not all(caps.get(k) for k in ('account', 'messages', 'send_text')) else
+                              'sync_pending' if account.sync_pending or account.sync_issues else '')
+                    send = self.sender.capability(aid, refresh=True) if not reason else dict(ready=False, code=reason)
+                    state = self.store.compatibility_send_state(aid, send['ready'], send.get('code', 'native_unavailable'))
+                    if send['ready']:
+                        self.store.compatibility_resume(aid, state['revision'])
+                except ConversationError:
+                    continue  # Identity/revision may change during inspection; retry next pass.
+
     def query(self, refresh=True, refresh_sender=False):
-        if refresh:
-            self.check_processes()
         rows = {r['scope']: r for r in self.store.compatibility_rows()}
         global_state = rows.get('*', dict(held=self.enabled, reason='not_checked', snapshot='{}'))
         result = []
+        pending = False
         for aid, row in rows.items():
             if aid == '*':
                 continue
             snapshot = json.loads(row['snapshot'])
             caps = snapshot.get('capabilities', {name:False for name in CAPABILITIES})
             account = self.bridge.discovery.account(aid)
-            send = self.sender.capability(aid, refresh=refresh_sender) if self.sender else dict(ready=False, code='not_checked')
-            if self.enabled:
-                row = self.store.compatibility_send_state(aid, send['ready'], send.get('code', 'not_checked'))
-            reason = row['reason']
-            if not send['ready'] and account.source_state == 'online':
-                reason = send['code']
-            ready = (all(caps.values()) and send['ready'] and len(account.instances) == 1
-                     and account.source_state == 'online' and not account.sync_pending and not account.sync_issues
-                     and not global_state['held'] and not self.store.migration_hold)
-            result.append(dict(account_id=aid, nickname=account.nickname, revision=row['revision'], held=bool(row['held']), reason=reason,
-                               message=REASONS.get(reason, '兼容检查未通过。') if reason else '兼容检查通过。',
-                               resumable=bool(ready and row['held']), capabilities=caps,
-                               instances=snapshot.get('instances',[]), send_ready=send['ready']))
+            send = snapshot.get('send', dict(ready=False, code='not_checked'))
+            migration = self.store.call(self.store.migration_pending_for, aid)
+            pending = pending or migration
+            held = bool(row['held'] or global_state['held'] or migration or self.store.deployment_hold)
+            reason = (global_state['reason'] if global_state['held'] else row['reason']) or ('checking' if held else '')
+            missing = self.store.call(lambda: any(not self.store.configuration_ready(aid, cid) for cid, in self.store.db.execute(
+                'SELECT conversation_id FROM conversation_preferences WHERE account_id=? AND ai_enabled=1', (aid,))))
+            display_reason = reason or ('configuration_pending' if missing else '')
+            result.append(dict(account_id=aid, nickname=account.nickname, revision=row['revision'], held=held,
+                               reason=display_reason, message=REASONS.get(display_reason, '自动检查未通过，将自动重试。') if display_reason else '自动检查通过，已就绪。',
+                               auto_state='checking' if reason in ('checking','not_checked','sync_pending','process_changed') else 'blocked' if held or missing else 'ready',
+                               capabilities=caps, instances=snapshot.get('instances', []), send_ready=send['ready']))
         reason = global_state['reason']
         return dict(enforced=self.enabled, held=bool(global_state['held']), reason=reason,
-                    message=REASONS.get(reason, '兼容检查未通过。') if reason else '本机微信已识别。',
-                    migration_pending=self.store.migration_hold, accounts=result,
+                    message=REASONS.get(reason, '自动检查尚未通过。') if reason else '本机微信已识别。',
+                    migration_pending=pending, accounts=result,
                     unresolved_instances=json.loads(global_state['snapshot']).get('instances', []))
-
-    def resume(self, aid, expected_revision):
-        if not self.enabled:
-            raise ConversationError('compatibility_not_enabled', '当前测试后端未启用真实微信兼容检查。', 409)
-        with self.lock:
-            self.check_processes()
-            state = next((a for a in self.query(refresh=False, refresh_sender=True)['accounts'] if a['account_id'] == aid), None)
-            if not state or state['revision'] != expected_revision:
-                raise ConversationError('revision_conflict', '兼容状态已变化，请重新检查。', 409)
-            if not state['resumable']:
-                raise ConversationError('compatibility_not_ready', '请先完成同步、兼容检查和本机发送验收。', 409)
-            for row in self.store.call(lambda: self.store.db.execute('SELECT conversation_id FROM conversation_preferences WHERE account_id=? AND ai_enabled=1',(aid,)).fetchall()):
-                if not self.store.preferences(aid,row[0])['effective']['ready']:
-                    raise ConversationError('ai_configuration_required', '仍有会话的 API 或角色配置未就绪。', 409)
-            self.store.compatibility_resume(aid, expected_revision)
-            return self.query(refresh=False)

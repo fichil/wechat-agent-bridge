@@ -21,7 +21,16 @@ def upgrade_v9(db):
 
 class CompatibilityStoreMixin:
     compatibility_enforced = False
-    migration_hold = False
+    migration_hold = False  # legacy test fixtures only
+    migration_token = None
+    deployment_hold = False
+
+    def migration_pending_for(self, aid):
+        snapshot = json.loads(self._compatibility_row(aid)["snapshot"])
+        return bool(self.migration_token and snapshot.get("migration_token") != self.migration_token)
+
+    def configuration_ready(self, aid, cid):
+        return self._effective(self._preferences(aid, cid))["ready"]
 
     def _compatibility_row(self, scope):
         row = self.db.execute('SELECT * FROM compatibility_state WHERE scope=?', (scope,)).fetchone()
@@ -31,7 +40,7 @@ class CompatibilityStoreMixin:
         return self.call(lambda: [dict(r) for r in self.db.execute('SELECT * FROM compatibility_state ORDER BY scope')])
 
     def _compatibility_blocked(self, aid):
-        return self.migration_hold or (self.compatibility_enforced and (
+        return self.deployment_hold or self.migration_hold or self.migration_pending_for(aid) or (self.compatibility_enforced and (
             self._compatibility_row('*')['held'] or self._compatibility_row(aid)['held']))
 
     def compatibility_blocked(self, aid):
@@ -39,7 +48,7 @@ class CompatibilityStoreMixin:
 
     def _compatibility_require(self, aid):
         if self._compatibility_blocked(aid):
-            raise ConversationError('compatibility_paused', '自动处理已暂停，请完成兼容检查、发送验收并明确恢复。', 409)
+            raise ConversationError('compatibility_paused', '自动检查尚未通过，条件恢复后将自动继续。', 409)
 
     def _compatibility_write(self, scope, fingerprint, held, reason, snapshot):
         old = self._compatibility_row(scope)
@@ -54,6 +63,10 @@ class CompatibilityStoreMixin:
 
     def _compatibility_invalidate(self, aid):
         """Invalidate eligibility, never change a submitted send into retryable work."""
+        old = self._compatibility_row(aid)
+        snapshot = json.loads(old["snapshot"])
+        snapshot["needs_baseline"] = True
+        self._compatibility_write(aid, old["fingerprint"], True, old["reason"], snapshot)
         timestamp = datetime.now(timezone.utc).isoformat()
         self.db.execute('UPDATE ai_sessions SET epoch=epoch+1,auto_pending=0 WHERE account_id=?', (aid,))
         self.db.execute("UPDATE deliveries SET status='cancelled',code='compatibility_changed' WHERE account_id=? AND status IN ('queued','failed')", (aid,))
@@ -82,7 +95,7 @@ class CompatibilityStoreMixin:
                     aid = row[0]; old = self._compatibility_row(aid)
                     if not old['held']:
                         self._compatibility_invalidate(aid)
-                    self._compatibility_write(aid, old['fingerprint'], True, reason, json.loads(old['snapshot']))
+                    self._compatibility_write(aid, old['fingerprint'], True, reason, json.loads(self._compatibility_row(aid)['snapshot']))
             self.notify(dict(type='changed', resources=['compatibility', 'ai_runs']))
         self.call(write)
 
@@ -92,7 +105,7 @@ class CompatibilityStoreMixin:
                 old = self._compatibility_row(aid)
                 if not old['held']:
                     self._compatibility_invalidate(aid)
-                self._compatibility_write(aid, old['fingerprint'], True, reason, json.loads(old['snapshot']))
+                self._compatibility_write(aid, old['fingerprint'], True, reason, json.loads(self._compatibility_row(aid)['snapshot']))
             self.notify(dict(type='changed', account_id=aid, resources=['compatibility','ai_runs']))
         self.call(write)
 
@@ -105,7 +118,7 @@ class CompatibilityStoreMixin:
                 for aid, value in states.items():
                     old = self._compatibility_row(aid)
                     changed = old['fingerprint'] != value['fingerprint']
-                    value = dict(value)
+                    value = {**json.loads(old['snapshot']), **value}
                     previous_send = json.loads(old['snapshot']).get('send')
                     if not changed and previous_send is not None:
                         value['send'] = previous_send
@@ -114,6 +127,7 @@ class CompatibilityStoreMixin:
                               'build_changed' if changed else old['reason'] if held else '')
                     if changed or (held and not old['held']):
                         self._compatibility_invalidate(aid)
+                        value['needs_baseline'] = True
                     self._compatibility_write(aid, value['fingerprint'], held, reason, value)
                 for row in self.db.execute('SELECT account_id FROM accounts').fetchall():
                     aid = row[0]
@@ -122,43 +136,46 @@ class CompatibilityStoreMixin:
                         if not old['held']:
                             self._compatibility_invalidate(aid)
                         self._compatibility_write(aid, old['fingerprint'], True,
-                                                  'unidentified_client' if unresolved else 'source_offline', json.loads(old['snapshot']))
+                                                  'unidentified_client' if unresolved else 'source_offline', json.loads(self._compatibility_row(aid)['snapshot']))
             self.notify(dict(type='changed', resources=['compatibility', 'ai_runs']))
         self.call(write)
 
     def compatibility_send_state(self, aid, ready, code):
-        """Include observed native readiness in the revision used by resume CAS."""
         def write():
             with self.db:
                 old = self._compatibility_row(aid)
                 snapshot = json.loads(old['snapshot'])
                 snapshot['send'] = dict(ready=bool(ready), code=code)
-                held = bool(old['held'] or not ready)
-                if held and not old['held']:
-                    self._compatibility_invalidate(aid)
-                self._compatibility_write(aid, old['fingerprint'], held,
+                self._compatibility_write(aid, old['fingerprint'], bool(old['held'] or not ready),
                                           code if not ready else old['reason'], snapshot)
                 return self._compatibility_row(aid)
         return self.call(write)
 
     def compatibility_resume(self, aid, expected_revision):
+        """Internal compare-and-swap after automatic live checks; no public resume action."""
         def write():
             with self.db:
                 self.db.execute('BEGIN IMMEDIATE')
                 state = self._compatibility_row(aid)
                 if state['revision'] != expected_revision:
-                    raise ConversationError('revision_conflict', '兼容状态已变化，请重新检查。', 409)
-                if self._compatibility_row('*')['held'] or self.migration_hold:
-                    raise ConversationError('compatibility_paused', '仍有未确认的客户端或等待恢复的迁移。', 409)
-                if not state['held']:
+                    raise ConversationError('revision_conflict', '兼容状态已变化，将自动重新检查。', 409)
+                if self._compatibility_row('*')['held'] or self.deployment_hold or self.migration_hold:
+                    raise ConversationError('compatibility_paused', '等待自动检查。', 409)
+                snapshot = json.loads(state['snapshot'])
+                needs_baseline = snapshot.get('needs_baseline', bool(state['held'])) or self.migration_pending_for(aid)
+                if not state['held'] and not needs_baseline:
                     return state['revision']
                 if (self.db.execute("SELECT 1 FROM ai_runs WHERE account_id=? AND status='running'", (aid,)).fetchone() or
                         self.db.execute("SELECT 1 FROM deliveries WHERE account_id=? AND status='sending'", (aid,)).fetchone()):
-                    raise ConversationError('compatibility_busy', '请等待已开始的任务正常结束后恢复。', 409)
-                self._compatibility_invalidate(aid)
-                for cid, in self.db.execute('SELECT conversation_id FROM conversation_preferences WHERE account_id=? AND ai_enabled=1', (aid,)).fetchall():
-                    self._delivery_enable(aid, cid)
-                revision = self._compatibility_write(aid, state['fingerprint'], False, '', json.loads(state['snapshot']))
+                    raise ConversationError('compatibility_busy', '等待在途任务结束后自动继续。', 409)
+                if needs_baseline:
+                    self._compatibility_invalidate(aid)
+                    for cid, in self.db.execute('SELECT conversation_id FROM conversation_preferences WHERE account_id=? AND ai_enabled=1', (aid,)).fetchall():
+                        self._delivery_enable(aid, cid)
+                snapshot['needs_baseline'] = False
+                if self.migration_token:
+                    snapshot['migration_token'] = self.migration_token
+                revision = self._compatibility_write(aid, state['fingerprint'], False, '', snapshot)
             self.notify(dict(type='changed', account_id=aid, resources=['compatibility','ai_runs']))
             return revision
         return self.call(write)

@@ -15,7 +15,8 @@ CADDY_VERSION = '2.11.7'
 CADDY_SHA512 = 'c308154504e53755958ffc62d8a2657ab17eefd6dd25c45dbb2c3d93d29519971f77ca652f7d0f2bcb7f980b9ba3822478865e29969d0272d7613550a43152b1'
 DIRECTORIES = ('backend/app/', 'bridge_portable/', 'wechat_account_probe/', 'wechat_conversations/', 'wechat_messages/', 'wechat_sender/', 'wechat_compatibility/', 'native_send/')
 EXACT = {'backend/__init__.py','backend/admin.py','backend/requirements.lock.txt','bridge_paths.py',
-         'deploy/Caddyfile.template','scripts/production_server.py','scripts/serve_backend.py',
+         'deploy/Caddyfile.template','deploy/run-installed.ps1','deploy/deploy-task.ps1',
+         'deploy/install-tasks.ps1','deploy/open-installed.ps1','scripts/production_server.py','scripts/serve_backend.py',
          'scripts/service_child.py','scripts/windows_job.py','scripts/verify_native_send_live.py',
          'scripts/observe_send_drafts.ps1','scripts/connect_private.ps1'}
 
@@ -125,7 +126,7 @@ def main():
                 target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(child,target)
     (stage/'THIRD_PARTY_NOTICES.txt').write_text('Python '+PYTHON_VERSION+'：runtime/LICENSE.txt 与 licenses/python\nCaddy '+CADDY_VERSION+'：licenses/Caddy-LICENSE\n网页依赖：licenses/frontend\n原生发送派生自 helper，适用非商业使用许可：licenses/LICENSE.helper 与 licenses/native-send-NOTICE.md\n',encoding='utf-8')
     manifest=dict(version=args.version,commit=commit,development=args.development,architecture='windows-x64',
-                  python=PYTHON_VERSION,caddy=CADDY_VERSION,
+                  python=PYTHON_VERSION,caddy=CADDY_VERSION,database_schema=9,
                   files={str(path.relative_to(stage)).replace('\\','/'):digest(path) for path in sorted(stage.rglob('*')) if path.is_file()})
     (stage/'portable-manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
     # Run the bundled interpreter with a PATH that contains no developer tools.

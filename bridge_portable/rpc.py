@@ -8,7 +8,8 @@ import sys
 
 # Resolve beside the executable, never relative to the working directory.
 ROOT = Path(__file__).resolve().parents[1]
-os.environ['BRIDGE_DATA_DIR'] = str(ROOT/'data')
+from bridge_paths import DEFAULT_DATA
+os.environ['BRIDGE_DATA_DIR'] = str(DEFAULT_DATA)
 
 
 def dispatch(request):
@@ -23,7 +24,7 @@ def dispatch(request):
                   'HTTPS：' + ('本机证书/访问检查通过（公网访问需外部设备确认）' if state['https'] else '未通过或未启动'))
         return ('后台：' + ('运行中' if state['running'] else '已停止') + '\n' + access +
                 '\n地址：' + control.config().get('origin','尚未配置') +
-                '\n迁移：' + ('等待验证和手动恢复' if state['migration_pending'] else '无待恢复迁移'))
+                '\n迁移：' + ('等待自动检查' if state['migration_pending'] else '无待恢复迁移'))
     if action == 'setup':
         return control.setup(request.get('origin',''), username, password, confirmation, private=request.get('private') is True)
     if action == 'reset':
@@ -52,12 +53,6 @@ def dispatch(request):
         value = (export_data(control.DATA,path) if action=='export' else
                  export_configuration(control.DATA,path) if action=='export-config' else import_data(path,control.DATA))
         return json.dumps(value, ensure_ascii=False, indent=2)+'\n后台保持停止。'
-    if action=='acceptance':
-        if request.get('confirmed') is not True:
-            raise ValueError('发送验收需要用户明确确认。')
-        return control.acceptance(username,password)
-    if action=='resume':
-        return control.resume(username,password)
     raise ValueError('未知操作。')
 
 

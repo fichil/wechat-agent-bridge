@@ -110,7 +110,7 @@ static void request(const wchar_t* action, const std::wstring& path=L"") {
     SecureZeroMemory(confirmation.data(), confirmation.size()*sizeof(wchar_t));
     SetWindowTextW(passwordBox, L""); SetWindowTextW(confirmBox, L"");
     busy = true; for (HWND h : controls) EnableWindow(h, FALSE);
-    SetWindowTextW(outputBox, L"正在处理，请稍候。停止时会等待在途任务正常结束。\r\n发送验收期间请保持鼠标、键盘及微信窗口不动。查验结果会显示在这里。");
+    SetWindowTextW(outputBox, L"正在处理，请稍候。停止时会等待在途任务正常结束。\r\n结果会显示在这里。");
     std::thread([body=std::move(body)]() mutable {
         auto reply = new Reply{invoke(std::move(body))};
         if (!PostMessageW(window, Finished, 0, (LPARAM)reply)) delete reply;
@@ -135,10 +135,10 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
         passwordBox=make(L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL|ES_PASSWORD,210,170,454,30);
         make(L"STATIC",L"确认新密码",0,24,216,170,24);
         confirmBox=make(L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL|ES_PASSWORD,210,210,454,30);
-        make(L"STATIC",L"初始化/重置：填写两次新密码。验收/恢复：只填写当前后台密码。",0,24,251,660,24);
+        make(L"STATIC",L"初始化/重置：填写两次新密码。自动回复会在检查通过后恢复。",0,24,251,660,24);
         controls={privateBox,originBox,usernameBox,passwordBox,confirmBox};
-        const wchar_t* labels[]={L"保存首次配置",L"环境检查",L"启动后台",L"停止后台",L"打开后台",L"刷新状态",L"查看日志",L"重置密码",L"导出全部数据",L"导入迁移包",L"发送验收",L"恢复迁移",L"使用说明",L"仅导出角色/API"};
-        for (int i=0;i<14;++i) {
+        const wchar_t* labels[]={L"保存首次配置",L"环境检查",L"启动后台",L"停止后台",L"打开后台",L"刷新状态",L"查看日志",L"重置密码",L"导出全部数据",L"导入迁移包",L"使用说明",L"仅导出角色/API"};
+        for (int i=0;i<12;++i) {
             int row=i/4,col=i%4;
             controls.push_back(make(L"BUTTON",labels[i],WS_TABSTOP|BS_PUSHBUTTON,24+col*164,288+row*43,148,33,100+i));
         }
@@ -149,14 +149,12 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
         if (busy) return 0;
         int id=LOWORD(wp);
         if (id==200) { EnableWindow(originBox,SendMessageW(privateBox,BM_GETCHECK,0,0)!=BST_CHECKED); return 0; }
-        const wchar_t* actions[]={L"setup",L"check",L"start",L"stop",L"open",L"status",L"logs",L"reset",L"export",L"import",L"acceptance",L"resume",L"help",L"export-config"};
-        if (id<100 || id>113) return 0;
+        const wchar_t* actions[]={L"setup",L"check",L"start",L"stop",L"open",L"status",L"logs",L"reset",L"export",L"import",L"help",L"export-config"};
+        if (id<100 || id>111) return 0;
         std::wstring path;
-        if (id==108 || id==109 || id==113) { path=chooseFile(id!=109); if(path.empty()) return 0; }
-        const wchar_t* warning = id==110 ? L"将向每个已识别账号的文件传输助手发送一条 BRIDGE_TEST_ 测试消息。\n请先在每个微信窗口保留一段未发送草稿，保持窗口可观察；测试期间不要操作电脑。\n无法观察的项目不会判为通过。确认开始？" :
-            id==109 ? L"将停止本包后台，备份当前数据后导入迁移包。旧发送队列不会自动重放。确认导入？" :
-            id==107 ? L"将重置本机后台管理员密码并注销所有网页登录会话。确认重置？" :
-            id==111 ? L"确认源电脑已停止自动运行，并已在本机验证账号、API 密钥和发送能力？恢复后仅新的实时触发可以发送。" : nullptr;
+        if (id==108 || id==109 || id==111) { path=chooseFile(id!=109); if(path.empty()) return 0; }
+        const wchar_t* warning = id==109 ? L"将停止本包后台，备份当前数据后导入迁移包。旧发送队列不会重放；启动后就绪账号自动恢复。确认源电脑已停止自动运行并导入？" :
+            id==107 ? L"将重置本机后台管理员密码并注销所有网页登录会话。确认重置？" : nullptr;
         if(warning && MessageBoxW(h,warning,L"确认操作",MB_OKCANCEL|MB_ICONQUESTION)!=IDOK) return 0;
         request(actions[id-100],path); return 0;
     }

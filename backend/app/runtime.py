@@ -267,7 +267,10 @@ class Bridge:
         self.failures = {}
         from .sync_scheduler import SyncScheduler
         self.scheduler = SyncScheduler(self)
-        if monitor:
+        if monitor: self.start_monitor()
+
+    def start_monitor(self):
+        if self.thread is None and not self.stopped.is_set():
             self.discovery.start()
             self.thread = threading.Thread(target=self.loop, daemon=True, name="change-timer")
             self.thread.start()

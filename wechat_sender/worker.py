@@ -14,7 +14,7 @@ import sys
 import time
 from uuid import uuid4
 
-from .compatibility import BUILD, DLL, CORE_HASHES, digest, build_identity, accepted
+from .compatibility import BUILD, DLL, CORE_HASHES, digest, build_identity
 from wechat_account_probe.native import creation_time, handle_sid, process_sid
 
 K = c.WinDLL("kernel32", use_last_error=True)
@@ -166,7 +166,7 @@ def inspect(request):
         dll_hash=build_identity()
         return dict(core_sha256=core_hash,dll_sha256=dll_hash,profile_id=profile['id'],
                     profile_digest=profile_digest(profile),native_profile_id=profile['native']['id'],
-                    ready=accepted(account,core_hash,dll_hash))
+                    ready=True)
     finally: K.CloseHandle(process)
 
 
@@ -199,7 +199,7 @@ def send(request):
         testing=request.get('acceptance_test') is True
         if testing and (target!='filehelper' or not text.startswith('BRIDGE_TEST_')):
             raise ValueError('acceptance_target_invalid')
-        if not identity['ready'] and not testing: raise ValueError('native_acceptance_required')
+        if not identity['ready'] and not testing: raise ValueError('native_unavailable')
         pid=int(request['pid']); created=int(request['created'])
         mutex=check(K.CreateMutexW(None,False,f'Local\\WechatAgentSend-{pid}-{created}'))
         owned=K.WaitForSingleObject(mutex,0) in (0,128)

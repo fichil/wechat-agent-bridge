@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
-import { ElMessageBox } from "element-plus";
 import { api, type CompatibilitySnapshot } from "../api";
 
 const state = ref<CompatibilitySnapshot | null>(null);
@@ -23,30 +22,6 @@ async function refresh() {
     error.value = "";
   } catch (e) {
     error.value = e instanceof Error ? e.message : "兼容状态暂不可用";
-  } finally {
-    busy.value = false;
-  }
-}
-async function resume(account_id: string, revision: number) {
-  try {
-    await ElMessageBox.confirm(
-      "恢复后仅处理新的实时触发，旧待发送队列将取消，结果不确定的记录仍保留。",
-      "恢复此账号的自动处理",
-      {
-        confirmButtonText: "确认恢复",
-        cancelButtonText: "取消",
-        type: "warning",
-      },
-    );
-  } catch {
-    return;
-  }
-  busy.value = true;
-  try {
-    state.value = await api.resumeCompatibility(account_id, revision);
-    error.value = "";
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : "恢复失败，请重新检查";
   } finally {
     busy.value = false;
   }
@@ -75,7 +50,7 @@ onUnmounted(() => clearInterval(timer));
       <p v-if="state.held || state.migration_pending" role="status">
         {{
           state.migration_pending
-            ? "迁移数据等待验证，请在启动器恢复迁移。"
+            ? "迁移账号正在自动检查；就绪的账号会独立恢复。"
             : state.message
         }}
       </p>
@@ -105,17 +80,15 @@ onUnmounted(() => clearInterval(timer));
             {{ names[name] || name }}：{{ supported ? "已适配" : "未适配" }}
           </ElTag>
         </div>
-        <p v-if="account.capabilities.send_text && !account.send_ready">
-          发送仍需本机验收，请使用启动器的“发送验收”。
-        </p>
-        <ElButton
-          v-if="account.held"
-          type="primary"
-          :disabled="!account.resumable || busy"
-          @click="resume(account.account_id, account.revision)"
-        >
-          {{ account.resumable ? "恢复自动处理" : "等待检查通过" }}
-        </ElButton>
+        <ElTag :type="account.auto_state === 'ready' ? 'success' : 'warning'">
+          {{
+            account.auto_state === "ready"
+              ? "已就绪"
+              : account.auto_state === "checking"
+                ? "自动检查中"
+                : "等待条件恢复"
+          }}
+        </ElTag>
       </article>
       <p
         v-if="!state.accounts.length && !state.unresolved_instances.length"

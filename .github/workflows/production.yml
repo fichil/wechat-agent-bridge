@@ -1,0 +1,139 @@
+name: Test, package and deploy
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy the tested main commit (also used for initial acceptance)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked dependencies
+        shell: pwsh
+        run: |
+          python -m venv .venv-backend
+          .venv-backend/Scripts/python.exe -m pip install -r backend/requirements.lock.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm --prefix frontend ci --no-audit --no-fund
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Backend and read-only reader tests
+        shell: pwsh
+        run: |
+          .venv-backend/Scripts/python.exe -B -X utf8 -m unittest discover -s backend/tests
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .venv-backend/Scripts/python.exe -B -X utf8 -m unittest discover -s tests_account_probe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Frontend contracts, unit tests and build
+        working-directory: frontend
+        shell: pwsh
+        run: |
+          npm run check:api
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Browser regression with synthetic data
+        working-directory: frontend
+        shell: pwsh
+        run: |
+          npm run test:e2e
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run test:e2e:ai
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: runtime
+        with:
+          path: .local/build-cache/runtime-3.12.16
+          key: windows-2022-python-runtime-${{ hashFiles('scripts/build_runtime.ps1') }}
+      - name: Build checksum-verified private Python runtime
+        if: steps.runtime.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./scripts/build_runtime.ps1
+      - name: Download pinned Caddy
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .local/build-cache | Out-Null
+          Invoke-WebRequest 'https://github.com/caddyserver/caddy/releases/download/v2.11.7/caddy_2.11.7_windows_amd64.zip' -OutFile .local/build-cache/caddy.zip
+          $expected = 'c308154504e53755958ffc62d8a2657ab17eefd6dd25c45dbb2c3d93d29519971f77ca652f7d0f2bcb7f980b9ba3822478865e29969d0272d7613550a43152b1'
+          if ((Get-FileHash .local/build-cache/caddy.zip -Algorithm SHA512).Hash.ToLower() -ne $expected) { throw 'Caddy checksum mismatch' }
+          Expand-Archive .local/build-cache/caddy.zip .local/build-cache/caddy
+      - name: HTTPS regression
+        shell: pwsh
+        run: |
+          $env:BRIDGE_CADDY = (Resolve-Path .local/build-cache/caddy/caddy.exe).Path
+          npm --prefix frontend run test:e2e:https
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build exact commit package
+        shell: pwsh
+        run: |
+          .venv-backend/Scripts/python.exe -B -X utf8 scripts/build_portable.py --version '0.3.0-ci.${{ github.run_number }}.${{ github.run_attempt }}' --commit HEAD --runtime .local/build-cache/runtime-3.12.16 --caddy-zip .local/build-cache/caddy.zip
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Verify portable runtime in disposable data directory
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem .local/releases -Directory | Where-Object Name -NotLike '*-build' | Select-Object -First 1
+          & (Join-Path $package.FullName 'runtime/python.exe') -B -X utf8 scripts/verify_portable_runtime.py --root $package.FullName --private
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-production
+          path: |
+            .local/releases/*.zip
+            .local/releases/*.sha256
+            .local/releases/*.manifest.json
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && ((github.event_name == 'push' && vars.AUTO_DEPLOY_ENABLED == 'true') || (github.event_name == 'workflow_dispatch' && inputs.deploy))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-production
+          path: artifact
+      - name: Skip superseded main commits
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh api repos/${{ github.repository }}/git/ref/heads/main --jq .object.sha)
+          if [ "$latest" = '${{ github.sha }}' ]; then echo 'current=true' >> "$GITHUB_OUTPUT"; else echo 'Superseded by a newer main commit' >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Upload, switch and verify production
+        if: steps.head.outputs.current == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: python3 scripts/deploy_remote.py --artifact artifact --commit '${{ github.sha }}' --request-id '${{ github.run_id }}-${{ github.run_attempt }}'

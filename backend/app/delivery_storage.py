@@ -165,7 +165,7 @@ class DeliveryStoreMixin:
 
     def delivery_candidates(self):
         def query():
-            return [dict(r) for r in self.db.execute("SELECT d.* FROM deliveries d JOIN conversation_preferences p USING(account_id,conversation_id) JOIN ai_sessions s USING(account_id,conversation_id) WHERE d.status='queued' AND p.ai_enabled=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.account_id=d.account_id AND x.conversation_id=d.conversation_id AND x.status IN ('sending','unknown','failed')) AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.run_id=d.run_id AND x.part_index<d.part_index AND x.status<>'sent') ORDER BY d.rowid LIMIT 100") if not self._compatibility_blocked(r["account_id"])]
+            return [dict(r) for r in self.db.execute("SELECT d.* FROM deliveries d JOIN conversation_preferences p USING(account_id,conversation_id) JOIN ai_sessions s USING(account_id,conversation_id) WHERE d.status='queued' AND p.ai_enabled=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.account_id=d.account_id AND x.conversation_id=d.conversation_id AND x.status IN ('sending','unknown','failed')) AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.run_id=d.run_id AND x.part_index<d.part_index AND x.status<>'sent') ORDER BY d.rowid LIMIT 100") if not self._compatibility_blocked(r["account_id"]) and self.configuration_ready(r["account_id"],r["conversation_id"])]
         return self.call(query)
 
     def claim_delivery(self, rid, part):

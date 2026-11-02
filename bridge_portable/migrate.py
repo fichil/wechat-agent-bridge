@@ -162,7 +162,7 @@ def import_data(archive, data):
         for name in FILES:
             validate_db(temp/name, name)
         marker = dict(imported_at=datetime.now(timezone.utc).isoformat(), source_sha256=sha(archive),
-                      message='请重新填写 API 密钥、验证微信发送后，点击恢复迁移。')
+                      message='启动后自动核对账号、同步和发送能力；API 密钥不可读时请重新填写。')
         (temp/'migration-pending.json').write_text(json.dumps(marker, ensure_ascii=False), encoding='utf-8')
         backups = data / 'migration-backups' / ('before-import-' + uuid4().hex)
         backups.mkdir(parents=True)
