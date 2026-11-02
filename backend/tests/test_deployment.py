@@ -136,6 +136,21 @@ class DeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Conflicting request'):
                 self.manager.submit('run-1', self.old, self.request['sha256'])
 
+    def test_retention_counts_distinct_versions_after_rollback_and_reapply(self):
+        older = 'c' * 40
+        self.package(self.root / 'releases' / older, older)
+        history = [dict(commit=commit, previous=older, request_id=identity) for commit, identity in
+                   ((older, 'older'), (self.old, 'old-first'), (self.old, 'old-reapplied'))]
+        write(self.root / 'history.json', history)
+        for identity in ('older', 'old-first', 'old-reapplied', 'run-1'):
+            (self.root / 'backups' / identity).mkdir()
+        self.manager.complete(self.request, {'commit': self.old})
+        self.assertEqual([r['commit'] for r in read(self.root / 'history.json')], [older, self.old, self.new])
+        self.assertTrue((self.root / 'releases' / older).is_dir())
+        self.assertTrue((self.root / 'backups/older').is_dir())
+        self.assertTrue((self.root / 'backups/old-reapplied').is_dir())
+        self.assertFalse((self.root / 'backups/old-first').exists())
+
 
 class BusinessActivationTests(unittest.TestCase):
     def test_checks_wait_for_deploy_barrier_then_start_without_browser(self):

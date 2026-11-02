@@ -362,6 +362,13 @@ class Deployment:
         history = read(self.root / 'history.json', [])
         if not any(x['request_id'] == request['request_id'] for x in history):
             history.append(dict(commit=request['commit'], previous=current['commit'], request_id=request['request_id']))
+        # A rollback/reapply is another deployment of the same version. Keep
+        # three distinct successful versions, each with its latest cold backup.
+        versions = {}
+        for entry in history:
+            versions.pop(entry['commit'], None)
+            versions[entry['commit']] = entry
+        history = list(versions.values())
         write(self.root / 'history.json', history[-3:])
         (self.root / 'transaction.json').unlink(missing_ok=True)
         result = self.record(request, 'succeeded')
