@@ -88,7 +88,10 @@ test("sticker library uploads, previews, protects revisions and retains mixed re
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator('.reply-part').nth(1).scrollIntoViewIfNeeded();
+  // Status polling may replace the card while the viewport is being resized.
+  await expect(async () => {
+    await page.locator('.reply-part').nth(1).scrollIntoViewIfNeeded();
+  }).toPass({ timeout: 3000 });
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth,

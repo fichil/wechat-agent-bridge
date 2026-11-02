@@ -18,8 +18,12 @@ class AiRetryStoreMixin:
     def _ai_invalidated(self, run):
         aid,cid = run['account_id'],run['conversation_id']
         prefs = self._preferences(aid,cid)
-        if not prefs['ai_enabled'] or self._ai_session(aid,cid)['epoch'] != run.get('epoch') or not self._group_run_allowed(run):
-            return ('cancelled','ai_cancelled','AI 或本轮触发已关闭，旧请求已取消。')
+        if not prefs['ai_enabled']:
+            return ('cancelled','ai_cancelled','会话 AI 已关闭，旧请求已取消。')
+        if self._ai_session(aid,cid)['epoch'] != run.get('epoch'):
+            return ('cancelled','ai_cancelled','账号身份或会话处理代次已变化，旧请求已取消。')
+        if not self._group_run_allowed(run):
+            return ('cancelled','ai_cancelled','本轮群聊触发已失效，旧请求已取消。')
         if run.get('snapshot_taken'):
             if prefs['memory_revision'] != run['memory_revision']:
                 return ('conflicted','ai_memory_conflict','记忆已被手工修改，旧请求已停止，请重试。')

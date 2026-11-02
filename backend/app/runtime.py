@@ -290,19 +290,22 @@ class Bridge:
             self.scheduler.wake.set()
             return result
 
-    def source(self, aid, operation, kind="read", inputs=None, *, cid=None, automatic=False, task_id=None):
+    def source(self, aid, operation, kind="read", inputs=None, *, cid=None, automatic=False, task_id=None, timings=None, diagnostic_batch=None):
         started = time.monotonic()
         try:
             account = self.discovery.online(aid)
+            read_started = time.monotonic()
             result = operation(account)
+            if timings is not None:
+                timings['source_read'] = round((time.monotonic()-read_started)*1000,3)
             if self.discovery.online(aid).instances != account.instances:
                 raise ProbeError("account_changed_during_read")
             self.store.sync_error(aid, None)
             self.store.observed_online(aid)
-            record_source(self.store,kind,inputs or {},result,aid=aid,cid=cid,automatic=automatic,task_id=task_id,elapsed=time.monotonic()-started)
+            record_source(self.store,kind,inputs or {},result,aid=aid,cid=cid,automatic=automatic,task_id=task_id,elapsed=time.monotonic()-started,batch=diagnostic_batch)
             return result
         except ProbeError as exc:
-            record_source(self.store,kind,inputs or {},None,aid=aid,cid=cid,automatic=automatic,task_id=task_id,elapsed=time.monotonic()-started,error=str(exc))
+            record_source(self.store,kind,inputs or {},None,aid=aid,cid=cid,automatic=automatic,task_id=task_id,elapsed=time.monotonic()-started,error=str(exc),batch=diagnostic_batch)
             self.store.sync_error(aid, str(exc))
             if str(exc) in IDENTITY_ERRORS:
                 if self.compatibility.enabled:
@@ -314,7 +317,7 @@ class Bridge:
                 self.discovery.needs_rediscovery = True
             raise
         except Exception as exc:
-            record_source(self.store,kind,inputs or {},None,aid=aid,cid=cid,automatic=automatic,task_id=task_id,elapsed=time.monotonic()-started,error=exc.code if isinstance(exc,ConversationError) else "source_read_failed")
+            record_source(self.store,kind,inputs or {},None,aid=aid,cid=cid,automatic=automatic,task_id=task_id,elapsed=time.monotonic()-started,error=exc.code if isinstance(exc,ConversationError) else "source_read_failed",batch=diagnostic_batch)
             raise
 
     def tick(self, check_processes=True):
@@ -331,21 +334,30 @@ class Bridge:
             self.sync_account(account.account_id)
 
     def sync_account(self, aid, *, lane=None, source_ids=None):
-        with self.store.source_snapshot(aid) as read_revision:
-            states = self.store.states(aid)
-            started = time.monotonic()
-            options = dict(lane=lane, source_ids=source_ids) if lane else {}
-            result = self.source(aid, lambda a: self.reader.changes(a, states, **options),
-                                 "changes", dict(checkpoints=states, **options), automatic=True)
-            read_done = time.monotonic()
-            if lane:
-                result["lane"] = lane
-            if result.get("conversations"):
-                self.store.save_conversations(aid, result["conversations"])
-            self.store.save_delta(aid, result, read_revision=read_revision)
-            result["timings_ms"] = dict(queue_wait=round(QUEUE_WAIT.get(), 3), source_read=round((read_done-started)*1000, 3), archive_commit=round((time.monotonic()-read_done)*1000, 3))
-            record_delta_groups(self.store, aid, states, result, time.monotonic()-started)
-            return result
+        entries = []
+        try:
+            with self.store.source_snapshot(aid) as read_revision:
+                states = self.store.states(aid)
+                started = time.monotonic()
+                measured, commit = {}, {}
+                options = dict(lane=lane, source_ids=source_ids) if lane else {}
+                result = self.source(aid, lambda a: self.reader.changes(a, states, **options),
+                                     "changes", dict(checkpoints=states, **options), automatic=True,
+                                     timings=measured, diagnostic_batch=entries)
+                if lane:
+                    result["lane"] = lane
+                if result.get("conversations"):
+                    self.store.save_conversations(aid, result["conversations"])
+                self.store.save_delta(aid, result, read_revision=read_revision, timings=commit)
+                result["timings_ms"] = dict(queue_wait=round(QUEUE_WAIT.get(), 3), **measured,
+                    archive_queue_wait=commit.get('queue_wait',0), archive_commit=commit.get('execution',0))
+                if entries:
+                    entries[0][0]['timings_ms'] = result['timings_ms']
+                record_delta_groups(self.store, aid, states, result, time.monotonic()-started, batch=entries)
+                return result
+        finally:
+            # Commit live messages before diagnostic I/O; prune once per bounded batch.
+            self.store.log_write_many(entries)
 
     def loop(self):
         self.scheduler.loop()

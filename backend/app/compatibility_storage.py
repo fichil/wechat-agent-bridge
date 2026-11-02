@@ -1,13 +1,14 @@
 """Durable compatibility holds, independent of conversation/user pause switches."""
 from datetime import datetime, timezone
 import json
+import time
 
 from .conversations import ConversationError
 
 COMPATIBILITY_SCHEMA = (
     'CREATE TABLE compatibility_state(scope TEXT PRIMARY KEY, revision INTEGER NOT NULL, fingerprint TEXT NOT NULL, held INTEGER NOT NULL, reason TEXT NOT NULL, snapshot TEXT NOT NULL)',
 )
-TRANSIENT_SEND_HOLDS = frozenset(('native_busy', 'sync_pending', 'native_unavailable'))
+TRANSIENT_SEND_HOLDS = frozenset(('native_busy', 'sync_pending', 'sync_error', 'native_unavailable'))
 
 
 def upgrade_v9(db):
@@ -50,7 +51,8 @@ class CompatibilityStoreMixin:
     def _compatibility_capture_allowed(self, aid):
         if not self._compatibility_blocked(aid):
             return True
-        # Transient readiness holds stop execution, not capture of new live messages.
+        # Transient readiness holds stop execution, not capture of live messages
+        # or atomic acceptance of an already completed model result.
         # Identity/build/migration holds still discard eligibility until a new baseline.
         if self.deployment_hold or self.migration_hold or self.migration_pending_for(aid) or self._compatibility_row('*')['held']:
             return False
@@ -73,6 +75,27 @@ class CompatibilityStoreMixin:
         revision = old['revision']+1
         self.db.execute('INSERT OR REPLACE INTO compatibility_state VALUES(?,?,?,?,?,?)',
                         (scope, revision, *value))
+        if (old['held'], old['reason'], old['fingerprint']) != (int(held), reason, fingerprint):
+            observed = getattr(self, '_compatibility_changed_at', {})
+            current = time.monotonic()
+            duration = int((current-observed[scope])*1000) if scope in observed else None
+            observed[scope] = current
+            self._compatibility_changed_at = observed
+            # This runs on the SQL owner: never call log_write (which queues SQL)
+            # recursively, and never let diagnostics roll back the state change.
+            self.db.execute('SAVEPOINT compatibility_diagnostic')
+            try:
+                self._log_put(dict(category='source', operation='compatibility',
+                    account_id=None if scope == '*' else scope,
+                    status='completed', source='runtime', duration_ms=duration),
+                    dict(previous=dict(held=bool(old['held']), reason=old['reason']),
+                         current=dict(held=bool(held), reason=reason),
+                         identity_changed=old['fingerprint'] != fingerprint))
+            except Exception:
+                self.db.execute('ROLLBACK TO compatibility_diagnostic')
+                self.log_warning = '兼容状态诊断未能保存，状态检查仍有效。'
+            finally:
+                self.db.execute('RELEASE compatibility_diagnostic')
         return revision
 
     def _compatibility_invalidate(self, aid):

@@ -274,6 +274,24 @@ class ArchiveTests(unittest.TestCase):
 
 
 class CoordinatorTests(unittest.TestCase):
+    def test_archive_commits_before_diagnostics_and_reports_separate_timings(self):
+        store=Store(':memory:');reader=Reader()
+        reader.changes=Mock(return_value=dict(groups=[],unchanged=True))
+        bridge=Bridge(store,accounts,reader)
+        try:
+            bridge.discovery.scan()
+            aid=store.accounts()[0]['account_id'];order=[]
+            save=store.save_delta;logs=store.log_write_many
+            def archive(*args,**kwargs):
+                result=save(*args,**kwargs);order.append('archive');return result
+            def diagnostic(*args,**kwargs):
+                order.append('logs');return logs(*args,**kwargs)
+            with patch.object(store,'save_delta',side_effect=archive),patch.object(store,'log_write_many',side_effect=diagnostic):
+                result=bridge.sync_account(aid)
+            self.assertEqual(order,['archive','logs'])
+            self.assertEqual(set(result['timings_ms']),{'source_read','queue_wait','archive_queue_wait','archive_commit'})
+        finally: bridge.close()
+
     def test_server_timer_runs_without_a_browser_and_never_overlaps_source_reads(self):
         store=Store(":memory:");reader=Reader()
         active=0;maximum=0;calls=0;observed=threading.Event()

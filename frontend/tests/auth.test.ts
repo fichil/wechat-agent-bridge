@@ -117,4 +117,30 @@ describe("authentication transport boundary", () => {
     ])
       expect(safeReturn(path)).toBe("/accounts");
   });
+  it.each([
+    ["accounts/query", 8000],
+    ["compatibility/query", 8000],
+    ["account-scans/query", 8000],
+    ["accounts/delete", 15000],
+  ])("times out %s without retrying", async (path, limit) => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(
+      (_request, options) =>
+        new Promise((_resolve, reject) => {
+          options.signal.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const pending = authenticatedFetch(
+      new Request(`http://localhost/api/v1/${path}`),
+    );
+    const check = expect(pending).rejects.toThrow("后台响应超时");
+    await vi.advanceTimersByTimeAsync(limit - 1);
+    expect(fetch.mock.calls[0]![1].signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await check;
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });

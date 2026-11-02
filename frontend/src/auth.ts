@@ -167,7 +167,20 @@ export async function authenticatedFetch(request: Request): Promise<Response> {
   const ticket = generation;
   const controller = new AbortController();
   requests.add(controller);
-  const timeout = setTimeout(() => controller.abort(), 15_000);
+  const polling = new Set([
+    "/api/v1/accounts/query",
+    "/api/v1/accounts/get",
+    "/api/v1/account-scans/query",
+    "/api/v1/compatibility/query",
+  ]).has(new URL(request.url).pathname);
+  let timedOut = false;
+  const timeout = setTimeout(
+    () => {
+      timedOut = true;
+      controller.abort();
+    },
+    polling ? 8_000 : 15_000,
+  );
   const abort = () => controller.abort();
   request.signal.addEventListener("abort", abort, { once: true });
   if (request.signal.aborted) controller.abort();
@@ -193,6 +206,11 @@ export async function authenticatedFetch(request: Request): Promise<Response> {
       statusText: response.statusText,
       headers: response.headers,
     });
+  } catch (error) {
+    if (timedOut) throw new Error("连接中断：后台响应超时，请稍后重试。");
+    if (error instanceof TypeError)
+      throw new Error("连接中断：无法连接后台，请检查服务或网络。");
+    throw error;
   } finally {
     clearTimeout(timeout);
     request.signal.removeEventListener("abort", abort);

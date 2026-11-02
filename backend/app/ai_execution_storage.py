@@ -410,8 +410,8 @@ class AiExecutionStoreMixin:
                     error = ConversationError('ai_empty_reply', '私聊回复为空，消息仍等待回复。', 502)
                 if self._ai_terminate_invalid(run):
                     pass
-                elif self._compatibility_blocked(aid) or not prefs["ai_enabled"] or session["epoch"] != run["epoch"] or not self._group_run_allowed(run):
-                    run.update(status="cancelled", message="AI 已关闭，结果未应用。")
+                elif not self._compatibility_capture_allowed(aid):
+                    run.update(status="cancelled", error="compatibility_paused", message="微信身份或兼容检查尚未通过，本次结果未应用。")
                 elif prefs["memory_revision"] != run["memory_revision"]:
                     run.update(status="conflicted", error="ai_memory_conflict", message="记忆已被手工修改，本次结果未覆盖记忆，请重试。")
                 elif error:

@@ -113,9 +113,19 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
             self.executor.shutdown()
             raise
 
-    def call(self, method, *args):
+    def call(self, method, *args, timings=None):
         try:
-            return self.executor.submit(method, *args).result()
+            if timings is None:
+                return self.executor.submit(method, *args).result()
+            queued = time.monotonic()
+            def measured():
+                started = time.monotonic()
+                timings['queue_wait'] = round((started-queued)*1000,3)
+                try:
+                    return method(*args)
+                finally:
+                    timings['execution'] = round((time.monotonic()-started)*1000,3)
+            return self.executor.submit(measured).result()
         except sqlite3.Error:
             raise ConversationError("storage_unavailable", "本地数据库暂不可用，已有数据未被清空。", 503) from None
 
@@ -247,6 +257,7 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
         upgrade_v9(self.db)
         upgrade_v10(self.db)
         upgrade_v11(self.db)
+        self._log_indexes()
         self._seed_stickers()
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             self.db.close()
@@ -733,7 +744,7 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
             return values
         return self.call(query)
 
-    def save_delta(self, aid, result, *, read_revision=None):
+    def save_delta(self, aid, result, *, read_revision=None, timings=None):
         if result.get("unchanged"):
             return
         def write():
@@ -773,7 +784,7 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
             self._source_committed(source_updates)
             if event:
                 self.notify(event)
-        self.call(write)
+        self.call(write, timings=timings)
 
     def job(self, task_id, value=None, kind=None):
         def query():

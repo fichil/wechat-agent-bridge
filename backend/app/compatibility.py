@@ -21,6 +21,8 @@ REASONS = {
     'unsupported_build': '当前精确构建尚未完成适配。',
     'source_offline': '微信离线，历史归档仍可使用。',
     'sync_pending': '等待同步完成后自动继续。',
+    'sync_error': '消息同步出现错误，已保留待处理任务，恢复后自动继续。',
+    'native_busy': '发送通道正在处理其他任务，完成后自动继续。',
     'source_ambiguous': '等待账号唯一绑定。',
     'configuration_pending': '部分会话配置未就绪；其他就绪会话继续运行。',
     'native_unavailable': '发送检查暂未通过，将自动重试。',
@@ -150,7 +152,8 @@ class Compatibility:
                     reason = ('source_offline' if account.source_state != 'online' else
                               'source_ambiguous' if len(account.instances) != 1 else
                               'unsupported_build' if not all(caps.get(k) for k in ('account', 'messages', 'send_text')) else
-                              'sync_pending' if account.sync_pending or account.sync_issues else '')
+                              'sync_error' if account.sync_issues else
+                              'sync_pending' if account.sync_pending and snapshot.get('needs_baseline', True) else '')
                     send = self.sender.capability(aid, refresh=True) if not reason else dict(ready=False, code=reason)
                     state = self.store.compatibility_send_state(aid, send['ready'], send.get('code', 'native_unavailable'))
                     if send['ready']:

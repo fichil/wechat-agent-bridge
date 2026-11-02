@@ -1,5 +1,10 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { createPinia, setActivePinia } from "pinia";
+import {
+  createPinia,
+  setActivePinia,
+  disposePinia,
+  getActivePinia,
+} from "pinia";
 import { flushPromises } from "@vue/test-utils";
 import { api, ApiFailure } from "../src/api";
 import { useAccountsStore } from "../src/stores/accounts";
@@ -28,7 +33,10 @@ describe("account lifecycle", () => {
     vi.mocked(api.accounts).mockResolvedValue(snapshot());
     vi.mocked(api.account).mockResolvedValue(syntheticAccount);
   });
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    disposePinia(getActivePinia()!);
+    vi.useRealTimers();
+  });
 
   it("initializes from database without rescanning on route remount", async () => {
     const store = useAccountsStore();
@@ -56,16 +64,31 @@ describe("account lifecycle", () => {
   });
 
   it("supports empty success, network failure and retry", async () => {
-    vi.mocked(api.startScan).mockRejectedValueOnce(new Error("network"));
     const store = useAccountsStore();
     vi.mocked(api.accounts).mockRejectedValueOnce(new Error("offline"));
     await store.initialize();
-    expect(store.error).toContain("无法连接");
+    expect(store.connectionError).toContain("offline");
     vi.mocked(api.accounts).mockResolvedValue(snapshot([]));
     await store.scan();
     expect(store.error).toBe("");
     expect(store.snapshot?.summary.coverage_complete).toBe(true);
     expect(store.accounts).toEqual([]);
+    expect(store.connectionError).toBe("");
+  });
+
+  it("retains historical accounts on disconnection and recovers on bounded polling", async () => {
+    vi.useFakeTimers();
+    const store = useAccountsStore();
+    await store.initialize();
+    const checked = store.lastCheckedAt;
+    vi.mocked(api.accounts).mockRejectedValueOnce(new Error("连接中断"));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(store.connectionError).toBe("连接中断");
+    expect(store.accounts).toHaveLength(1);
+    expect(store.lastCheckedAt).toBe(checked);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(store.connectionError).toBe("");
+    expect(store.lastCheckedAt).not.toBe(checked);
   });
 
   it("preserves partial results and distinguishes module failure", async () => {

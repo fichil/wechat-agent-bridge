@@ -84,12 +84,12 @@ def diagnostic_safe(function):
     return wrapped
 
 def record_source(store, operation, inputs, result, *, aid=None, cid=None, automatic=False,
-                  task_id=None, source="wechat", elapsed=0, error=None):
+                  task_id=None, source="wechat", elapsed=0, error=None, batch=None):
     try:
         details = sanitize(dict(input_parameters=inputs, result=result))
         def stable(value):
             if isinstance(value, dict):
-                return {k:stable(v) for k,v in value.items() if k not in ("observed_at", "scanned_at", "updated_at", "last_synced_at", "scan_id")}
+                return {k:stable(v) for k,v in value.items() if k not in ("observed_at", "scanned_at", "updated_at", "last_synced_at", "scan_id", "timings_ms", "duration_ms")}
             if isinstance(value, list): return [stable(v) for v in value]
             return value
         def count(value):
@@ -99,13 +99,15 @@ def record_source(store, operation, inputs, result, *, aid=None, cid=None, autom
             if isinstance(value,list): return sum(count(v) for v in value)
             return 0
         merge_key = hashlib.sha256(json.dumps([aid,cid,operation,stable(details)],sort_keys=True,ensure_ascii=False).encode()).hexdigest() if automatic and not error else None
-        store.log_write(dict(category="source", operation=operation, account_id=aid, conversation_id=cid,
+        entry = (dict(category="source", operation=operation, account_id=aid, conversation_id=cid,
             task_id=task_id, trigger="auto" if automatic else "manual", status="failed" if error else "completed",
-            source=source, duration_ms=int(elapsed*1000), item_count=(1 if result and ((operation=="accounts" and aid) or (operation=="image" and result.get("status")=="available")) else count(result)), error=error),details,merge_key)
+            source=source, duration_ms=int(elapsed*1000), timings_ms=inputs.get('timings_ms',{}), item_count=(1 if result and ((operation=="accounts" and aid) or (operation=="image" and result.get("status")=="available")) else count(result)), error=error),details,merge_key)
+        if batch is not None: batch.append(entry)
+        else: store.log_write(*entry)
     except Exception:
         store.log_warning = "后端读取日志记录异常，读取结果不受影响。"
 
-def record_delta_groups(store, aid, inputs, result, elapsed):
+def record_delta_groups(store, aid, inputs, result, elapsed, batch=None):
     """Index changed conversation slices after their source IDs have been resolved."""
     try:
         groups = result.get("groups", [])
@@ -113,11 +115,13 @@ def record_delta_groups(store, aid, inputs, result, elapsed):
             return
         identities = store.call(lambda: {r[0]:r[1] for r in store.db.execute(
             "SELECT source_id,conversation_id FROM conversations WHERE account_id=?", (aid,))})
+        entries = [] if batch is None else batch
         for group in groups:
             cid = identities.get(group.get("source_id"))
             if cid:
                 checkpoints = [s for s in inputs if s.get("source_id") == group.get("source_id")]
-                record_source(store,"changes",dict(checkpoints=checkpoints, lane=result.get("lane"), timings_ms=result.get("timings_ms", {})),group,aid=aid,cid=cid,automatic=True,elapsed=elapsed)
+                record_source(store,"changes",dict(checkpoints=checkpoints, lane=result.get("lane"), timings_ms=result.get("timings_ms", {})),group,aid=aid,cid=cid,automatic=True,elapsed=elapsed,batch=entries)
+        if batch is None: store.log_write_many(entries)
     except Exception:
         store.log_warning = "增量同步日志记录异常，同步结果不受影响。"
 

@@ -2,6 +2,7 @@
 from datetime import datetime, timezone, timedelta
 import hashlib
 import json
+import time
 from uuid import uuid4
 from .conversations import ConversationError
 from .diagnostics import sanitize
@@ -24,6 +25,16 @@ def pack(value):
 class LogStoreMixin:
     log_warning = None
     log_limit = LOG_LIMIT
+
+    def _log_indexes(self):
+        # Additive indexes are safe for v11-compatible rollback releases too.
+        self.db.execute('CREATE INDEX IF NOT EXISTS logs_detail_sizes ON diagnostic_details(log_id,size_bytes)')
+        self.db.execute('CREATE INDEX IF NOT EXISTS logs_retention ON diagnostic_logs(active,updated_at,log_id)')
+        self.db.execute('CREATE INDEX IF NOT EXISTS logs_merge_recent ON diagnostic_logs(merge_key,active,updated_at DESC)')
+        self._log_retention_due = 0
+
+    def _log_size(self):
+        return self.db.execute('SELECT COALESCE(SUM(size_bytes),0) FROM diagnostic_details INDEXED BY logs_detail_sizes').fetchone()[0]
 
     def _log_put(self, summary, details=None, merge_key=None):
         if summary.get('account_id') and not self.db.execute('SELECT 1 FROM accounts WHERE account_id=?', (summary['account_id'],)).fetchone():
@@ -57,28 +68,54 @@ class LogStoreMixin:
         return value["log_id"]
 
     def _log_prune(self):
-        cutoff = (datetime.now(timezone.utc)-timedelta(days=7)).isoformat()
-        self.db.execute("DELETE FROM diagnostic_logs WHERE active=0 AND updated_at<?", (cutoff,))
-        total = self.db.execute("SELECT COALESCE(SUM(size_bytes),0) FROM diagnostic_details").fetchone()[0]
-        if total > self.log_limit:
-            for row in self.db.execute("SELECT l.log_id,d.size_bytes FROM diagnostic_logs l JOIN diagnostic_details d USING(log_id) WHERE active=0 ORDER BY l.updated_at,l.log_id").fetchall():
+        budget = 200
+        current = time.monotonic()
+        if current >= self._log_retention_due:
+            cutoff = (datetime.now(timezone.utc)-timedelta(days=7)).isoformat()
+            expired = self.db.execute('SELECT log_id FROM diagnostic_logs WHERE active=0 AND updated_at<? ORDER BY updated_at,log_id LIMIT ?', (cutoff,budget)).fetchall()
+            self.db.executemany('DELETE FROM diagnostic_logs WHERE log_id=?', expired)
+            budget -= len(expired)
+            self._log_retention_due = current+60
+        total = self._log_size()
+        if budget and total > self.log_limit:
+            removed = 0
+            for row in self.db.execute("SELECT l.log_id,d.size_bytes FROM diagnostic_logs l JOIN diagnostic_details d INDEXED BY logs_detail_sizes USING(log_id) WHERE active=0 ORDER BY l.updated_at,l.log_id LIMIT ?", (budget,)).fetchall():
                 self.db.execute("DELETE FROM diagnostic_logs WHERE log_id=?", (row[0],))
                 total -= row[1]
+                removed += 1
                 if total <= self.log_limit:
                     break
-            self.db.execute("INSERT OR REPLACE INTO metadata VALUES('logs_capacity_pruned',?)", (stamp(),))
+            if removed:
+                self.db.execute("INSERT OR REPLACE INTO metadata VALUES('logs_capacity_pruned',?)", (stamp(),))
 
     def log_write(self, summary, details=None, merge_key=None):
+        result = self.log_write_many([(summary, details, merge_key)])
+        return result[0] if result else None
+
+    def log_write_many(self, entries):
         # Diagnostic failures are isolated from model and source operations.
         try:
-            summary, details = sanitize(summary), sanitize(details)
-            def write():
+            entries = [(sanitize(summary),sanitize(details),key) for summary,details,key in entries]
+            def write(batch, queued):
+                started = time.monotonic()
                 with self.db:
-                    identity = self._log_put(summary, details, merge_key)
+                    identities = [self._log_put(*entry) for entry in batch]
                     self._log_prune()
-                self.notify(dict(type="changed", account_id=summary.get("account_id"), resources=["logs"]))
-                return identity
-            return self.call(write)
+                    timing = dict(log_queue_wait=round((started-queued)*1000,3), log_write=round((time.monotonic()-started)*1000,3))
+                    for identity in set(identities)-{None}:
+                        row = self.db.execute('SELECT payload FROM diagnostic_logs WHERE log_id=?',(identity,)).fetchone()
+                        if row:
+                            value = json.loads(row[0])
+                            value['timings_ms'] = {**value.get('timings_ms',{}), **timing}
+                            self.db.execute('UPDATE diagnostic_logs SET payload=? WHERE log_id=?',(pack(value),identity))
+                for aid in {entry[0].get('account_id') for entry in batch}:
+                    self.notify(dict(type="changed", account_id=aid, resources=["logs"]))
+                return identities
+            result = []
+            # Bounded transactions give business SQL an opportunity between batches.
+            for offset in range(0,len(entries),20):
+                result.extend(self.call(write,entries[offset:offset+20],time.monotonic()))
+            return result
         except Exception:
             self.log_warning = "日志记录异常，部分诊断信息未保存；业务任务结果以任务记录为准。"
             return None
@@ -173,7 +210,7 @@ class LogStoreMixin:
                 with self.db: cursor=self._cursor(query.account_id,None,"logs",dict(filters=fingerprint,after=[items[-1]["updated_at"],items[-1]["log_id"]]))
             trimmed=self.db.execute("SELECT value FROM metadata WHERE key='logs_capacity_pruned'").fetchone()
             return dict(items=items,next_cursor=cursor,warning=self.log_warning or ("日志容量曾达到上限，已提前清理最旧记录。最近清理："+trimmed[0] if trimmed else None),
-                size_bytes=self.db.execute("SELECT COALESCE(SUM(size_bytes),0) FROM diagnostic_details").fetchone()[0],limit_bytes=self.log_limit)
+                size_bytes=self._log_size(),limit_bytes=self.log_limit)
         return self.call(read)
 
     def log_detail(self, aid, identity):
@@ -182,6 +219,7 @@ class LogStoreMixin:
             row=self.db.execute("SELECT l.payload,d.payload FROM diagnostic_logs l JOIN diagnostic_details d USING(log_id) WHERE l.log_id=? AND (l.account_id=? OR l.account_id IS NULL)",(identity,aid)).fetchone()
             if row is None: raise ConversationError("log_not_found","日志不存在、已清理或不属于当前账号。",404)
             value=json.loads(row[0]); details=json.loads(row[1])
+            details['timings_ms'] = {**details.get('timings_ms',{}), **value.get('timings_ms',{})}
             if value.get("task_id"):
                 for table, key in (("ai_runs","run_id"),("api_tasks","task_id")):
                     task=self.db.execute(f"SELECT payload FROM {table} WHERE {key}=?",(value["task_id"],)).fetchone()
