@@ -97,6 +97,8 @@ class ReliabilityTests(RoleTestCase):
             run=self.run_once()
         self.assertFalse(self.app.state.ai.pending)
         self.assertFalse(self.store.ai_retry_candidates())
+        with patch('time.time',return_value=run['next_retry_at']-2):
+            self.assertEqual(self.store.ai_schedule_delay(),2)
         self.update(self.preferences()['revision'],ai_max_retries=0)
         self.assertEqual(self.retry_once(run)['max_retries'],10)
 

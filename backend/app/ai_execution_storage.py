@@ -219,6 +219,7 @@ class AiExecutionStoreMixin:
         def query():
             current = time.time()
             deadlines = [row[2]+1-current for row in self.db.execute("SELECT s.account_id,s.conversation_id,d.last_trigger_at FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) JOIN delivery_sessions d USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.paused=0 AND s.auto_pending=1 AND NOT EXISTS(SELECT 1 FROM ai_runs r WHERE r.account_id=s.account_id AND r.conversation_id=s.conversation_id AND r.status IN ('queued','running'))") if row[2]+1>current and not self._compatibility_blocked(row[0]) and not self._delivery_blocked(row[0],row[1])]
+            deadlines.extend(row[1]-current for row in self.db.execute("SELECT account_id,json_extract(payload,'$.next_retry_at') FROM ai_runs WHERE status='queued'") if row[1] and row[1]>current and not self._compatibility_blocked(row[0]))
             return max(.01, min([3]+deadlines))
         return self.call(query)
 
