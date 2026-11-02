@@ -72,12 +72,12 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(self.manager.apply(self.request)['stage'], 'failed')
             stop.assert_not_called()
 
-    def stage_upgrade(self, compatible_previous):
+    def stage_upgrade(self, compatible_previous, version=10):
         previous = self.root / 'releases' / self.old / 'portable-manifest.json'
         if compatible_previous:
-            write(previous, {**read(previous), 'database_compatible_schemas': [9, 10], 'database_output_schemas': [9, 10]})
+            write(previous, {**read(previous), 'database_compatible_schemas': [9, version], 'database_output_schemas': [9, version]})
         manifest = self.stage / 'portable-manifest.json'
-        write(manifest, {**read(manifest), 'database_schema': 10, 'database_compatible_schemas': [9, 10]})
+        write(manifest, {**read(manifest), 'database_schema': version, 'database_compatible_schemas': [9, version]})
         with zipfile.ZipFile(self.archive, 'w') as z:
             for p in self.stage.iterdir(): z.write(p, 'package/' + p.name)
         self.request['sha256'] = digest(self.archive)
@@ -131,6 +131,20 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(self.manager.apply(self.request)['stage'], 'succeeded')
         self.assertFalse((self.root / 'transaction.json').exists())
         self.assertEqual(read(self.root / 'history.json')[0]['previous'], self.old)
+
+    def test_media_upgrade_rollback_keeps_v11_and_new_evidence(self):
+        self.stage_upgrade(True, 11)
+        def healthy(root, commit, *, active, **kwargs):
+            if commit == self.new:
+                with closing(sqlite3.connect(root / 'data/bridge.sqlite3')) as db, db:
+                    db.execute('PRAGMA user_version=11')
+                    if active: db.execute("INSERT INTO evidence VALUES('media-sent')")
+                if active: raise TimeoutError('candidate failure')
+        with patch('bridge_portable.deploy.stop'), patch('bridge_portable.deploy.start_task'), patch('bridge_portable.deploy.wait_healthy', side_effect=healthy):
+            self.assertEqual(self.manager.apply(self.request)['stage'], 'rolled_back')
+        self.assertEqual(self.evidence(), ['preserve', 'media-sent'])
+        with closing(sqlite3.connect(self.root / 'data/bridge.sqlite3')) as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 11)
 
     def test_zip_traversal_rejected_without_destination_changes(self):
         with zipfile.ZipFile(self.archive, 'a') as z: z.writestr('package/../../outside.txt', 'bad')

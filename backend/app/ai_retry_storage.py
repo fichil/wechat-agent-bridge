@@ -97,6 +97,8 @@ class AiRetryStoreMixin:
         return self.call(query)
 
     def _recover_retry(self, run):
+        from .delivery_storage import REPLY_FORMAT_VERSION
+        if run.get('reply_format_version', 1) > REPLY_FORMAT_VERSION: return False
         if 'max_retries' not in run: return False  # Preserve legacy paused/interrupted semantics.
         snapshot = self.db.execute('SELECT 1 FROM ai_request_snapshots WHERE run_id=?',(run['run_id'],)).fetchone()
         if 'route_candidates' in run:

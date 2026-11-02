@@ -6,6 +6,7 @@ import unicodedata
 from uuid import uuid4
 from .conversations import ConversationError
 
+REPLY_FORMAT_VERSION = 1
 DELIVERY_SCHEMA = (
     "CREATE TABLE delivery_sessions(account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, enabled_at TEXT NOT NULL, watermarks TEXT NOT NULL, last_trigger_at REAL NOT NULL DEFAULT 0, PRIMARY KEY(account_id,conversation_id), FOREIGN KEY(account_id,conversation_id) REFERENCES conversations(account_id,conversation_id))",
     "CREATE TABLE reply_triggers(message_id TEXT PRIMARY KEY REFERENCES messages, account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, epoch INTEGER NOT NULL, consumed_run_id TEXT)",
@@ -172,14 +173,20 @@ class DeliveryStoreMixin:
 
     def delivery_candidates(self):
         def query():
-            return [dict(r) for r in self.db.execute("SELECT d.* FROM deliveries d JOIN conversation_preferences p USING(account_id,conversation_id) JOIN ai_sessions s USING(account_id,conversation_id) WHERE d.status='queued' AND p.ai_enabled=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.account_id=d.account_id AND x.conversation_id=d.conversation_id AND x.status IN ('sending','unknown','failed')) AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.run_id=d.run_id AND x.part_index<d.part_index AND x.status<>'sent') ORDER BY d.rowid LIMIT 100") if not self._compatibility_blocked(r["account_id"]) and self.configuration_ready(r["account_id"],r["conversation_id"])]
+            return [dict(r) for r in self.db.execute("SELECT d.* FROM deliveries d JOIN conversation_preferences p USING(account_id,conversation_id) JOIN ai_sessions s USING(account_id,conversation_id) WHERE d.status='queued' AND p.ai_enabled=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.account_id=d.account_id AND x.conversation_id=d.conversation_id AND x.status IN ('sending','unknown','failed')) AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.run_id=d.run_id AND x.part_index<d.part_index AND x.status<>'sent') ORDER BY d.rowid LIMIT 100") if self._delivery_format_supported(r['run_id']) and not self._compatibility_blocked(r["account_id"]) and self.configuration_ready(r["account_id"],r["conversation_id"])]
         return self.call(query)
+
+    def _delivery_format_supported(self, rid):
+        # A rollback must preserve every part of a media run, including preceding text.
+        row = self.db.execute('SELECT payload FROM ai_runs WHERE run_id=?', (rid,)).fetchone()
+        return bool(row and json.loads(row[0]).get('reply_format_version', 1) <= REPLY_FORMAT_VERSION)
 
     def claim_delivery(self, rid, part):
         def write():
             with self.db:
                 row=self.db.execute('SELECT * FROM deliveries WHERE run_id=? AND part_index=?',(rid,part)).fetchone()
                 if not row or row['status']!='queued': return None
+                if not self._delivery_format_supported(rid): return None
                 aid,cid=row['account_id'],row['conversation_id']
                 if self._compatibility_blocked(aid): return None
                 if not self._preferences(aid,cid)['ai_enabled'] or self._ai_session(aid,cid)['epoch']!=row['epoch']:
