@@ -73,7 +73,7 @@ npm run dev
 
 每条会话右侧可切换 AI 开关或打开设置。设置占用右侧聊天详情区域，选择器只显示角色名称和编码；记忆是可随时修改的长文本，初始为空。开关立即保存，角色选择和记忆通过“保存会话设置”提交；关闭 AI、更换或取消角色卡均保留记忆。离开未保存的编辑时可保存、放弃或关闭提示继续编辑。
 
-开启会话 AI 后，系统按批次处理本地未纳入记忆的消息，生成回复并更新会话记忆。具备实时触发资格的回复在本机发送验收通过后自动发送至微信；历史批次只更新记忆。会话配置按账号和会话隔离，微信退出或服务重启后仍保留；微信同步不会覆盖配置。角色卡修改对全部引用会话生效。多页面编辑使用修订号避免覆盖，冲突时保留草稿并提示重新加载。
+开启会话 AI 后，系统按批次处理本地未纳入记忆的消息，生成回复并更新会话记忆。具备实时触发资格的回复在自动检查就绪后发送至微信；历史批次只更新记忆。会话配置按账号和会话隔离，微信退出或服务重启后仍保留；微信同步不会覆盖配置。角色卡修改对全部引用会话生效。多页面编辑使用修订号避免覆盖，冲突时保留草稿并提示重新加载。
 
 数据保存在 `.local/bridge.sqlite3`，数据库版本升级至 8，和聊天归档一样不进入源码备份。升级前备份方式见 [数据库说明](docs/database.md)。实现参考 [Character Card V2 规范](https://github.com/malfoyslastname/character-card-spec-v2/blob/main/spec_v2.md)及 [SillyTavern 可编辑会话记忆](https://docs.sillytavern.app/extensions/summarize/)，角色卡作为每次请求的角色资料传入，不自动将开场白发送到微信。
 
@@ -418,6 +418,10 @@ powershell -NoProfile -File scripts/build_native_send.ps1
 .venv-backend\Scripts\python.exe scripts/verify_native_send_live.py --run
 ```
 
-必须先完成本机兼容、回执、归档、窗口、焦点、输入、剪贴板和草稿验收，再登记 `.local/native-send-acceptance.json`。验收脚本只生成报告，不自动开放发送；无法观察的场景标为无法判定。许可、精确指纹和修改说明见 [native_send/NOTICE.md](native_send/NOTICE.md)。文本发送最小实现来自 [helper 固定提交](https://github.com/Prometheus-first/helper/tree/3e65e4bdaff438dc616f32d412175842fa138763/native)，保留其许可，按已确认的个人非商业用途使用。
+发送能力由后台自动核对微信精确构建、文件与内存代码、发送组件和账号身份；无需人工验收或恢复。显式诊断脚本仍可用于开发验收，历史验收报告不作为发送资格。许可、精确指纹和修改说明见 [native_send/NOTICE.md](native_send/NOTICE.md)。文本发送最小实现来自 [helper 固定提交](https://github.com/Prometheus-first/helper/tree/3e65e4bdaff438dc616f32d412175842fa138763/native)，保留其许可，按已确认的个人非商业用途使用。
 
 新增接口：`POST /api/v1/wechat-send-status/query` 查询账号发送能力，`POST /api/v1/ai-deliveries/retry` 重试明确未发送的失败项，`POST /api/v1/ai-deliveries/resolve` 确认或放弃不确定结果。发送状态扩展 `AiRun.delivery`，随现有 WebSocket `ai_runs` 变更通知刷新。详细结果见 [自动回复验收](docs/acceptance-auto-reply-2026-10-30.md)。
+
+## 自动生产部署
+
+`main` 更新后由 GitHub Actions 测试、构建便携包并部署到受管理的 Windows 服务器。后台自动检查并恢复已开启的会话；用户暂停和不确定发送保护保留。首次接入、运行状态与回退见 [自动部署说明](docs/automatic-deployment.md)。

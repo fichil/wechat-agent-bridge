@@ -1,6 +1,20 @@
 import type { Route } from "@playwright/test";
 
 export async function mockAuthenticatedSession(route: Route, path: string) {
+  if (path === "/api/v1/compatibility/query") {
+    await route.fulfill({
+      json: {
+        enforced: false,
+        held: false,
+        reason: "",
+        message: "合成测试不访问微信",
+        migration_pending: false,
+        accounts: [],
+        unresolved_instances: [],
+      },
+    });
+    return true;
+  }
   if (path !== "/api/v1/auth/session") return false;
   await route.fulfill({
     json: {

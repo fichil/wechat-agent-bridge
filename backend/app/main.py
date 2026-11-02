@@ -23,7 +23,7 @@ from .ai_execution_models import (AiSettings, AiSettingsUpdate, TaskQuery, Profi
 from .log_models import (LogAccount, LogQuery, LogGet, LogClear, LogPage, LogDetail, LogDeleted,
                          SessionPage, RunMessagesQuery, RunMessagesPage)
 from .delivery_models import Delivery, DeliveryAction, DeliveryResolve, SendCapability
-from .compatibility import CompatibilitySnapshot, CompatibilityResume
+from .compatibility import CompatibilitySnapshot
 from .auth import AuthConfig, AuthStore, AuthError, Login, PasswordChange, AuthSession, AuthOk, DEFAULT_AUTH_PATH, SESSION_SECONDS
 
 def error(code: str, message: str, status: int):
@@ -46,18 +46,18 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         store = Store(path, settings)
         store.notify = app.state.events.publish
         enabled = (probe is discover_local_accounts and os.environ.get('BRIDGE_DISABLE_MONITOR') != '1') if monitor is None else monitor
-        from bridge_paths import migration_pending
-        store.migration_hold = migration_pending() and str(path) != ':memory:'
+        from .business_control import BusinessControl, migration_token
+        data = Path(path).parent if str(path) != ':memory:' else None
+        store.migration_token = migration_token(data) if data else None
+        store.deployment_hold = bool(data and (data / 'deployment-hold.json').is_file())
         bridge = Bridge(store, probe, conversation_reader or LocalConversationReader(), message_reader=message_reader,
-                        monitor=enabled, compatibility_enabled=probe is discover_local_accounts)
+                        monitor=False, compatibility_enabled=probe is discover_local_accounts)
         app.state.bridge, app.state.store = bridge, store
         app.state.discovery, app.state.conversations, app.state.messages = bridge.discovery, bridge.conversations, bridge.messages
         from .ai_execution import AiExecution
-        from bridge_paths import migration_pending
-        migration_hold = migration_pending() and str(path) != ':memory:'
-        app.state.ai = AiExecution(store, bridge, ai_provider, False if migration_hold else enabled if ai_auto is None else ai_auto)
+        app.state.ai = AiExecution(store, bridge, ai_provider, False)
         from .delivery import DeliveryExecution
-        app.state.sender = DeliveryExecution(store,bridge,send_transport,False if migration_hold else enabled if send_auto is None else send_auto)
+        app.state.sender = DeliveryExecution(store,bridge,send_transport,False)
         bridge.compatibility.sender = app.state.sender
         def notify(event):
             app.state.events.publish(event)
@@ -67,10 +67,21 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         store.notify = notify
         app.state.ai.wake.set()
         app.state.sender.wake.set()
+        automatic_ai = enabled if ai_auto is None else ai_auto
+        automatic_send = enabled if send_auto is None else send_auto
+        owner = None
+        if enabled and data:
+            owner = BusinessControl(bridge, app.state.ai, app.state.sender, data=data,
+                                    monitor=enabled, ai_auto=automatic_ai, send_auto=automatic_send)
+        else:
+            if enabled: bridge.start_monitor()
+            if automatic_ai: app.state.ai.start_automatic()
+            if automatic_send: app.state.sender.start_automatic()
         try:
             yield
         finally:
             import asyncio
+            if owner: await asyncio.to_thread(owner.close)
             app.state.ai.stopped.set()
             app.state.sender.stop.set()
             await asyncio.gather(asyncio.to_thread(app.state.ai.close), asyncio.to_thread(app.state.sender.close))
@@ -393,10 +404,6 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
     @app.post('/api/v1/compatibility/query', response_model=CompatibilitySnapshot, responses=failures)
     def compatibility_query(_body: JsonRequest, request: Request):
         return request.app.state.bridge.compatibility.query()
-
-    @app.post('/api/v1/compatibility/resume', response_model=CompatibilitySnapshot, responses=failures)
-    def compatibility_resume(body: CompatibilityResume, request: Request):
-        return request.app.state.bridge.compatibility.resume(body.account_id, body.expected_revision)
 
     generate_openapi = app.openapi
     def authenticated_openapi():

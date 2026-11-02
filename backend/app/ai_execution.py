@@ -22,7 +22,10 @@ class AiExecution:
         self.wake = threading.Event()
         self.image_attempts = {}
         self.thread = None
-        if automatic:
+        if automatic: self.start_automatic()
+
+    def start_automatic(self):
+        if self.thread is None and not self.stopped.is_set():
             self.thread = threading.Thread(target=self.loop, name="ai-scheduler", daemon=True)
             self.thread.start()
 

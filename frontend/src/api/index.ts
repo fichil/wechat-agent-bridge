@@ -70,13 +70,6 @@ export const api = {
       await client.POST("/api/v1/compatibility/query", { body: {} }),
     );
   },
-  async resumeCompatibility(account_id: string, expected_revision: number) {
-    return value(
-      await client.POST("/api/v1/compatibility/resume", {
-        body: { account_id, expected_revision },
-      }),
-    );
-  },
   async sendCapability(account_id: string) {
     return value(
       await client.POST("/api/v1/wechat-send-status/query", {

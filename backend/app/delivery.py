@@ -12,12 +12,12 @@ from .conversations import ConversationError
 from .diagnostics import record_source
 
 MESSAGES = {
-    'ready': '原生发送已通过本机验收。',
+    'ready': '发送组件、微信构建与账号身份检查通过。',
     'source_offline': '微信离线，待发送回复将保留。',
     'source_ambiguous': '账号对应多个进程，等待唯一绑定。',
-    'native_acceptance_required': '发送通道尚未通过本机无干扰验收。',
+    'native_acceptance_required': '发送通道正在自动检查。',
     'native_version_unsupported': '当前微信构建尚未适配，自动发送已阻止。',
-    'native_build_stale': '发送模块源码已变化，需要重新构建及验收。',
+    'native_build_stale': '发送模块源码已变化，需要更新完整程序包。',
     'native_build_changed': '发送模块校验失败。',
     'native_code_changed': '微信已加载代码与已验证文件不一致，发送通道不可用。',
     'identity_unavailable': '无法确认微信账号对象布局，发送通道不可用。',
@@ -57,7 +57,10 @@ class DeliveryExecution:
         self.wake=threading.Event(); self.retry_after={}
         self.executor=ThreadPoolExecutor(max_workers=2,thread_name_prefix='wechat-send')
         self.thread=None
-        if automatic:
+        if automatic: self.start_automatic()
+
+    def start_automatic(self):
+        if self.thread is None and not self.stop.is_set():
             self.thread=threading.Thread(target=self.loop,name='delivery-scheduler',daemon=True); self.thread.start()
 
     def binding(self, aid):
@@ -76,7 +79,7 @@ class DeliveryExecution:
             else:
                 result=self.transport.inspect(binding)
                 with self.lock: self.cache[key]=(time.monotonic(),result)
-            code='ready' if result.get('ready') else result.get('code','native_acceptance_required')
+            code='ready' if result.get('ready') else result.get('code','native_unavailable')
         except ConversationError as exc: code=exc.code
         except Exception: code='native_unavailable'
         return dict(account_id=aid,ready=code=='ready',code=code,message=MESSAGES.get(code,MESSAGES['native_unavailable']),
