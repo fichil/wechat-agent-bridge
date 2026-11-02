@@ -60,11 +60,11 @@ def validate_db(path, name):
         if not required <= tables:
             raise ValueError('不是有效的 Bridge 数据库：' + name)
         version = db.execute('PRAGMA user_version').fetchone()[0]
-        if name == FILES[0] and version not in (8, 9, 10):
-            raise ValueError('迁移包仅支持数据库版本 8、9 或 10；请使用匹配版本升级。')
+        if name == FILES[0] and version not in (8, 9, 10, 11):
+            raise ValueError('迁移包仅支持数据库版本 8–11；请使用匹配版本升级。')
         if name == FILES[0] and version >= 9 and 'compatibility_state' not in tables:
             raise ValueError('兼容状态表缺失。')
-        if name == FILES[0] and version == 10:
+        if name == FILES[0] and version >= 10:
             if not {'ai_request_snapshots', 'notification_settings', 'account_observations', 'notification_outbox'} <= tables:
                 raise ValueError('重试或通知数据表缺失。')
             if 'ai_max_retries' not in {r[1] for r in db.execute('PRAGMA table_info(conversation_preferences)')}:
@@ -151,7 +151,7 @@ def import_data(archive, data):
             if sum(i.file_size for i in infos) > MAX_BYTES or zin.getinfo('manifest.json').file_size > 16384:
                 raise ValueError('迁移包超过大小限制。')
             manifest = json.loads(zin.read('manifest.json'))
-            if manifest.get('format') != 'wechat-agent-bridge-migration' or manifest.get('version') != 1 or manifest.get('database_version') not in (8,9,10) or set(manifest.get('files', {})) != set(FILES):
+            if manifest.get('format') != 'wechat-agent-bridge-migration' or manifest.get('version') != 1 or manifest.get('database_version') not in (8,9,10,11) or set(manifest.get('files', {})) != set(FILES):
                 raise ValueError('迁移包格式或版本不支持。')
             for name in FILES:
                 with zin.open(name) as source, (temp/name).open('xb') as target:
