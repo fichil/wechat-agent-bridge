@@ -202,7 +202,8 @@ class DownloadTests(unittest.TestCase):
     def test_raw_bytes_and_stream_rate(self):
         data = b"a"*CHUNK_SIZE
         conn = self.response(data)
-        before = time.monotonic()
+        # The rate budget includes connection/setup time since construction.
+        before = self.download.started
         with patch.object(self.download, "connection", return_value=conn):
             self.assertEqual(self.download.fetch("https://emoji.qpic.cn/a"), data)
         self.assertGreaterEqual(time.monotonic()-before, CHUNK_SIZE/1048576-.01)
