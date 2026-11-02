@@ -30,10 +30,10 @@ def main():
     root = 'C:/Apps/WeChatAgentBridge'
     with tempfile.TemporaryDirectory(prefix='bridge-ssh-') as directory:
         key = Path(directory) / 'key'
-        key.write_text(os.environ['DEPLOY_SSH_KEY'].strip() + '\n', encoding='ascii')
+        key.write_text(os.environ['DEPLOY_SSH_KEY'].replace('\r', '').strip() + '\n', encoding='ascii')
         key.chmod(0o600)
         hosts = Path(directory) / 'known_hosts'
-        hosts.write_text(os.environ['DEPLOY_KNOWN_HOSTS'].strip() + '\n', encoding='ascii')
+        hosts.write_text(os.environ['DEPLOY_KNOWN_HOSTS'].replace('\r', '').strip() + '\n', encoding='ascii')
         options = ['-i', str(key), '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
                    '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=' + str(hosts),
                    '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=15']
@@ -47,12 +47,13 @@ def main():
             encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
             result = subprocess.run(['ssh', *options, '-p', port, destination, 'powershell.exe', '-NoProfile',
                                      '-NonInteractive', '-EncodedCommand', encoded], capture_output=True, text=True, timeout=180)
-            if result.returncode: raise RuntimeError('Remote command failed: ' + result.stdout.strip())
+            if result.returncode: raise RuntimeError('Remote command failed: ' + (result.stdout + result.stderr).strip())
             return json.loads(result.stdout.strip())
 
         remote('status')  # Fail before uploading if bootstrap is missing.
         batch = Path(directory) / 'sftp.txt'
-        batch.write_text('put "' + archive.as_posix() + '" "' + root + '/inbox/' + args.request_id + '.zip.part"\n', encoding='utf-8')
+        # POSIX OpenSSH treats C:/ as relative; Windows SFTP exposes /C:/.
+        batch.write_text('put "' + archive.as_posix() + '" "/' + root + '/inbox/' + args.request_id + '.zip.part"\n', encoding='utf-8')
         subprocess.run(['sftp', *options, '-P', port, '-b', str(batch), destination], check=True, timeout=900)
         result = remote('submit', '--request-id ' + args.request_id + ' --commit ' + args.commit + ' --sha256 ' + checksum)
         deadline = time.monotonic() + 3600
