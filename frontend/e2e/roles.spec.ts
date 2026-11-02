@@ -1,6 +1,6 @@
 import { mockAuthenticatedSession } from "./auth-fixture";
 import { test, expect, type Page } from "@playwright/test";
-import { snapshot, syntheticAccount } from "../tests/fixtures";
+import { snapshot, syntheticAccount, task } from "../tests/fixtures";
 import { blankCard } from "../src/role-cards";
 import { defaultExclusions } from "../src/conversation-options";
 import { messagePage } from "../tests/message-fixtures";
@@ -55,6 +55,8 @@ async function mockWorkspace(page: Page, group = false) {
   await page.route("**/api/v1/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (await mockAuthenticatedSession(route, path)) return;
+    if (path.endsWith('/account-scans') || path.includes('/account-scans/'))
+      return route.fulfill({ json: task() });
     expect(route.request().method()).toBe("POST");
     expect(route.request().headers()["content-type"]).toContain(
       "application/json",
