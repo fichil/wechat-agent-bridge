@@ -13,18 +13,26 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sqlite3
+import ssl
 import subprocess
 import sys
 import time
-from urllib.request import Request, build_opener, ProxyHandler
+from urllib.request import Request, build_opener, ProxyHandler, HTTPSHandler
 from urllib.error import HTTPError
 import zipfile
 
 import psutil
+import certifi
 
 TASK_RUN = 'WeChatBridge-Run'
 TASK_DEPLOY = 'WeChatBridge-Deploy'
 TERMINAL = {'succeeded', 'failed', 'rolled_back', 'superseded'}
+
+
+def http_opener():
+    # Server Core/portable Python can lack populated Windows root certificates.
+    # Use the pinned runtime's CA bundle while retaining full TLS verification.
+    return build_opener(ProxyHandler({}), HTTPSHandler(context=ssl.create_default_context(cafile=certifi.where())))
 
 
 def read(path, default=None):
@@ -180,7 +188,7 @@ def wait_healthy(root, commit, *, active, timeout=240):
     managed_version = bool(read(release / 'portable-manifest.json').get('database_schema'))
     config = read(root / 'data/portable-config.json')
     origin = config['origin']
-    opener = build_opener(ProxyHandler({}))
+    opener = http_opener()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -299,7 +307,7 @@ class Deployment:
             repository = read(root / 'installation.json').get('repository')
             if repository:
                 if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository): raise ValueError('Invalid repository')
-                opener = build_opener(ProxyHandler({}))
+                opener = http_opener()
                 with opener.open('https://api.github.com/repos/' + repository + '/git/ref/heads/main', timeout=20) as response:
                     if json.load(response)['object']['sha'] != request['commit']:
                         return self.record(request, 'superseded')
