@@ -357,9 +357,26 @@ class Deployment:
         write(self.root / 'history.json', history[-3:])
         (self.root / 'transaction.json').unlink(missing_ok=True)
         result = self.record(request, 'succeeded')
-        try: self.prune(history)
+        try:
+            self.refresh_controller(request['commit'])
+            self.prune(history)
         except OSError: self.record(request, 'succeeded', cleanup_pending=True)
         return result
+
+    def refresh_controller(self, commit):
+        # The running interpreter has loaded this module already. Replace its
+        # stable entrypoint last so the next request uses the verified release.
+        release = self.root / 'releases' / commit
+        for source, destination in (
+            ('deploy/run-installed.ps1', self.root / 'run-installed.ps1'),
+            ('deploy/deploy-task.ps1', self.root / 'deploy-task.ps1'),
+            ('bridge_portable/deploy.py', self.root / 'controller/deploy.py'),
+        ):
+            if not (release / source).is_file(): continue  # Older portable releases.
+            destination.parent.mkdir(exist_ok=True)
+            temporary = destination.with_suffix('.new')
+            shutil.copyfile(release / source, temporary)
+            os.replace(temporary, destination)
 
     def prune(self, history):
         keep = {x['commit'] for x in history[-3:]} | {history[-1]['previous']}

@@ -50,8 +50,11 @@ class BusinessControl:
             except Exception:
                 # A transient inspection/storage failure must not kill automatic rechecks.
                 # Existing readiness remains fail-closed until a complete pass succeeds.
-                self.bridge.store.compatibility_hold('probe_failed')
-                self.bridge.discovery.start()
+                try:
+                    self.bridge.store.compatibility_hold('probe_failed')
+                    self.bridge.discovery.start()
+                except Exception:
+                    pass  # Storage/discovery can be closing or temporarily unavailable.
             self.stop.wait(5)
 
     def close(self):
