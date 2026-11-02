@@ -11,6 +11,7 @@ import httpx
 from .conversations import ConversationError
 from .diagnostics import Capture, CONTEXT, log_context
 from .ai_timeouts import CONNECT_SECONDS, DEFAULT_RESPONSE_SECONDS, response_seconds
+from .reply_media import REPLY_INSTRUCTIONS, MAX_RESPONSE, DATA_URI, parse_reply
 
 TEXT_LIMIT = 64 * 1024
 BODY_LIMIT = 20 * 1024 * 1024
@@ -72,6 +73,7 @@ def build_request(profile, key, envelope, mode):
     headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
     schema = dict(name="conversation_memory", strict=True, schema=SCHEMA)
     system = CONTRACT + "\n" + envelope["instructions"]
+    if 'reply_media' in envelope: system += '\n' + REPLY_INSTRUCTIONS
     if protocol == "openai_responses":
         content = [{"type": "input_text", "text": text}]
         for mid, media in images:
@@ -166,8 +168,11 @@ def parse_response(protocol, data):
             invalid("AI 结果必须是 JSON 对象")
         if set(result) != {"memory", "reply"} or any(not isinstance(v, str) for v in result.values()) or not result["memory"].strip():
             invalid("AI 结果需要且仅允许 memory、reply 两个字符串字段，memory 不得为空")
-        if len(encode(result).encode()) > TEXT_LIMIT:
+        # Media has a separate bounded budget; text and memory retain the original limit.
+        compact = dict(result, reply=DATA_URI.sub('[image_base64]',result['reply']))
+        if len(encode(compact).encode()) > TEXT_LIMIT:
             invalid("AI 解析结果超过大小上限")
+        parse_reply(result['reply'])
         return result
     except (KeyError, IndexError, TypeError, ValueError, AttributeError):
         raise failure("ai_response_invalid", "服务商响应结构不符合所选协议，缺少有效回复字段；记忆未更新。") from None
@@ -208,7 +213,7 @@ class Provider:
                             capture.network_error("ResponseDeadlineExceeded", "response", response_timeout)
                             raise failure("ai_network_error", f"AI 响应超过 {response_timeout} 秒等待预算；记忆未更新。")
                         size += len(chunk)
-                        if size > 2 * 1024 * 1024:
+                        if size > MAX_RESPONSE:
                             capture.response(response, (b"".join(chunks)+chunk)[:2*1024*1024], True)
                             raise failure("ai_response_invalid", "AI 响应超过大小上限；记忆未更新。")
                         chunks.append(chunk)

@@ -190,6 +190,7 @@ class AiExecutionStoreMixin:
         if run['status'] not in ('queued', 'running'):
             run['next_retry_at'] = None
             self.db.execute('DELETE FROM ai_request_snapshots WHERE run_id=?', (run['run_id'],))
+            self.db.execute('DELETE FROM reply_candidates WHERE run_id=?', (run['run_id'],))
         self.db.execute("UPDATE ai_runs SET status=?,payload=? WHERE run_id=?", (run["status"], pack(run), run["run_id"]))
 
     def ai_run(self, aid, cid, rid):
@@ -422,14 +423,24 @@ class AiExecutionStoreMixin:
                         return run
                     run.update(status="failed", error=error.code, message=error.message)
                 else:
-                    run.update(status="completed", reply=result["reply"], memory_revision=prefs["memory_revision"]+1)
+                    parts = self._prepare_reply(run,result['reply'])
+                    if run.get('reply_trigger_ids') and not self._is_group(aid,cid) and not parts:
+                        raise ConversationError('ai_empty_reply','私聊回复为空，消息仍等待回复。',502)
+                    run['reply_parts'] = parts
+                    run['reply_format_version'] = 2
+                    display = '\n'.join(p['text'] if p['kind']=='text' else '['+('表情' if p['kind']=='sticker' else '图片')+'：'+p['name']+']' for p in parts)
+                    run.update(status="completed", reply=display, memory_revision=prefs["memory_revision"]+1)
                     self._route_success(run)
                     self._queue_delivery(run)
+                    if not run.get('reply'): run['reply_parts'] = []
                     self._group_finish_batch(run)
-                    self.db.execute("UPDATE conversation_preferences SET memory=?,memory_revision=memory_revision+1 WHERE account_id=? AND conversation_id=?", (result["memory"], aid, cid))
+                    from .reply_media import summarize_memory
+                    self.db.execute("UPDATE conversation_preferences SET memory=?,memory_revision=memory_revision+1 WHERE account_id=? AND conversation_id=?", (summarize_memory(result["memory"]), aid, cid))
                 run["completed_at"] = stamp()
                 run['next_retry_at'] = None
                 self.db.execute('DELETE FROM ai_request_snapshots WHERE run_id=?',(rid,))
+                self.db.execute('DELETE FROM reply_candidates WHERE run_id=?',(rid,))
+                self._media_collect()
                 self._ai_write_run(run)
                 success = run["status"] == "completed"
                 self.db.execute("UPDATE ai_message_state SET status=?,memorized_at=? WHERE run_id=? AND status='processing'", ("memorized" if success else "pending" if run["status"] == "cancelled" else "failed", stamp() if success else None, rid))

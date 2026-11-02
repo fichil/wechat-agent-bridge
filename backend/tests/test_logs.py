@@ -46,7 +46,7 @@ class LogTests(RoleTestCase):
         self.assertEqual(item["profile_name"],self.profile["name"])
         self.assertEqual(item["application_status"],"completed")
         detail=self.log(item["log_id"]).json()["details"]
-        self.assertEqual(detail["request_json"],self.provider.requests[-1])
+        self.assertEqual(detail["request_json"],sanitize(self.provider.requests[-1]))
         self.assertEqual(detail["input_snapshot"]["memory"],"")
         self.assertEqual(detail["parsed_result"]["reply"],run["reply"])
         self.assertEqual(self.log(item["log_id"],1).status_code,404)

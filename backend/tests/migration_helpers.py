@@ -37,8 +37,19 @@ def remove_v9(db):
 
 
 def remove_v10(db):
+    remove_v11(db)
     for table in ('notification_outbox','account_observations','notification_settings','ai_request_snapshots'):
         db.execute('DROP TABLE IF EXISTS '+table)
     if 'ai_max_retries' in {r[1] for r in db.execute('PRAGMA table_info(conversation_preferences)')}:
         db.execute('ALTER TABLE conversation_preferences DROP COLUMN ai_max_retries')
     db.execute('DELETE FROM schema_migrations WHERE version=10')
+
+
+def remove_v11(db):
+    columns = {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}
+    for name in ('native_evidence','media_id','kind'):
+        if name in columns: db.execute('ALTER TABLE deliveries DROP COLUMN '+name)
+    for table in ('reply_candidates','stickers','reply_media'):
+        db.execute('DROP TABLE IF EXISTS '+table)
+    db.execute("DELETE FROM metadata WHERE key='builtin_stickers_v1'")
+    db.execute('DELETE FROM schema_migrations WHERE version=11')

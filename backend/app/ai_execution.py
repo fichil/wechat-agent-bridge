@@ -136,6 +136,12 @@ class AiExecution:
                 if "_image_bytes" in content:
                     content["image"] = normalize_image(content.pop("_image_bytes"), content.pop("_image_mime"))
             mode = profile["verification"]["output_mode"]
+            if not snapshot.get('resumed'):
+                caps = dict(image=True, sticker=True)  # Isolated adapters never operate real WeChat.
+                if self.bridge.compatibility.enabled:
+                    native = self.bridge.compatibility.sender.capability(aid)
+                    caps = dict(image=native.get('send_image',False),sticker=native.get('send_sticker',False))
+                envelope['reply_media'] = self.store.prepare_reply_candidates(aid,cid,rid,caps)
             while True:
                 try:
                     # Request sizing does not need credentials; persist the input before decrypting.

@@ -25,6 +25,8 @@ from .ai_execution_models import (AiSettings, AiSettingsUpdate, TaskQuery, Profi
 from .log_models import (LogAccount, LogQuery, LogGet, LogClear, LogPage, LogDetail, LogDeleted,
                          SessionPage, RunMessagesQuery, RunMessagesPage)
 from .delivery_models import Delivery, DeliveryAction, DeliveryResolve, SendCapability
+from .media_models import (StickerList, StickerDetail, Sticker, StickerQuery, StickerCreate, StickerUpdate,
+                           StickerDelete, StickerDeleted, ReplyMediaQuery, MediaData)
 from .compatibility import CompatibilitySnapshot
 from .auth import AuthConfig, AuthStore, AuthError, Login, PasswordChange, AuthSession, AuthOk, DEFAULT_AUTH_PATH, SESSION_SECONDS
 
@@ -367,6 +369,30 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
     @app.post("/api/v1/api-profiles/tasks/query", response_model=ProfileTask, responses=failures)
     def profile_task(body: TaskQuery, request: Request):
         return request.app.state.store.api_task(body.task_id)
+
+    @app.post('/api/v1/stickers/query', response_model=StickerList, responses=failures)
+    def stickers_query(body: JsonRequest):
+        return app.state.store.stickers()
+
+    @app.post('/api/v1/stickers/get', response_model=StickerDetail, responses=failures)
+    def stickers_get(body: StickerQuery):
+        return app.state.store.sticker(body.asset_id)
+
+    @app.post('/api/v1/stickers/create', response_model=Sticker, status_code=201, responses=failures)
+    def stickers_create(body: StickerCreate):
+        return app.state.store.create_sticker(body.model_dump())
+
+    @app.post('/api/v1/stickers/update', response_model=Sticker, responses=failures)
+    def stickers_update(body: StickerUpdate):
+        return app.state.store.update_sticker(body.asset_id,body.expected_revision,body.model_dump())
+
+    @app.post('/api/v1/stickers/delete', response_model=StickerDeleted, responses=failures)
+    def stickers_delete(body: StickerDelete):
+        return app.state.store.delete_sticker(body.asset_id,body.expected_revision)
+
+    @app.post('/api/v1/ai-runs/media/query', response_model=MediaData, responses=failures)
+    def reply_media_query(body: ReplyMediaQuery):
+        return app.state.store.reply_media(body.account_id,body.conversation_id,body.run_id,body.part_index)
 
     @app.post("/api/v1/ai-settings/query", response_model=AiSettings, responses=failures)
     def ai_settings(_body: JsonRequest, request: Request):

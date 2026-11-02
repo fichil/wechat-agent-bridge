@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from .role_models import JsonRequest, PreferencesQuery
 from .delivery_models import Delivery
+from .media_models import ReplyPart
 
 DEFAULT_INSTRUCTIONS = """你按照角色卡参与当前会话。每次请求都提供当前记忆和未纳入记忆的新消息。
 只输出 JSON 对象，字段 memory 为更新后的完整记忆，reply 为本次回复；不要输出 Markdown 或额外说明。
@@ -94,6 +95,7 @@ class AiRun(BaseModel):
     message_count: int = 0
     memory_revision: int = 0
     reply: str | None = None
+    reply_parts: list[ReplyPart] = Field(default_factory=list)
     error: str | None = None
     message: str | None = None
 

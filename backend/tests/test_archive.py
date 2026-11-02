@@ -81,6 +81,26 @@ class ArchiveTests(unittest.TestCase):
         self.assertTrue(self.store.image(self.aid,self.cid,mid)["needs_sync"])
         self.assertEqual(self.store.image(self.aid,self.cid,other)["status"],"available")
 
+    def test_outgoing_server_confirmation_keeps_archive_and_media_identity(self):
+        from copy import deepcopy
+        pending = message(); pending['type']='image';pending['_ref']['server_id']='0'
+        confirmed = deepcopy(pending);confirmed['_ref']['server_id']='987654321012345678'
+        def save(item):
+            self.store.save_history(self.aid,self.cid,dict(items=[item],has_more=False,issues=[],status='complete'),dict(boundary=None))
+        save(pending)
+        mid=self.store.messages(self.aid,self.cid)['items'][0]['message_id']
+        self.store.image(self.aid,self.cid,mid,dict(status='available',mime_type='image/png',data_base64=base64.b64encode(b'snapshot').decode(),quality='original'))
+        save(confirmed)
+        save(pending)  # An older concurrent read must not recreate server_id=0.
+        items=self.store.messages(self.aid,self.cid)['items']
+        self.assertEqual([item['message_id'] for item in items],[mid])
+        self.assertEqual(self.store.image(self.aid,self.cid,mid)['status'],'available')
+        self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT server_id FROM messages WHERE message_id=?',(mid,)).fetchone()[0]),confirmed['_ref']['server_id'])
+        # Reused local IDs in a different source generation remain distinct.
+        different=deepcopy(pending);different['_ref']['generation']='new-generation'
+        save(different)
+        self.assertEqual(len(self.store.messages(self.aid,self.cid)['items']),2)
+
     def test_change_feed_drains_batches_low_sort_arrivals_and_edits(self):
         self.ingest([500])
         initial = self.store.messages(self.aid,self.cid)

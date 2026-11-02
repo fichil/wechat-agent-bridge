@@ -12,6 +12,8 @@ const names: Record<string, string> = {
   images: "图片",
   stickers: "表情",
   send_text: "文本发送",
+  send_image: "图片发送",
+  send_sticker: "原生表情发送",
 };
 
 async function refresh() {

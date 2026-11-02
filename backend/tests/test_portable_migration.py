@@ -35,7 +35,7 @@ class MigrationTests(unittest.TestCase):
             # Literal schema rows isolate migration semantics from AI eligibility.
             db.execute('INSERT INTO ai_runs VALUES(?,?,?,?,?,?)',('r',self.aid,self.cid,'request','running',json.dumps(dict(run_id='r',status='running'))))
             for i,status in enumerate(('queued','failed','sending','unknown','sent')):
-                db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',('r',i,self.aid,self.cid,2,'synthetic','synthetic',status,0,None,None,None,'2026-10-30'))
+                db.execute('INSERT INTO deliveries(run_id,part_index,account_id,conversation_id,epoch,target,text,status,attempts,code,confirmation,archive_message_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',('r',i,self.aid,self.cid,2,'synthetic','synthetic',status,0,None,None,None,'2026-10-30'))
         self.archive = self.root/'private.zip'
 
     def tearDown(self):
@@ -64,7 +64,26 @@ class MigrationTests(unittest.TestCase):
             with self.assertRaises(ValueError): export_data(self.source,self.archive)
         self.assertFalse(self.archive.exists())
 
-    def test_v10_import_preserves_retry_config_but_quarantines_mail_and_snapshots(self):
+    def test_full_migration_preserves_pending_media_binary_and_references(self):
+        from test_reply_media import picture
+        from backend.app.reply_media import validate_media
+        store=Store(self.source/'bridge.sqlite3')
+        try:
+            media=validate_media(picture(),'sticker')
+            def attach():
+                with store.db:
+                    mid=store._media_put(media)
+                    store.db.execute("UPDATE deliveries SET kind='sticker',media_id=? WHERE run_id='r' AND part_index=0",(mid,))
+                return mid
+            mid=store.call(attach)
+        finally: store.close()
+        export_data(self.source,self.archive);import_data(self.archive,self.target)
+        with closing(sqlite3.connect(self.target/'bridge.sqlite3')) as db:
+            self.assertEqual(db.execute("SELECT kind,media_id,status FROM deliveries WHERE run_id='r' AND part_index=0").fetchone(),('sticker',mid,'cancelled'))
+            self.assertEqual(db.execute('SELECT data,sha256 FROM reply_media WHERE media_id=?',(mid,)).fetchone(),(media['data'],media['sha256']))
+            self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(),[])
+
+    def test_v11_import_preserves_retry_config_but_quarantines_mail_and_snapshots(self):
         with closing(sqlite3.connect(self.source/'bridge.sqlite3')) as db, db:
             db.execute('INSERT INTO metadata VALUES(?,?)', (f'ai_agent_route:{self.aid}:{self.cid}', '{}'))
             db.execute('INSERT INTO ai_request_snapshots VALUES(?,?)', ('r', '{}'))
@@ -74,7 +93,7 @@ class MigrationTests(unittest.TestCase):
         export_data(self.source, self.archive)
         import_data(self.archive, self.target)
         with closing(sqlite3.connect(self.target/'bridge.sqlite3')) as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 10)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 11)
             self.assertEqual(db.execute('SELECT count(*) FROM ai_request_snapshots').fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT count(*) FROM metadata WHERE key GLOB 'ai_agent_route:*'").fetchone()[0], 0)
             settings = json.loads(db.execute('SELECT payload FROM notification_settings').fetchone()[0])

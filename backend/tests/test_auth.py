@@ -68,6 +68,16 @@ class AuthStoreTests(unittest.TestCase):
 
 
 class AuthApiTests(unittest.TestCase):
+    def test_sticker_and_reply_media_routes_require_session_csrf_and_origin(self):
+        routes=['stickers/query','stickers/get','stickers/create','stickers/update','stickers/delete','ai-runs/media/query']
+        for path in routes:
+            self.assertEqual(self.client.post('/api/v1/'+path,json={}).status_code,401)
+        self.login()
+        for path in routes:
+            self.assertEqual(self.client.post('/api/v1/'+path,json={},headers={'X-CSRF-Token':'wrong'}).status_code,403)
+            self.assertEqual(self.client.post('/api/v1/'+path,json={},headers={'Origin':'https://other.example'}).status_code,403)
+        self.assertEqual(len(self.client.post('/api/v1/stickers/query',json={}).json()['items']),27)
+
     def test_compatibility_routes_require_login_origin_and_csrf(self):
         routes = [('compatibility/query', {}), ('compatibility/resume', dict(account_id='synthetic',expected_revision=0))]
         for path,body in routes:

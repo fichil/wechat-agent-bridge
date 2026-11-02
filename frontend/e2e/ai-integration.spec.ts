@@ -1,8 +1,110 @@
 import { test, expect, type Page } from "@playwright/test";
 import { blankCard } from "../src/role-cards";
+import { readFileSync } from "node:fs";
 
 let ids: { account_id: string; conversation_id: string }[];
 const service = "http://127.0.0.1:18765";
+
+test("sticker library uploads, previews, protects revisions and retains mixed reply snapshots", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(`/workspace/${ids[0]!.account_id}/stickers`);
+  await expect(page.locator(".sticker-card")).toHaveCount(27);
+  await expect(page.locator(".sticker-card img").first()).toBeVisible();
+  await page.getByRole("button", { name: "上传表情包", exact: true }).click();
+  await page.getByLabel("名称", { exact: true }).fill("合成媒体测试");
+  await page.getByLabel("使用场景", { exact: true }).fill("合成高兴场景");
+  const assets = JSON.parse(
+    readFileSync("../backend/assets/dsh-pet/manifest.json", "utf8"),
+  );
+  await page
+    .locator("input[type=file]")
+    .setInputFiles("../backend/assets/dsh-pet/" + assets.items[0].file);
+  await page.getByRole("button", { name: "保存表情包", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("表情包已保存");
+  const asset = (await post(page, "stickers/query")).items.find(
+    (x: { name: string }) => x.name === "合成媒体测试",
+  );
+  expect(asset.media.mime_type).toBe("image/gif");
+  await page.getByLabel("名称", { exact: true }).fill("未保存的草稿");
+  await post(page, "stickers/update", {
+    asset_id: asset.asset_id,
+    expected_revision: 1,
+    name: "其他页面改名",
+    description: "合成高兴场景",
+    enabled: true,
+  });
+  await expect(page.getByText(/此素材已在其他页面修改/)).toBeVisible();
+  await page.getByRole("button", { name: "保存表情包", exact: true }).click();
+  await expect(page.getByLabel("名称", { exact: true })).toHaveValue(
+    "未保存的草稿",
+  );
+  await page.getByRole("link", { name: "Agent", exact: true }).click();
+  await page.getByRole("button", { name: "放弃修改", exact: true }).click();
+  await addApi(page, "媒体测试连接");
+  const card = blankCard();
+  card.data.name = "媒体测试角色";
+  await post(page, "role-cards/create", { card });
+  await post(page, "conversation-preferences/update", {
+    ...ids[0]!,
+    expected_revision: 0,
+    ai_enabled: true,
+  });
+  await fixturePost(page, service + "/test/reply", {
+    data: {
+      reply:
+        "第一行\n普通换行\n[[SPLIT]]\n[[STICKER:" +
+        asset.asset_id +
+        "]]\n[[SPLIT]]\n末条",
+    },
+  });
+  await fixturePost(page, service + "/test/message", { data: { index: 1 } });
+  await page.goto(`/workspace/${ids[0]!.account_id}/logs`);
+  await page
+    .getByLabel("会话", { exact: true })
+    .selectOption(ids[0]!.conversation_id);
+  await page
+    .getByRole("button", { name: "处理未处理消息", exact: true })
+    .click();
+  await expect(page.locator(".reply-part")).toHaveCount(3);
+  await expect(page.locator(".reply-part").nth(0)).toContainText(
+    "第一行\n普通换行",
+  );
+  await expect(page.locator(".reply-part").nth(1).locator("img")).toBeVisible();
+  await post(page, "stickers/delete", {
+    asset_id: asset.asset_id,
+    expected_revision: 2,
+  });
+  await page.reload();
+  await page
+    .getByLabel("会话", { exact: true })
+    .selectOption(ids[0]!.conversation_id);
+  await expect(page.locator(".reply-part").nth(1).locator("img")).toBeVisible();
+  await expect(page.locator(".reply-part").nth(2)).toContainText("等待发送");
+  await page.locator('.reply-parts').scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: "../.local/media-acceptance/mixed-desktop.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('.reply-part').nth(1).scrollIntoViewIfNeeded();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBeTruthy();
+  await page.screenshot({
+    path: "../.local/media-acceptance/mixed-mobile.png",
+    fullPage: true,
+  });
+  await page.goto(`/workspace/${ids[0]!.account_id}/stickers`);
+  await expect(page.locator(".sticker-card")).toHaveCount(27);
+  await page.screenshot({
+    path: "../.local/media-acceptance/stickers-mobile.png",
+    fullPage: true,
+  });
+});
 let requestHeaders: Record<string, string>;
 async function fixturePost(page: Page, url: string, options: { data: object }) {
   return page.request.post(url, { ...options, headers: requestHeaders });

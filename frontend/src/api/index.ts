@@ -33,6 +33,8 @@ export type NotificationSettings =
   components["schemas"]["NotificationSettings"];
 export type NotificationUpdate = components["schemas"]["NotificationUpdate"];
 export type AiRun = components["schemas"]["AiRun"];
+export type Sticker = components["schemas"]["Sticker"];
+export type MediaData = components["schemas"]["MediaData"];
 export type RunList = components["schemas"]["RunList"];
 export type ProfileTask = components["schemas"]["ProfileTask"];
 export type Preset = components["schemas"]["Preset"];
@@ -68,6 +70,39 @@ function value<T>(result: {
 }
 
 export const api = {
+  async stickers() {
+    return value(await client.POST("/api/v1/stickers/query", { body: {} }));
+  },
+  async sticker(asset_id: string) {
+    return value(
+      await client.POST("/api/v1/stickers/get", { body: { asset_id } }),
+    );
+  },
+  async createSticker(body: components["schemas"]["StickerCreate"]) {
+    return value(await client.POST("/api/v1/stickers/create", { body }));
+  },
+  async updateSticker(body: components["schemas"]["StickerUpdate"]) {
+    return value(await client.POST("/api/v1/stickers/update", { body }));
+  },
+  async deleteSticker(asset_id: string, expected_revision: number) {
+    return value(
+      await client.POST("/api/v1/stickers/delete", {
+        body: { asset_id, expected_revision },
+      }),
+    );
+  },
+  async replyMedia(
+    account_id: string,
+    conversation_id: string,
+    run_id: string,
+    part_index: number,
+  ) {
+    return value(
+      await client.POST("/api/v1/ai-runs/media/query", {
+        body: { account_id, conversation_id, run_id, part_index },
+      }),
+    );
+  },
   async deleteAccount(account_id: string, expected_revision: number) {
     return value(
       await client.POST("/api/v1/accounts/delete", {

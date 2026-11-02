@@ -69,6 +69,11 @@ def validate_db(path, name):
                 raise ValueError('重试或通知数据表缺失。')
             if 'ai_max_retries' not in {r[1] for r in db.execute('PRAGMA table_info(conversation_preferences)')}:
                 raise ValueError('会话重试配置缺失。')
+        if name == FILES[0] and version == 11:
+            if not {'reply_media','reply_candidates','stickers'} <= tables:
+                raise ValueError('回复媒体或表情包数据表缺失。')
+            if not {'kind','media_id','native_evidence'} <= {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}:
+                raise ValueError('媒体发送队列结构缺失。')
         return version
 
 
@@ -131,6 +136,8 @@ def quarantine(db, reset_compatibility=False):
             db.execute('DELETE FROM account_observations')
             db.execute("UPDATE notification_outbox SET status=CASE WHEN status='sending' THEN 'unknown' ELSE 'cancelled' END WHERE status IN ('queued','sending')")
             db.execute("UPDATE notification_settings SET payload=json_set(payload,'$.enabled',json('false')),revision=revision+1")
+        if db.execute('PRAGMA user_version').fetchone()[0] >= 11:
+            db.execute('DELETE FROM reply_candidates')
 
 
 def import_data(archive, data):

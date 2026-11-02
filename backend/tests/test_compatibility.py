@@ -19,6 +19,7 @@ from backend.app.services import browser_values
 from test_conversations import accounts, rows
 import test_ai_execution as execution
 import test_delivery as delivery
+import test_group_scheduling as groups
 
 
 class CompatibilityTests(RoleTestCase):
@@ -121,6 +122,59 @@ class CompatibilityTests(RoleTestCase):
             self.assertTrue(reopened.compatibility_blocked(self.ids[0]))
         self.assertTrue(self.preferences()['ai_enabled'])
 
+    def test_transient_readiness_preserves_group_mentions_without_sending_while_held(self):
+        groups.GroupSchedulingTests.group(self,20);self.enable()
+        aid,cid=self.ids[0],self.cids[0]
+        wxid=self.store.account(aid)['wxid']
+        for index,reason in enumerate(('native_busy','sync_pending','native_unavailable'),1):
+            with self.subTest(reason=reason):
+                self.store.compatibility_send_state(aid,False,reason)
+                self.delta(index,mention_status='known',mentioned_wxids=[wxid],mentions_all=False)
+                self.assertEqual(self.store.ai_candidates(),[])
+                self.assertEqual(self.store.delivery_candidates(),[])
+                self.store.compatibility_send_state(aid,True,'ready');self.restore()
+                self.assertEqual(self.store.call(lambda:self.store._group_reason(aid,cid)),'mention')
+                groups.GroupSchedulingTests.settle(self)
+                self.assertEqual(len(self.store.ai_candidates()),1)
+                run=self.wait_run(self.app.state.ai.start(aid,cid,'resumed-'+reason,'auto'))
+                self.assertEqual(run['trigger_reason'],'mention')
+                self.assertEqual(run['delivery']['status'],'queued')
+                self.finish(run)
+        self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_triggers WHERE conversation_id=?',(cid,)).fetchone()[0]),3)
+
+    def test_transient_capture_does_not_bypass_identity_rebaseline(self):
+        self.configured();self.enable()
+        aid,cid=self.ids[0],self.cids[0]
+        self.store.compatibility_send_state(aid,False,'native_busy')
+        self.delta(1)
+        self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_triggers').fetchone()[0]),1)
+        # A subsequent identity change must discard the old epoch even if readiness
+        # temporarily overwrites its visible reason before the baseline is rebuilt.
+        self.states[aid]['fingerprint']='replacement-build'
+        self.store.compatibility_observe(self.states,[])
+        self.store.compatibility_send_state(aid,False,'native_busy')
+        self.delta(2)
+        self.store.compatibility_send_state(aid,True,'ready');self.restore()
+        epoch=self.store.call(lambda:self.store._ai_session(aid,cid)['epoch'])
+        self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_triggers WHERE epoch=?',(epoch,)).fetchone()[0]),0)
+        self.delta(3)
+        self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_triggers WHERE epoch=?',(epoch,)).fetchone()[0]),1)
+
+    def test_guard_readiness_race_preserves_epoch_and_pending_triggers(self):
+        self.configured();self.enable();self.delta(1)
+        aid,cid=self.ids[0],self.cids[0]
+        epoch=self.store.call(lambda:self.store._ai_session(aid,cid)['epoch'])
+        manager=self.app.state.bridge.compatibility
+        manager.enabled=True;manager.sender=Mock()
+        manager.sender.capability.return_value=dict(ready=False,code='native_busy')
+        with patch.object(manager,'check_processes',return_value=True):
+            with self.assertRaises(ConversationError): manager.guard(aid)
+        self.delta(2)
+        self.assertEqual(self.store.call(lambda:self.store._ai_session(aid,cid)['epoch']),epoch)
+        self.assertEqual(self.store.ai_candidates(),[])
+        self.store.compatibility_send_state(aid,True,'ready');self.restore()
+        self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_triggers WHERE epoch=?',(epoch,)).fetchone()[0]),2)
+
     def test_inflight_ai_result_cannot_change_memory_or_queue_send_after_hold(self):
         self.configured(); self.enable(); self.delta()
         previous = self.preferences()['memory']
@@ -140,7 +194,7 @@ class CompatibilityTests(RoleTestCase):
         run = self.wait_run(self.start()); self.finish(run, 'unknown')
         def extra():
             with self.store.db:
-                self.store.db.execute("INSERT INTO deliveries SELECT run_id,1,account_id,conversation_id,epoch,target,'queued part','queued',0,NULL,NULL,NULL,created_at FROM deliveries WHERE run_id=? AND part_index=0", (run['run_id'],))
+                self.store.db.execute("INSERT INTO deliveries(run_id,part_index,account_id,conversation_id,epoch,target,text,status,attempts,code,confirmation,archive_message_id,created_at) SELECT run_id,1,account_id,conversation_id,epoch,target,'queued part','queued',0,NULL,NULL,NULL,created_at FROM deliveries WHERE run_id=? AND part_index=0", (run['run_id'],))
         self.store.call(extra)
         self.store.compatibility_pause(self.ids[0], 'build_changed')
         self.delta(2)
@@ -182,7 +236,7 @@ class CompatibilityTests(RoleTestCase):
             self.assertFalse(db.execute("SELECT name FROM sqlite_master WHERE name='compatibility_state'").fetchone())
         with closing(Store(path)) as store:
             self.assertEqual(len(store.accounts()),2)
-            self.assertEqual(store.call(lambda:store.db.execute('PRAGMA user_version').fetchone()[0]),10)
+            self.assertEqual(store.call(lambda:store.db.execute('PRAGMA user_version').fetchone()[0]),11)
 
 
 class ProfileTests(unittest.TestCase):
