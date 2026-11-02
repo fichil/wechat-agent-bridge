@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 $InstallRoot = (Resolve-Path -LiteralPath $InstallRoot).Path
 if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'installation.json'))) { throw 'Bootstrap installation first' }
 $principal = New-ScheduledTaskPrincipal -UserId $UserName -LogonType Interactive -RunLevel Highest
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $UserName
 foreach ($entry in @(@('WeChatBridge-Run','run-installed.ps1'), @('WeChatBridge-Deploy','deploy-task.ps1'))) {
     $task = $entry[0]
