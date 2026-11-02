@@ -1,5 +1,5 @@
 import { computed, ref, onScopeDispose } from "vue";
-import { onChange } from "../api/events";
+import { onChange, accountDeleted } from "../api/events";
 import { defineStore } from "pinia";
 import { api, ApiFailure, type Account, type Snapshot } from "../api";
 import { reasonText } from "../reasons";
@@ -16,6 +16,59 @@ export const useAccountsStore = defineStore("accounts", () => {
   const selectedId = ref(sessionStorage.getItem(selectionKey));
   const accounts = computed(() => snapshot.value?.accounts ?? []);
   let pending: Promise<void> | null = null;
+  let refreshGeneration = 0;
+  const deletedIds = new Set<string>();
+  async function refresh() {
+    const generation = ++refreshGeneration;
+    const result = await api.accounts();
+    if (generation === refreshGeneration) accept(result);
+  }
+  function accept(result: Snapshot) {
+    const missing = accounts.value
+      .filter(
+        (a) =>
+          a.account_id &&
+          !deletedIds.has(a.account_id) &&
+          !result.accounts.some((next) => next.account_id === a.account_id),
+      )
+      .map((a) => a.account_id!);
+    result.accounts = result.accounts.filter(
+      (a) => !a.account_id || !deletedIds.has(a.account_id),
+    );
+    snapshot.value = result;
+    for (const id of missing) {
+      deletedIds.add(id);
+      accountDeleted(id);
+    }
+    if (
+      selectedId.value &&
+      !result.accounts.some((a) => a.account_id === selectedId.value)
+    ) {
+      select(null);
+      notice.value = "上次选择的账号已失效，请重新选择。";
+    }
+  }
+  async function remove(account: Account) {
+    if (!account.account_id) return;
+    error.value = "";
+    try {
+      await api.deleteAccount(account.account_id, account.revision ?? 0);
+      refreshGeneration++;
+      deletedIds.add(account.account_id);
+      if (snapshot.value) accept(snapshot.value);
+      accountDeleted(account.account_id);
+      notice.value = "账号本地记录已删除。";
+    } catch (cause) {
+      error.value =
+        cause instanceof Error ? cause.message : "删除失败，请刷新账号状态。";
+    } finally {
+      try {
+        await refresh();
+      } catch {
+        /* Retain the deletion fence if refresh fails. */
+      }
+    }
+  }
 
   function select(id: string | null) {
     selectedId.value = id;
@@ -36,9 +89,9 @@ export const useAccountsStore = defineStore("accounts", () => {
           task = await api.scan(task.scan_id);
         }
         // Another tab may have completed a newer scan. The latest snapshot is authoritative.
-        snapshot.value = await api.accounts();
-        if (snapshot.value.exit_code === 1)
-          error.value = reasonText(snapshot.value.error ?? "probe_failed");
+        await refresh();
+        if (snapshot.value?.exit_code === 1)
+          error.value = reasonText(snapshot.value?.error ?? "probe_failed");
         if (
           selectedId.value &&
           !accounts.value.some((a) => a.account_id === selectedId.value)
@@ -63,7 +116,7 @@ export const useAccountsStore = defineStore("accounts", () => {
   async function initialize() {
     if (initialized.value) return;
     try {
-      snapshot.value = await api.accounts();
+      await refresh();
       initialized.value = true;
       if (!accounts.value.length) void scan();
     } catch {
@@ -73,15 +126,17 @@ export const useAccountsStore = defineStore("accounts", () => {
 
   onScopeDispose(
     onChange((event) => {
+      if (event.resources?.includes("account_deleted") && event.account_id) {
+        deletedIds.add(event.account_id);
+        if (snapshot.value) accept(snapshot.value);
+      }
       if (
         event.type === "ready" ||
         event.type === "resync" ||
         event.resources?.includes("accounts")
       ) {
-        void api
-          .accounts()
-          .then((result) => {
-            snapshot.value = result;
+        void refresh()
+          .then(() => {
             initialized.value = true;
           })
           .catch(() => {});
@@ -118,5 +173,6 @@ export const useAccountsStore = defineStore("accounts", () => {
     scan,
     initialize,
     enter,
+    remove,
   };
 });

@@ -178,6 +178,17 @@ export const useConversationsStore = defineStore("conversations", () => {
   onScopeDispose(
     onChange((event) => {
       if (
+        event.account_id === accountId.value &&
+        event.resources?.includes("account_deleted")
+      ) {
+        stop();
+        items.value = [];
+        page.value = null;
+        selectedId.value = null;
+        accountLost.value = true;
+        return;
+      }
+      if (
         !enabled ||
         (event.account_id && event.account_id !== accountId.value)
       )

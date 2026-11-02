@@ -14,6 +14,7 @@ vi.mock("../src/api", async (importOriginal) => {
       scan: vi.fn(),
       accounts: vi.fn(),
       account: vi.fn(),
+      deleteAccount: vi.fn(),
     },
   };
 });
@@ -107,5 +108,25 @@ describe("account lifecycle", () => {
     const store = useAccountsStore();
     expect(await store.enter("old-account")).toBeNull();
     expect(store.notice).toContain("失效");
+  });
+
+  it("deletes an offline account and rejects stale cache responses", async () => {
+    const store = useAccountsStore();
+    await store.initialize();
+    await store.enter("synthetic-account-1");
+    vi.mocked(api.deleteAccount).mockResolvedValue({
+      account_id: "synthetic-account-1",
+      deleted: true,
+    });
+    await store.remove({ ...syntheticAccount, source_state: "offline" });
+    expect(api.deleteAccount).toHaveBeenCalledWith(
+      "synthetic-account-1",
+      syntheticAccount.revision ?? 0,
+    );
+    expect(store.accounts).toEqual([]);
+    expect(store.selectedId).toBeNull();
+    expect(sessionStorage.getItem("bridge.selected-account")).toBeNull();
+    await store.scan();
+    expect(store.accounts).toEqual([]);
   });
 });

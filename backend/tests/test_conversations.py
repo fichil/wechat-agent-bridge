@@ -164,7 +164,7 @@ class ConversationApiTests(unittest.TestCase):
         self.assertEqual(self.post("conversations/query").status_code, 200)
         self.reader.failure = "process_exited"
         self.assertEqual(self.refresh()["status"], "failed")
-        self.assertEqual(self.post("conversations/query").json()["source_state"], "offline")
+        self.assertEqual(self.post("conversations/query").json()["source_state"], "unknown")
 
     def test_json_validation_no_scan_and_damaged_settings_not_overwritten(self):
         self.assertEqual(self.post("conversation-settings/query").status_code, 200)

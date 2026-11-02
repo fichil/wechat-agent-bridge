@@ -26,8 +26,12 @@ class LogStoreMixin:
     log_limit = LOG_LIMIT
 
     def _log_put(self, summary, details=None, merge_key=None):
+        if summary.get('account_id') and not self.db.execute('SELECT 1 FROM accounts WHERE account_id=?', (summary['account_id'],)).fetchone():
+            return None
         identity = summary.get("log_id")
         old = self.db.execute("SELECT payload FROM diagnostic_logs WHERE log_id=?", (identity,)).fetchone() if identity else None
+        if identity and not old and not summary.get('category'):
+            return None  # A late HTTP capture must not recreate a deleted log/details row.
         if merge_key and not old:
             old = self.db.execute("SELECT payload FROM diagnostic_logs WHERE merge_key=? AND active=0 ORDER BY updated_at DESC LIMIT 1", (merge_key,)).fetchone()
         value = json.loads(old[0]) if old else dict(log_id=identity or uuid4().hex, started_at=stamp(), count=0)
@@ -82,9 +86,10 @@ class LogStoreMixin:
     def log_application(self, task_id, task, category="ai"):
         try:
             def write():
+                if task.get('account_id') and not self.db.execute('SELECT 1 FROM accounts WHERE account_id=?', (task['account_id'],)).fetchone(): return
                 with self.db:
                     rows = self.db.execute("SELECT payload FROM diagnostic_logs WHERE task_id=?", (task_id,)).fetchall()
-                    progress = {k:task.get(k) for k in ('round_id','trigger_reason','batch_index','round_message_count','round_completed_count','round_final','chose_silence') if k in task}
+                    progress = {k:task.get(k) for k in ('round_id','trigger_reason','batch_index','round_message_count','round_completed_count','round_final','chose_silence','max_retries','next_retry_at') if k in task}
                     if not rows:
                         value = {k:task.get(k) for k in ("account_id", "conversation_id", "trigger", "started_at", "profile_id")}
                         value.update(category=category, operation=task.get("operation", "conversation"), task_id=task_id,

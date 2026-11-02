@@ -144,9 +144,12 @@ class AiExecution:
                     if exc.code != "ai_input_too_large" or len(envelope["messages"]) <= 1:
                         raise
                     envelope["messages"].pop()
-            self.store.trim_ai_run(aid, cid, rid, {m["message_id"] for m in envelope["messages"]})
+            if not snapshot.get('resumed'):
+                self.store.trim_ai_run(aid, cid, rid, {m["message_id"] for m in envelope["messages"]})
             reply_ids = self.store.ai_run(aid,cid,rid).get('reply_trigger_ids',[])
-            envelope.update(self.store.ai_reply_envelope(aid,cid,rid))
+            if not snapshot.get('resumed'):
+                envelope.update(self.store.ai_reply_envelope(aid,cid,rid))
+            if not self.store.save_ai_snapshot(aid,cid,rid,profile,envelope): return
             # Closing AI while preparing must not launch a new remote request.
             self.bridge.compatibility.guard(aid)
             if not self.store.mark_ai_attempt(aid, cid, rid):
@@ -155,18 +158,27 @@ class AiExecution:
             trigger_at = self.store.call(lambda: self.store.db.execute("SELECT last_trigger_at FROM delivery_sessions WHERE account_id=? AND conversation_id=?", (aid,cid)).fetchone())
             timings = dict(trigger_to_request=max(0, round((time.time()-trigger_at[0])*1000, 3))) if reply_ids and trigger_at and trigger_at[0] else {}
             with log_context(self.store, timings_ms=timings, account_id=aid, conversation_id=cid, task_id=rid,
+                attempt_count=run.get('attempt_count'), max_retries=run.get('max_retries'),
                 operation="conversation", trigger=run["trigger"], memory_revision=run["memory_revision"],
                 role_revision=run["role_revision"], settings_revision=run["settings_revision"]):
                 result = self.provider.generate(profile, key, envelope, mode)
             self.store.finish_ai_run(aid, cid, rid, result=result)
         except ConversationError as exc:
-            self.store.finish_ai_run(aid, cid, rid, error=exc)
+            if exc.code != 'compatibility_paused':
+                self.store.finish_ai_run(aid, cid, rid, error=exc)
+            else:
+                self.store.defer_ai_run(rid)
         except Exception:
             self.store.finish_ai_run(aid, cid, rid, error=ConversationError("ai_execution_failed", "AI 处理未完成，记忆未更新，请手动重试。", 503))
         finally:
-            self.store.log_application(rid, self.store.ai_run(aid, cid, rid))
+            try: self.store.log_application(rid, self.store.ai_run(aid, cid, rid))
+            except ConversationError: pass  # Account/run may have been deleted while HTTP was in flight.
 
     def tick(self):
+        for run in self.store.ai_retry_candidates():
+            with self.lock:
+                if len(self.pending) >= 2 or self.stopped.is_set(): break
+            self.submit('run:'+run['run_id'], lambda r=run: self.perform(r['account_id'],r['conversation_id'],r['run_id']))
         for candidate in self.store.ai_enabled_sessions():
             if self.stopped.is_set():
                 return

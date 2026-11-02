@@ -1,3 +1,4 @@
+from migration_helpers import remove_v10
 import json
 from contextlib import closing
 from pathlib import Path
@@ -63,8 +64,25 @@ class MigrationTests(unittest.TestCase):
             with self.assertRaises(ValueError): export_data(self.source,self.archive)
         self.assertFalse(self.archive.exists())
 
+    def test_v10_import_preserves_retry_config_but_quarantines_mail_and_snapshots(self):
+        with closing(sqlite3.connect(self.source/'bridge.sqlite3')) as db, db:
+            db.execute('INSERT INTO ai_request_snapshots VALUES(?,?)', ('r', '{}'))
+            db.execute("UPDATE notification_settings SET payload=?,secret=?", (json.dumps(dict(enabled=True, recipient='synthetic@example.test')), b'opaque'))
+            for state in ('queued', 'sending', 'sent'):
+                db.execute('INSERT INTO notification_outbox VALUES(?,?,?,?,?,?,?,?,?)', (state, self.aid, 'outage', state, 1, 0, 0, '{}', 0))
+        export_data(self.source, self.archive)
+        import_data(self.archive, self.target)
+        with closing(sqlite3.connect(self.target/'bridge.sqlite3')) as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 10)
+            self.assertEqual(db.execute('SELECT count(*) FROM ai_request_snapshots').fetchone()[0], 0)
+            settings = json.loads(db.execute('SELECT payload FROM notification_settings').fetchone()[0])
+            self.assertFalse(settings['enabled'])
+            self.assertEqual(settings['recipient'], 'synthetic@example.test')
+            self.assertEqual(dict(db.execute('SELECT notification_id,status FROM notification_outbox')), {'queued':'cancelled','sending':'unknown','sent':'sent'})
+
     def test_v8_import_upgrades_staged_copy_and_preserves_source_version(self):
         with closing(sqlite3.connect(self.source/'bridge.sqlite3')) as db, db:
+            remove_v10(db)
             db.execute('DROP TABLE compatibility_state')
             db.execute('DELETE FROM schema_migrations WHERE version=9')
             db.execute('PRAGMA user_version=8')
@@ -73,7 +91,7 @@ class MigrationTests(unittest.TestCase):
         with closing(sqlite3.connect(self.source/'bridge.sqlite3')) as db:
             self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],8)
         with closing(sqlite3.connect(self.target/'bridge.sqlite3')) as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],9)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],10)
             self.assertEqual(db.execute('SELECT count(*) FROM compatibility_state').fetchone()[0],0)
 
     def test_corrupt_or_traversal_archive_never_changes_destination(self):

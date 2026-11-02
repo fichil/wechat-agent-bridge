@@ -286,6 +286,7 @@ test("log details are lazy, failures can retry, and refresh preserves open JSON"
     ...ids[0]!,
     expected_revision: 0,
     ai_enabled: true,
+    ai_max_retries: 0,
   });
   await fixturePost(page, service + "/test/message", {
     data: { index: 1, content: { text: "日志合成消息" } },

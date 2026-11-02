@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { ElMessageBox } from "element-plus";
+import "element-plus/es/components/message-box/style/css";
+import { type Account } from "../api";
 import { useRouter } from "vue-router";
 import AccountAvatar from "../components/AccountAvatar.vue";
 import CompatibilityPanel from "../components/CompatibilityPanel.vue";
@@ -8,6 +11,35 @@ import { formatTime, reasonText } from "../reasons";
 const store = useAccountsStore();
 const router = useRouter();
 const entering = ref<string | null>(null);
+const deleting = ref<string | null>(null);
+async function remove(account: Account) {
+  if (
+    !account.account_id ||
+    account.source_state !== "offline" ||
+    deleting.value
+  )
+    return;
+  try {
+    await ElMessageBox.confirm(
+      `将删除当前工作台保存的该账号聊天记录、会话记忆、设置、缓存及任务和日志，删除后无法在工作台撤销。微信客户端数据、共享角色卡/API 配置及已有导出或部署备份保留。`,
+      `删除 ${account.nickname || "未取得昵称"}（${account.wxid}）`,
+      {
+        type: "warning",
+        confirmButtonText: "删除本地账号",
+        cancelButtonText: "取消",
+        closeOnClickModal: false,
+      },
+    );
+  } catch {
+    return;
+  }
+  deleting.value = account.account_id;
+  try {
+    await store.remove(account);
+  } finally {
+    deleting.value = null;
+  }
+}
 
 async function enter(id: string) {
   entering.value = id;
@@ -132,6 +164,15 @@ async function enter(id: string) {
               {{ reasonText(account.reason) }}
             </p>
             <div class="card-bottom">
+              <ElButton
+                v-if="account.account_id"
+                type="danger"
+                plain
+                :disabled="account.source_state !== 'offline' || !!deleting"
+                :loading="deleting === account.account_id"
+                @click="remove(account)"
+                >删除本地账号</ElButton
+              >
               <span class="subtle"
                 >{{ account.instances?.length ?? 0 }} 个客户端实例</span
               ><ElButton

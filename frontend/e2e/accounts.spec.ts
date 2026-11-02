@@ -1,11 +1,32 @@
 import { mockAuthenticatedSession } from "./auth-fixture";
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
 import { snapshot, syntheticAccount, task } from "../tests/fixtures";
 import type { Snapshot } from "../src/api";
 
 async function mockApi(page: Page, initial = snapshot()) {
-  const state = { snapshot: initial, fail: false, posts: 0, running: false };
+  const sockets: WebSocketRoute[] = [];
+  const state = {
+    snapshot: initial,
+    fail: false,
+    posts: 0,
+    running: false,
+    deletions: 0,
+    deleted(id: string) {
+      state.snapshot.accounts = state.snapshot.accounts.filter(
+        (a) => a.account_id !== id,
+      );
+      for (const socket of sockets)
+        socket.send(
+          JSON.stringify({
+            type: "changed",
+            account_id: id,
+            resources: ["accounts", "account_deleted"],
+          }),
+        );
+    },
+  };
   await page.routeWebSocket("**/api/v1/events", (socket) => {
+    sockets.push(socket);
     socket.onMessage(() =>
       socket.send(JSON.stringify({ type: "ready", revisions: {} })),
     );
@@ -27,6 +48,15 @@ async function mockApi(page: Page, initial = snapshot()) {
       await route.fulfill({ json: task() });
     } else if (path === "/api/v1/accounts/query") {
       await route.fulfill({ json: state.snapshot });
+    } else if (path === "/api/v1/accounts/delete") {
+      const body = route.request().postDataJSON();
+      state.deletions++;
+      state.snapshot.accounts = state.snapshot.accounts.filter(
+        (a) => a.account_id !== body.account_id,
+      );
+      await route.fulfill({
+        json: { account_id: body.account_id, deleted: true },
+      });
     } else if (path.startsWith("/api/v1/accounts/")) {
       const account = state.snapshot.accounts.find(
         (a) => route.request().postDataJSON().account_id === a.account_id,
@@ -48,6 +78,72 @@ async function mockApi(page: Page, initial = snapshot()) {
   });
   return state;
 }
+
+test("offline deletion requires confirmation and removes the account", async ({
+  page,
+}) => {
+  const state = await mockApi(
+    page,
+    snapshot([{ ...syntheticAccount, source_state: "offline" }]),
+  );
+  await page.goto("/accounts");
+  await page.getByRole("button", { name: "删除本地账号" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("会话记忆");
+  await expect(dialog).toContainText(syntheticAccount.wxid!);
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  expect(state.deletions).toBe(0);
+  await expect(dialog).toBeHidden();
+  await page.getByRole("button", { name: "删除本地账号" }).click();
+  await dialog
+    .getByRole("button", { name: "删除本地账号", exact: true })
+    .click();
+  await expect(page.getByTestId("account-card")).toHaveCount(0);
+  expect(state.deletions).toBe(1);
+});
+
+test("online and unknown accounts cannot be deleted", async ({ page }) => {
+  await mockApi(
+    page,
+    snapshot([
+      syntheticAccount,
+      { ...syntheticAccount, account_id: "unknown", source_state: "unknown" },
+    ]),
+  );
+  await page.goto("/accounts");
+  for (const button of await page
+    .getByRole("button", { name: "删除本地账号" })
+    .all())
+    await expect(button).toBeDisabled();
+});
+
+test("deletion in another tab clears the selected workspace", async ({
+  page,
+  context,
+}) => {
+  const offline = snapshot([{ ...syntheticAccount, source_state: "offline" }]);
+  await mockApi(page, structuredClone(offline));
+  const second = await context.newPage();
+  const otherState = await mockApi(second, structuredClone(offline));
+  await second.goto("/accounts");
+  await second.getByRole("button", { name: "进入工作台" }).click();
+  await expect(second).toHaveURL(/workspace/);
+  await page.goto("/accounts");
+  await page.getByRole("button", { name: "删除本地账号" }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "删除本地账号", exact: true })
+    .click();
+  await expect(page.getByTestId("account-card")).toHaveCount(0);
+  otherState.deleted(syntheticAccount.account_id!);
+  await expect(second).toHaveURL(/\/accounts$/);
+  await expect(second.getByTestId("account-card")).toHaveCount(0);
+  expect(
+    await second.evaluate(() =>
+      sessionStorage.getItem("bridge.selected-account"),
+    ),
+  ).toBeNull();
+});
 
 test("cached accounts → workspace → switch, without source scans", async ({
   page,

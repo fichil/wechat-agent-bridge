@@ -31,5 +31,14 @@ def remove_v8(db):
 
 
 def remove_v9(db):
+    remove_v10(db)
     db.execute('DROP TABLE IF EXISTS compatibility_state')
     db.execute('DELETE FROM schema_migrations WHERE version=9')
+
+
+def remove_v10(db):
+    for table in ('notification_outbox','account_observations','notification_settings','ai_request_snapshots'):
+        db.execute('DROP TABLE IF EXISTS '+table)
+    if 'ai_max_retries' in {r[1] for r in db.execute('PRAGMA table_info(conversation_preferences)')}:
+        db.execute('ALTER TABLE conversation_preferences DROP COLUMN ai_max_retries')
+    db.execute('DELETE FROM schema_migrations WHERE version=10')

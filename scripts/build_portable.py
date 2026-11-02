@@ -126,8 +126,8 @@ def main():
                 target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(child,target)
     (stage/'THIRD_PARTY_NOTICES.txt').write_text('Python '+PYTHON_VERSION+'：runtime/LICENSE.txt 与 licenses/python\nCaddy '+CADDY_VERSION+'：licenses/Caddy-LICENSE\n网页依赖：licenses/frontend\n原生发送派生自 helper，适用非商业使用许可：licenses/LICENSE.helper 与 licenses/native-send-NOTICE.md\n',encoding='utf-8')
     manifest=dict(version=args.version,commit=commit,development=args.development,architecture='windows-x64',
-                  python=PYTHON_VERSION,caddy=CADDY_VERSION,database_schema=9,
-                  database_compatible_schemas=[9,10],database_output_schemas=[9,10],
+                  python=PYTHON_VERSION,caddy=CADDY_VERSION,database_schema=10,
+                  database_compatible_schemas=[9,10],database_output_schemas=[10],
                   files={str(path.relative_to(stage)).replace('\\','/'):digest(path) for path in sorted(stage.rglob('*')) if path.is_file()})
     (stage/'portable-manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
     # Run the bundled interpreter with a PATH that contains no developer tools.

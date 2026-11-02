@@ -60,10 +60,15 @@ def validate_db(path, name):
         if not required <= tables:
             raise ValueError('不是有效的 Bridge 数据库：' + name)
         version = db.execute('PRAGMA user_version').fetchone()[0]
-        if name == FILES[0] and version not in (8, 9):
-            raise ValueError('迁移包仅支持数据库版本 8 或 9；请使用匹配版本升级。')
-        if name == FILES[0] and version == 9 and 'compatibility_state' not in tables:
+        if name == FILES[0] and version not in (8, 9, 10):
+            raise ValueError('迁移包仅支持数据库版本 8、9 或 10；请使用匹配版本升级。')
+        if name == FILES[0] and version >= 9 and 'compatibility_state' not in tables:
             raise ValueError('兼容状态表缺失。')
+        if name == FILES[0] and version == 10:
+            if not {'ai_request_snapshots', 'notification_settings', 'account_observations', 'notification_outbox'} <= tables:
+                raise ValueError('重试或通知数据表缺失。')
+            if 'ai_max_retries' not in {r[1] for r in db.execute('PRAGMA table_info(conversation_preferences)')}:
+                raise ValueError('会话重试配置缺失。')
         return version
 
 
@@ -118,8 +123,13 @@ def quarantine(db, reset_compatibility=False):
             db.execute("UPDATE group_rounds SET status='cancelled',payload=? WHERE round_id=?", (json.dumps(value, ensure_ascii=False), rid))
         db.execute("UPDATE accounts SET source_state='unknown'")
         db.execute('DELETE FROM cursors')
-        if reset_compatibility and db.execute('PRAGMA user_version').fetchone()[0] == 9:
+        if reset_compatibility and db.execute('PRAGMA user_version').fetchone()[0] >= 9:
             db.execute('DELETE FROM compatibility_state')
+        if db.execute('PRAGMA user_version').fetchone()[0] >= 10:
+            db.execute('DELETE FROM ai_request_snapshots')
+            db.execute('DELETE FROM account_observations')
+            db.execute("UPDATE notification_outbox SET status=CASE WHEN status='sending' THEN 'unknown' ELSE 'cancelled' END WHERE status IN ('queued','sending')")
+            db.execute("UPDATE notification_settings SET payload=json_set(payload,'$.enabled',json('false')),revision=revision+1")
 
 
 def import_data(archive, data):
@@ -140,7 +150,7 @@ def import_data(archive, data):
             if sum(i.file_size for i in infos) > MAX_BYTES or zin.getinfo('manifest.json').file_size > 16384:
                 raise ValueError('迁移包超过大小限制。')
             manifest = json.loads(zin.read('manifest.json'))
-            if manifest.get('format') != 'wechat-agent-bridge-migration' or manifest.get('version') != 1 or manifest.get('database_version') not in (8,9) or set(manifest.get('files', {})) != set(FILES):
+            if manifest.get('format') != 'wechat-agent-bridge-migration' or manifest.get('version') != 1 or manifest.get('database_version') not in (8,9,10) or set(manifest.get('files', {})) != set(FILES):
                 raise ValueError('迁移包格式或版本不支持。')
             for name in FILES:
                 with zin.open(name) as source, (temp/name).open('xb') as target:
@@ -154,6 +164,8 @@ def import_data(archive, data):
         with closing(sqlite3.connect(temp / FILES[0])) as db:
             from backend.app.compatibility_storage import upgrade_v9
             upgrade_v9(db)
+            from backend.app.reliability_schema import upgrade_v10
+            upgrade_v10(db)
             quarantine(db, reset_compatibility=True)
         with closing(sqlite3.connect(temp / FILES[1])) as db:
             with db:
@@ -203,7 +215,7 @@ def resume_data(data, ready_accounts):
                     db.execute('INSERT OR REPLACE INTO delivery_sessions VALUES(?,?,?,?,0)',
                                (aid,cid,datetime.now(timezone.utc).isoformat(),json.dumps(marks)))
                 db.execute('UPDATE ai_sessions SET auto_pending=0')
-                if db.execute('PRAGMA user_version').fetchone()[0] == 9:
+                if db.execute('PRAGMA user_version').fetchone()[0] >= 9:
                     db.executemany("UPDATE compatibility_state SET held=0,reason='',revision=revision+1 WHERE scope=?", ((aid,) for aid in ready_accounts))
         (data/'migration-pending.json').unlink()
 

@@ -20,6 +20,7 @@ class SyncScheduler:
         self.source_completed = {}
         self.continuations = {}
         self.targets_due = self.probe_due = 0
+        self.rediscovery_due = 0
 
     def notify(self, event):
         if set(event.get("resources", ())) & {"conversation_preferences", "conversations", "accounts"}:
@@ -36,8 +37,9 @@ class SyncScheduler:
             from wechat_account_probe.native import enumerate_instances
             instances, _ = enumerate_instances()
             signature = tuple(sorted((i.pid, int(i.created)) for i in instances))
-            if signature != bridge.process_signature:
+            if signature != bridge.process_signature or (bridge.discovery.needs_rediscovery and current >= self.rediscovery_due):
                 bridge.discovery.start()
+                self.rediscovery_due = current + 60
         if current >= self.targets_due:
             targets = bridge.store.sync_targets()
             with self.lock:

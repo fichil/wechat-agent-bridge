@@ -2,24 +2,32 @@
 import { onBeforeUnmount, ref, watch } from "vue";
 import { api } from "../api";
 import AiSettingsPanel from "./AiSettingsPanel.vue";
+import NotificationSettingsPanel from "./NotificationSettingsPanel.vue";
 import {
   defaultExclusions,
   exclusionOptions,
   conversationErrorText,
 } from "../conversation-options";
 const props = defineProps<{ accountId: string }>();
-const activeTab = ref<"filters" | "ai">("filters");
+const activeTab = ref<"filters" | "ai" | "notifications">("filters");
+const notificationOpened = ref(false);
+watch(activeTab, (value) => {
+  if (value === "notifications") notificationOpened.value = true;
+});
 function moveTab(event: KeyboardEvent) {
   if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
+  const tabs = ["filters", "ai", "notifications"] as const;
   activeTab.value =
     event.key === "Home"
       ? "filters"
       : event.key === "End"
-        ? "ai"
-        : activeTab.value === "filters"
-          ? "ai"
-          : "filters";
+        ? "notifications"
+        : tabs[
+            (tabs.indexOf(activeTab.value) +
+              (event.key === "ArrowRight" ? 1 : 2)) %
+              3
+          ]!;
   document.getElementById(`settings-tab-${activeTab.value}`)?.focus();
 }
 const exclusions = ref(defaultExclusions());
@@ -107,6 +115,26 @@ function reset() {
     >
       AI 提示词
     </button>
+    <button
+      id="settings-tab-notifications"
+      type="button"
+      role="tab"
+      :aria-selected="activeTab === 'notifications'"
+      aria-controls="settings-panel-notifications"
+      :tabindex="activeTab === 'notifications' ? 0 : -1"
+      @click="activeTab = 'notifications'"
+    >
+      邮件通知
+    </button>
+  </div>
+  <div
+    v-if="notificationOpened"
+    v-show="activeTab === 'notifications'"
+    id="settings-panel-notifications"
+    role="tabpanel"
+    aria-labelledby="settings-tab-notifications"
+  >
+    <NotificationSettingsPanel />
   </div>
   <div
     v-show="activeTab === 'ai'"

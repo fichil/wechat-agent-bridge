@@ -88,6 +88,7 @@ class Discovery:
         self.bridge, self.probe = bridge, probe
         self.live_accounts = {}
         self.latest = None
+        self.needs_rediscovery = True
         self.lock = threading.RLock()
 
     def start(self):
@@ -96,24 +97,30 @@ class Discovery:
 
     def scan(self, automatic=False):
         started = time.monotonic()
+        generation = self.bridge.store.call(lambda: self.bridge.store.account_generation)
         try:
             result = browser_values(self.probe())
             # Validate before persisting any result from a reader.
             checked = AccountSnapshot.model_validate(dict(result, scan_id=uuid4().hex, scanned_at=now()))
-            result = self.bridge.store.save_accounts(checked.model_dump(mode="json"))
-            self.bridge.compatibility.observe(result)
+            with self.lock:
+                result = self.bridge.store.save_accounts(checked.model_dump(mode="json"), generation)
+                self.live_accounts = {a['account_id']: Account.model_validate(dict(a, source_state='online'))
+                    for a in result['accounts'] if a.get('account_id') and a.get('instances')}
+                self.latest = result
+                self.needs_rediscovery = bool(not result['summary']['coverage_complete'] or result.get('skipped_instances') or not self.live_accounts)
+                self.bridge.compatibility.observe(result)
+                self.bridge.process_signature = tuple(sorted((i['pid'],int(i['created'])) for i in result.get('client_instances',[])))
             for item in result["accounts"]:
                 if item.get("account_id"):
                     record_source(self.bridge.store,"accounts",{},item,aid=item["account_id"],automatic=automatic,elapsed=time.monotonic()-started)
             record_source(self.bridge.store,"accounts",{},dict(account_count=len(result["accounts"]),summary=result["summary"]),automatic=automatic,elapsed=time.monotonic()-started)
-            with self.lock:
-                self.live_accounts = {a["account_id"]: Account.model_validate(dict(a, source_state="online"))
-                    for a in result["accounts"] if a.get("account_id") and a.get("instances")}
-                self.latest = result
-                self.bridge.process_signature = tuple(sorted((i["pid"],int(i["created"])) for i in result.get("client_instances",[])))
             return dict(summary=result["summary"], exit_code=result["exit_code"], error=result.get("error"))
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, ConversationError) and exc.code == 'account_scan_obsolete':
+                self.bridge.process_signature = None
+                return dict(error='account_scan_obsolete')
             self.bridge.store.compatibility_hold('probe_failed')
+            self.needs_rediscovery = True
             record_source(self.bridge.store,"accounts",{},None,automatic=automatic,elapsed=time.monotonic()-started,error="probe_failed")
             from wechat_account_probe.models import failure_result
             result = failure_result("probe_failed")
@@ -161,8 +168,8 @@ class Settings:
     def get(self, wxid):
         return Exclusions.model_validate(self.store.settings(wxid))
 
-    def save(self, wxid, value):
-        return Exclusions.model_validate(self.store.settings(wxid, value.model_dump()))
+    def save(self, wxid, value, aid=None):
+        return Exclusions.model_validate(self.store.settings(wxid, value.model_dump(), aid))
 
 
 class Conversations:
@@ -189,9 +196,7 @@ class Conversations:
         return ConversationPage.model_validate(self.bridge.store.conversations(request.account_id, request.cursor, request.page_size))
 
     def save_settings(self, aid, value):
-        result = self.settings.save(self.account(aid).wxid, value)
-        self.bridge.store.notify(dict(type="changed", account_id=aid, resources=["conversations", "settings"], revision=self.account(aid).revision))
-        return result
+        return self.settings.save(self.account(aid).wxid, value, aid)
 
     def resolve(self, aid, cid):
         row = self.bridge.store.conversation(aid, cid)
@@ -275,6 +280,16 @@ class Bridge:
             self.thread = threading.Thread(target=self.loop, daemon=True, name="change-timer")
             self.thread.start()
 
+    def delete_account(self, aid, revision):
+        with self.discovery.lock:
+            result = self.store.delete_account(aid, revision)
+            self.discovery.live_accounts.pop(aid, None)
+            if self.discovery.latest:
+                self.discovery.latest['accounts'] = [a for a in self.discovery.latest['accounts'] if a.get('account_id') != aid]
+            self.scheduler.targets_due = 0
+            self.scheduler.wake.set()
+            return result
+
     def source(self, aid, operation, kind="read", inputs=None, *, cid=None, automatic=False, task_id=None):
         started = time.monotonic()
         try:
@@ -283,6 +298,7 @@ class Bridge:
             if self.discovery.online(aid).instances != account.instances:
                 raise ProbeError("account_changed_during_read")
             self.store.sync_error(aid, None)
+            self.store.observed_online(aid)
             record_source(self.store,kind,inputs or {},result,aid=aid,cid=cid,automatic=automatic,task_id=task_id,elapsed=time.monotonic()-started)
             return result
         except ProbeError as exc:
@@ -293,8 +309,9 @@ class Bridge:
                     self.store.compatibility_pause(aid, str(exc))
                 with self.discovery.lock:
                     self.discovery.live_accounts.pop(aid, None)
-                self.store.set_state(aid, "offline")
+                self.store.set_state(aid, "unknown", str(exc))
                 self.process_signature = None
+                self.discovery.needs_rediscovery = True
             raise
         except Exception as exc:
             record_source(self.store,kind,inputs or {},None,aid=aid,cid=cid,automatic=automatic,task_id=task_id,elapsed=time.monotonic()-started,error=exc.code if isinstance(exc,ConversationError) else "source_read_failed")

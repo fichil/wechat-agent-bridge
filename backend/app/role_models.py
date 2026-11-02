@@ -125,10 +125,11 @@ class PreferencesUpdate(PreferencesQuery):
     memory: str | None = None
     scan_interval_seconds: int | None = Field(default=None, strict=True, ge=1, le=3600)
     group_proactive_message_threshold: int | None = Field(default=None, strict=True, ge=0, le=1000)
+    ai_max_retries: int | None = Field(default=None, strict=True, ge=0, le=100)
 
     @model_validator(mode="after")
     def valid_patch(self):
-        changes = self.model_fields_set & {"ai_enabled", "role_card_code", "api_profile_id", "memory", "scan_interval_seconds", "group_proactive_message_threshold"}
+        changes = self.model_fields_set & {"ai_enabled", "role_card_code", "api_profile_id", "memory", "scan_interval_seconds", "group_proactive_message_threshold", "ai_max_retries"}
         if not changes or any(getattr(self, key) is None for key in changes - {"role_card_code", "api_profile_id"}):
             raise ValueError("invalid_preferences_patch")
         return self
@@ -151,6 +152,7 @@ class EffectiveConfiguration(BaseModel):
 
 
 class ConversationPreferences(PreferencesQuery):
+    ai_max_retries: int = 10
     scan_interval_seconds: int = 2
     group_proactive_message_threshold: int = 0
     ai_enabled: bool

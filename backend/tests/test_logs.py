@@ -114,6 +114,7 @@ class LogTests(RoleTestCase):
         self.assertEqual(sorted(r["operation"] for r in rows),["test_image","test_text","test_text"])
 
     def test_source_reads_merge_only_automatic_identical_results_and_queries_do_not_log(self):
+        self.post('logs/clear', account_id=self.ids[0], scope='account')
         args=dict(aid=self.ids[0],cid=self.cids[0],automatic=True)
         for _ in range(3):record_source(self.store,"changes",{"cursor":1},{"unchanged":True},**args)
         data=self.query(category="source",scope="account")["items"]

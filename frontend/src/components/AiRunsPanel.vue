@@ -221,6 +221,14 @@ onBeforeUnmount(() => {
           {{ new Date(run.started_at).toLocaleString("zh-CN") }}
         </summary>
         <p v-if="run.message">{{ run.message }}</p>
+        <p class="settings-note">
+          已请求 {{ run.attempt_count }} 次 · 最多额外重试
+          {{ run.max_retries }} 次<span v-if="run.next_retry_at">
+            · 下次重试：{{
+              new Date(run.next_retry_at * 1000).toLocaleString("zh-CN")
+            }}</span
+          >
+        </p>
         <p v-if="run.round_id" class="settings-note">
           {{ run.trigger_reason === "mention" ? "@ 触发" : "累计条数触发" }} ·
           第 {{ run.batch_index }} 批 · 已处理

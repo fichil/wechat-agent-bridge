@@ -108,6 +108,7 @@ class ExecutionTests(RoleTestCase):
 
     def test_failure_pauses_auto_and_retry_uses_latest_memory(self):
         self.configured(); self.ingest()
+        self.update(self.preferences()['revision'], ai_max_retries=0)
         with patch.object(self.provider, "generate", side_effect=ConversationError("ai_network_error", "合成超时", 422)):
             failed = self.wait_run(self.start())
         self.assertEqual(failed["status"], "failed")
@@ -190,6 +191,11 @@ class ExecutionTests(RoleTestCase):
             reopened.save_verification(self.profile["profile_id"],1,dict(status="passed",vision="unverified",output_mode="schema"))
             run = reopened.start_ai_run(self.ids[0],self.cids[0],"interrupted")
             reopened.claim_ai_run(self.ids[0],self.cids[0],run["run_id"])
+            # Simulate an interrupted pre-v10 run; new runs resume their retry budget.
+            def legacy():
+                with reopened.db:
+                    reopened.db.execute("UPDATE ai_runs SET payload=json_remove(payload,'$.max_retries') WHERE run_id=?",(run['run_id'],))
+            reopened.call(legacy)
         with closing(Store(self.path)) as reopened:
             self.assertEqual(reopened.ai_run(self.ids[0],self.cids[0],run["run_id"])["error"], "ai_interrupted")
             self.assertEqual(reopened.preferences(self.ids[0],self.cids[0])["memory"], "")

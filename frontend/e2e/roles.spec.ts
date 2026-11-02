@@ -34,6 +34,7 @@ async function mockWorkspace(page: Page, group = false) {
         account_id: aid,
         conversation_id: cid,
         ai_enabled: false,
+        ai_max_retries: 10,
         scan_interval_seconds: 2,
         group_proactive_message_threshold: 0,
         role_card_code: null,
@@ -204,6 +205,7 @@ async function mockWorkspace(page: Page, group = false) {
         "role_card_code",
         "memory",
         "scan_interval_seconds",
+        "ai_max_retries",
         "group_proactive_message_threshold",
       ] as const)
         if (key in body) Object.assign(result, { [key]: body[key] });
@@ -269,6 +271,31 @@ test("private scan interval saves independently while AI is off", async ({
     .getByRole("button", { name: "会话设置：合成会话一", exact: true })
     .click();
   await expect(page.getByLabel("扫描微信频率（秒）")).toHaveValue("60");
+});
+
+test("conversation retry count defaults to ten and saves zero across reload", async ({
+  page,
+}) => {
+  const { state } = await mockWorkspace(page);
+  await page.goto("/workspace/synthetic-account-1/conversations");
+  await page
+    .getByRole("button", { name: "会话设置：合成会话一", exact: true })
+    .click();
+  const count = page.getByLabel("AI 失败后额外重试次数", { exact: true });
+  await expect(count).toHaveValue("10");
+  await count.fill("101");
+  await expect(
+    page.getByRole("button", { name: "保存会话设置", exact: true }),
+  ).toBeDisabled();
+  await count.fill("0");
+  await page.getByRole("button", { name: "保存会话设置", exact: true }).click();
+  await expect(page.getByText("会话设置已保存", { exact: true })).toBeVisible();
+  expect(state.writes.at(-1)).toMatchObject({ ai_max_retries: 0 });
+  await page.reload();
+  await page
+    .getByRole("button", { name: "会话设置：合成会话一", exact: true })
+    .click();
+  await expect(count).toHaveValue("0");
 });
 
 test("group frequency supports default off, validation, persistence and disabling", async ({

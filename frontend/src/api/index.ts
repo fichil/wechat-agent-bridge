@@ -29,6 +29,9 @@ export type ProfileUpdate = components["schemas"]["ProfileUpdate"];
 export type AiDefaults = components["schemas"]["AiDefaults"];
 export type DefaultsUpdate = components["schemas"]["DefaultsUpdate"];
 export type AiSettings = components["schemas"]["AiSettings"];
+export type NotificationSettings =
+  components["schemas"]["NotificationSettings"];
+export type NotificationUpdate = components["schemas"]["NotificationUpdate"];
 export type AiRun = components["schemas"]["AiRun"];
 export type RunList = components["schemas"]["RunList"];
 export type ProfileTask = components["schemas"]["ProfileTask"];
@@ -65,6 +68,30 @@ function value<T>(result: {
 }
 
 export const api = {
+  async deleteAccount(account_id: string, expected_revision: number) {
+    return value(
+      await client.POST("/api/v1/accounts/delete", {
+        body: { account_id, expected_revision },
+      }),
+    );
+  },
+  async notificationSettings() {
+    return value(
+      await client.POST("/api/v1/notification-settings/query", { body: {} }),
+    );
+  },
+  async saveNotificationSettings(body: NotificationUpdate) {
+    return value(
+      await client.POST("/api/v1/notification-settings/update", { body }),
+    );
+  },
+  async testNotification(expected_revision: number) {
+    return value(
+      await client.POST("/api/v1/notification-settings/test", {
+        body: { expected_revision },
+      }),
+    );
+  },
   async compatibility() {
     return value(
       await client.POST("/api/v1/compatibility/query", { body: {} }),

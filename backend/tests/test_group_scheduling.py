@@ -147,6 +147,7 @@ class GroupSchedulingTests(RoleTestCase):
         for index in range(1, 56): self.delta(index)
         first = self.start()
         memory = self.preferences()['memory']
+        self.update(self.preferences()['revision'], ai_max_retries=0)
         with patch.object(self.provider, 'generate', side_effect=ConversationError('ai_network_error', '模拟失败', 503)):
             failed = self.start()
         self.assertEqual(failed['status'], 'failed')
@@ -158,6 +159,20 @@ class GroupSchedulingTests(RoleTestCase):
         self.assertEqual(final['message_count'], 5)
         self.assertEqual(final['round_id'], first['round_id'])
         self.assertEqual(final['round_completed_count'], 55)
+
+    def test_automatic_retry_keeps_completed_batches_and_same_final_run(self):
+        self.group(20)
+        for index in range(1,56):self.delta(index)
+        first=self.start();memory=self.preferences()['memory'];self.settle()
+        run=self.store.start_ai_run(self.ids[0],self.cids[0],uuid4().hex,'auto')
+        with patch.object(self.provider,'generate',side_effect=ConversationError('ai_network_error','synthetic')):
+            self.app.state.ai.perform(self.ids[0],self.cids[0],run['run_id'])
+        failed=self.store.ai_run(self.ids[0],self.cids[0],run['run_id'])
+        self.assertEqual((failed['status'],failed['message_count']),('queued',5))
+        self.assertEqual(self.preferences()['memory'],memory)
+        self.app.state.ai.perform(self.ids[0],self.cids[0],run['run_id'])
+        final=self.store.ai_run(self.ids[0],self.cids[0],run['run_id'])
+        self.assertEqual((final['status'],final['round_id'],final['round_completed_count'],final['attempt_count']),('completed',first['round_id'],55,2))
 
     def test_disable_threshold_cancels_continuation_and_unsent_reply(self):
         self.group(20)
@@ -261,7 +276,7 @@ class GroupSchedulingTests(RoleTestCase):
             self.assertEqual((prefs['scan_interval_seconds'], prefs['group_proactive_message_threshold']), (2, 0))
             self.assertEqual(store.call(lambda: store.db.execute('SELECT count(*) FROM group_message_eligibility').fetchone()[0]), 0)
             self.assertEqual(store.ai_candidates(), [])
-        backups = list((self.path.parent/'migration-backups').glob('before-v9-*.sqlite3'))
+        backups = list((self.path.parent/'migration-backups').glob('before-v10-*.sqlite3'))
         self.assertTrue(backups)
         with closing(sqlite3.connect(backups[0])) as db:
             self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0], 'ok')

@@ -4,6 +4,8 @@ from copy import deepcopy
 import io
 import json
 import time
+import math
+from email.utils import parsedate_to_datetime
 from uuid import uuid4
 import httpx
 from .conversations import ConversationError
@@ -201,7 +203,7 @@ class Provider:
                         if time.monotonic()-started > response_timeout:
                             capture.response(response, b"".join(chunks), True)
                             capture.network_error("ResponseDeadlineExceeded", "response", response_timeout)
-                            raise failure("ai_network_error", f"AI 响应超过 {response_timeout} 秒等待预算；记忆未更新，请手动重试。")
+                            raise failure("ai_network_error", f"AI 响应超过 {response_timeout} 秒等待预算；记忆未更新。")
                         size += len(chunk)
                         if size > 2 * 1024 * 1024:
                             capture.response(response, (b"".join(chunks)+chunk)[:2*1024*1024], True)
@@ -218,7 +220,17 @@ class Provider:
                         if unsupported and any(s in detail for s in ("image", "vision", "multimodal", "inlinedata")):
                             raise failure("ai_vision_unsupported", "此模型不支持图片输入。")
                         names = {401: "认证失败，请检查密钥", 403: "无模型访问权限", 404: "地址或模型不存在", 429: "额度不足或请求受到限流"}
-                        raise failure("ai_provider_error", names.get(response.status_code, "AI 服务拒绝请求或暂不可用")+f"（HTTP {response.status_code}）。")
+                        error = failure("ai_provider_error", names.get(response.status_code, "AI 服务拒绝请求或暂不可用")+f"（HTTP {response.status_code}）。")
+                        exhausted = any(marker in detail for marker in ('insufficient_quota','billing_hard_limit_reached','credit balance is too low','余额不足','余额已耗尽'))
+                        error.retryable = not exhausted and (response.status_code in (408,429) or response.status_code >= 500)
+                        error.retry_after = 0
+                        header = response.headers.get('retry-after','')
+                        if error.retryable and header:
+                            try:
+                                delay = float(header) if header.strip().isdigit() else parsedate_to_datetime(header).timestamp()-time.time()
+                                if math.isfinite(delay): error.retry_after = max(0,delay)
+                            except (ValueError,TypeError,OverflowError): pass
+                        raise error
             return parse_response(profile["protocol"], json.loads(raw))
         except (httpx.HTTPError, OSError) as exc:
             if response is not None:
@@ -238,7 +250,7 @@ class Provider:
                     kind, phase, reason = cls.__name__, stage, description
                     break
             capture.network_error(kind, phase, response_timeout)
-            raise failure("ai_network_error", reason + "；记忆未更新，不会自动重复调用，请手动重试。") from None
+            raise failure("ai_network_error", reason + "；记忆未更新。") from None
         except (ValueError, UnicodeError):
             raise failure("ai_response_invalid", "AI 返回的内容不是有效 JSON；记忆未更新。") from None
 

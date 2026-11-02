@@ -58,6 +58,9 @@ class RunRetry(RunQuery):
     request_id: str = Field(min_length=1, max_length=128)
 
 class AiRun(BaseModel):
+    attempt_count: int = 0
+    max_retries: int = 0
+    next_retry_at: float | None = None
     round_id: str | None = None
     trigger_reason: str | None = None
     batch_index: int | None = None

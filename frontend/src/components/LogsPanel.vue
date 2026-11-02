@@ -511,6 +511,15 @@ onBeforeUnmount(() => {
           }}
         </p>
         <p v-if="item.message" class="conversation-alert">{{ item.message }}</p>
+        <p v-if="item.attempt_count" class="settings-note">
+          第 {{ item.attempt_count }} 次请求 · 最多额外重试
+          {{ item.max_retries }} 次<span v-if="item.next_retry_at">
+            · 等待至
+            {{
+              new Date(item.next_retry_at * 1000).toLocaleString("zh-CN")
+            }}</span
+          >
+        </p>
         <p v-if="item.round_id" class="settings-note">
           {{ item.trigger_reason === "mention" ? "@ 触发" : "累计条数触发" }} ·
           第 {{ item.batch_index }} 批 · 已处理

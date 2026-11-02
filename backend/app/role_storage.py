@@ -95,7 +95,7 @@ class RoleStoreMixin:
         if row:
             return {**dict(row), "ai_enabled": bool(row["ai_enabled"])}
         return dict(account_id=aid, conversation_id=cid, ai_enabled=False, role_card_code=None, api_profile_id=None, memory="", revision=0, memory_revision=0,
-                    scan_interval_seconds=2, group_proactive_message_threshold=0)
+                    scan_interval_seconds=2, group_proactive_message_threshold=0, ai_max_retries=10)
 
     def preferences(self, aid, cid):
         def query():
@@ -114,7 +114,7 @@ class RoleStoreMixin:
                 if "memory" in patch and previous["memory_revision"] != (expected_memory_revision or 0):
                     raise ConversationError("ai_memory_conflict", "记忆已更新，当前草稿保留，请重新加载后保存。", 409)
                 current = {**previous, **patch}
-                for field, low, high in (("scan_interval_seconds", 1, 3600), ("group_proactive_message_threshold", 0, 1000)):
+                for field, low, high in (("scan_interval_seconds", 1, 3600), ("group_proactive_message_threshold", 0, 1000), ('ai_max_retries',0,100)):
                     if type(current[field]) is not int or not low <= current[field] <= high:
                         raise ConversationError("invalid_request", "扫描间隔或群聊条数设置无效。", 422)
                 if current["group_proactive_message_threshold"] and not self._is_group(aid, cid):
@@ -134,6 +134,7 @@ class RoleStoreMixin:
                                     "role_card_code=excluded.role_card_code,memory=excluded.memory,revision=excluded.revision,api_profile_id=excluded.api_profile_id,memory_revision=excluded.memory_revision,scan_interval_seconds=excluded.scan_interval_seconds,group_proactive_message_threshold=excluded.group_proactive_message_threshold",
                                     (aid, cid, current["ai_enabled"], current["role_card_code"], current["memory"], current["revision"], current["api_profile_id"], current["memory_revision"], current["scan_interval_seconds"], current["group_proactive_message_threshold"]))
                     self._ai_preference_change(previous, current)
+                    self.db.execute('UPDATE conversation_preferences SET ai_max_retries=? WHERE account_id=? AND conversation_id=?', (current['ai_max_retries'],aid,cid))
                     event = self._changed(aid, ["conversation_preferences", "conversations"], [cid])
             if event:
                 self.notify(event)

@@ -193,6 +193,7 @@ class DeliveryStoreMixin:
 
     def finish_delivery(self, job, result):
         def write():
+            if not self.db.execute('SELECT 1 FROM deliveries WHERE run_id=? AND part_index=?', (job['run_id'],job['part_index'])).fetchone(): return
             state=result.get('status')
             if state not in ('sent','failed','unknown'): state='unknown'
             code=result.get('code','native_result_uncertain')[:100]

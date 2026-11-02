@@ -74,3 +74,13 @@ export function onChange(listener: (event: ChangeEvent) => void) {
     }
   };
 }
+
+// Apply the same cache invalidation after a successful delete or a reconnect snapshot.
+export function accountDeleted(accountId: string) {
+  for (const listener of listeners)
+    listener({
+      type: "changed",
+      account_id: accountId,
+      resources: ["account_deleted"],
+    });
+}

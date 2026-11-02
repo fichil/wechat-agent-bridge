@@ -19,6 +19,10 @@ from .log_storage import LogStoreMixin, LOG_SCHEMA
 from .delivery_storage import DeliveryStoreMixin, DELIVERY_SCHEMA
 from .group_round_storage import GroupRoundStoreMixin, GROUP_SCHEMA
 from .compatibility_storage import CompatibilityStoreMixin, upgrade_v9
+from .account_lifecycle import AccountLifecycleMixin
+from .notification_storage import NotificationStoreMixin
+from .reliability_schema import upgrade_v10
+from .ai_retry_storage import AiRetryStoreMixin
 
 ROOT = Path(__file__).resolve().parents[2]
 from bridge_paths import DATA
@@ -84,13 +88,16 @@ CREATE TABLE cursors(token TEXT PRIMARY KEY, account_id TEXT NOT NULL, conversat
 """
 
 
-class Store(CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
+class Store(AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
     def __init__(self, path=DEFAULT_PATH, settings=None, image_limit=IMAGE_LIMIT):
         self.path, self.image_limit = Path(path) if str(path) != ":memory:" else path, image_limit
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="archive-db")
         self.notify = lambda event: None
         self.source_reads = {}
         self.source_versions = {}
+        from bridge_paths import ROOT as bundle_root
+        try: self.build_commit = json.loads((bundle_root/'portable-manifest.json').read_text(encoding='utf-8')).get('commit','source')
+        except (OSError,ValueError): self.build_commit = 'source'
         try:
             self.call(self._open, settings)
         except Exception:
@@ -161,10 +168,10 @@ class Store(CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, L
         if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
             self.db.close()
             raise ConversationError("storage_version_unsupported", "数据库版本高于当前程序，请使用匹配版本。", 503)
-        if 0 < version < 9 and str(self.path) != ':memory:':
+        if 0 < version < 10 and str(self.path) != ':memory:':
             backup_dir = self.path.parent / 'migration-backups'
             backup_dir.mkdir(exist_ok=True)
-            backup_path = backup_dir / ('before-v9-' + uuid4().hex + '.sqlite3')
+            backup_path = backup_dir / ('before-v10-' + uuid4().hex + '.sqlite3')
             with closing(sqlite3.connect(backup_path)) as backup:
                 self.db.backup(backup)
                 if backup.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
@@ -235,12 +242,14 @@ class Store(CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, L
                 self.db.execute('INSERT INTO schema_migrations VALUES(8,?)', (now(),))
                 self.db.execute('PRAGMA user_version=8')
         upgrade_v9(self.db)
+        upgrade_v10(self.db)
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             self.db.close()
             raise ConversationError("storage_corrupt", "数据库校验失败，请保留原文件后恢复备份。", 503)
         try:
             with self.db:
                 self._ai_recover()
+                self._notification_recover()
                 self._delivery_recover()
                 self._log_recover()
                 if settings and not self.db.execute("SELECT 1 FROM metadata WHERE key='settings_imported'").fetchone():
@@ -287,8 +296,10 @@ class Store(CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, L
         row = self.db.execute("SELECT mime_type,data FROM media_cache WHERE cache_key=?", (key,)).fetchone()
         return dict(mime_type=row[0], data_base64=base64.b64encode(row[1]).decode()) if row else None
 
-    def save_accounts(self, snapshot):
+    def save_accounts(self, snapshot, scan_generation=None):
         def write():
+            if scan_generation is not None and scan_generation != self.account_generation:
+                raise ConversationError('account_scan_obsolete', '账号已删除，请重新识别。', 409)
             events, found = [], []
             with self.db:
                 for item in snapshot["accounts"]:
@@ -302,6 +313,7 @@ class Store(CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, L
                         "ON CONFLICT(wxid) DO UPDATE SET payload=excluded.payload,last_seen_at=excluded.last_seen_at,source_state='online'",
                         (aid, item["wxid"], dump(value), now()))
                     self._avatar("account:"+aid, aid, avatar)
+                    self._observe_account(aid, 'online', 'account_confirmed', item.get('instances'))
                     item["account_id"] = aid
                     found.append(aid)
                     events.append(self._changed(aid, ["accounts"]))
@@ -309,7 +321,11 @@ class Store(CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, L
                 for row in self.db.execute("SELECT account_id,source_state FROM accounts").fetchall():
                     if row[0] not in found and row[1] != state:
                         self.db.execute("UPDATE accounts SET source_state=? WHERE account_id=?", (state, row[0]))
+                        self._observe_account(row[0], state, snapshot.get('error') or 'account_scan')
                         events.append(self._changed(row[0], ["accounts"]))
+                    elif row[0] not in found:
+                        self._observe_account(row[0], state, snapshot.get('error') or 'account_scan')
+            self.notification_scan_ready = True
             for event in events:
                 self.notify(event)
             return snapshot
@@ -339,18 +355,20 @@ class Store(CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, L
     def accounts(self):
         return self.call(lambda: [self._account(r[0]) for r in self.db.execute("SELECT account_id FROM accounts ORDER BY rowid").fetchall()])
 
-    def set_state(self, aid, state):
+    def set_state(self, aid, state, reason='source_state'):
         def write():
             if self._account(aid)["source_state"] == state:
                 return
             with self.db:
                 self.db.execute("UPDATE accounts SET source_state=? WHERE account_id=?", (state, aid))
+                self._observe_account(aid, state, reason)
                 event = self._changed(aid, ["accounts"])
             self.notify(event)
         self.call(write)
 
     def sync_error(self, aid, reason):
         def write():
+            self._account(aid)
             key = "sync_error:"+aid
             old = self.db.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
             if (old[0] if old else "") == (reason or ""):
@@ -361,14 +379,26 @@ class Store(CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, L
             self.notify(event)
         self.call(write)
 
-    def settings(self, wxid, value=None):
+    def observed_online(self, aid):
+        def write():
+            self._account(aid)
+            with self.db:
+                self.db.execute("UPDATE account_observations SET last_online_at=? WHERE account_id=? AND state='online' AND last_online_at IS NOT NULL", (time.time(),aid))
+        self.call(write)
+
+    def settings(self, wxid, value=None, account_id=None):
         from .conversation_settings import ConversationSettingsStore
         from .conversation_models import Exclusions
         key = ConversationSettingsStore.key(wxid)
         def query():
             if value is not None:
+                account = self.db.execute('SELECT account_id FROM accounts WHERE wxid=?',(wxid,)).fetchone()
+                if not account or (account_id is not None and account[0] != account_id):
+                    raise ConversationError('account_not_found','账号不存在。',404)
                 with self.db:
                     self.db.execute("INSERT OR REPLACE INTO conversation_settings VALUES(?,?)", (key, dump(value)))
+                    event = self._changed(account[0], ['conversations', 'settings'])
+                self.notify(event)
             row = self.db.execute("SELECT payload FROM conversation_settings WHERE account_key=?", (key,)).fetchone()
             return json.loads(row[0]) if row else Exclusions().model_dump()
         return self.call(query)
@@ -719,6 +749,8 @@ class Store(CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, L
     def job(self, task_id, value=None, kind=None):
         def query():
             if value is not None:
+                if value.get('account_id') and not self.db.execute('SELECT 1 FROM accounts WHERE account_id=?', (value['account_id'],)).fetchone():
+                    return None
                 saved = json.loads(dump(value))
                 if saved.get("image"):
                     saved["image"].pop("data_base64", None)

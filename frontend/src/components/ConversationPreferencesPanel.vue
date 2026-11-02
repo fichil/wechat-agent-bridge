@@ -22,6 +22,7 @@ const role = ref<string | null>(null);
 const profile = ref<string | null>(null);
 const memory = ref("");
 const scanInterval = ref(2);
+const maxRetries = ref(10);
 const proactiveEnabled = ref(false);
 const proactiveThreshold = ref(20);
 const isGroup = computed(() => props.conversation.category === "group");
@@ -31,6 +32,9 @@ const savedThreshold = computed(() =>
 const validFrequency = computed(
   () =>
     Number.isInteger(scanInterval.value) &&
+    Number.isInteger(maxRetries.value) &&
+    maxRetries.value >= 0 &&
+    maxRetries.value <= 100 &&
     scanInterval.value >= 1 &&
     scanInterval.value <= 3600 &&
     (!proactiveEnabled.value ||
@@ -50,6 +54,7 @@ const dirty = computed(
     (role.value !== original.value.role_card_code ||
       profile.value !== (original.value.api_profile_id ?? null) ||
       memory.value !== original.value.memory ||
+      maxRetries.value !== (original.value.ai_max_retries ?? 10) ||
       scanInterval.value !== (original.value.scan_interval_seconds ?? 2) ||
       savedThreshold.value !==
         (original.value.group_proactive_message_threshold ?? 0)),
@@ -73,6 +78,7 @@ async function load(preserve = false) {
     profile.value = null;
     memory.value = "";
     scanInterval.value = 2;
+    maxRetries.value = 10;
     proactiveEnabled.value = false;
     proactiveThreshold.value = 20;
   }
@@ -93,6 +99,7 @@ async function load(preserve = false) {
     profile.value = result.api_profile_id ?? null;
     memory.value = result.memory;
     scanInterval.value = result.scan_interval_seconds ?? 2;
+    maxRetries.value = result.ai_max_retries ?? 10;
     proactiveEnabled.value =
       (result.group_proactive_message_threshold ?? 0) > 0;
     proactiveThreshold.value = result.group_proactive_message_threshold || 20;
@@ -119,7 +126,8 @@ watch(
 async function save(): Promise<boolean> {
   if (!original.value || busy.value) return false;
   if (!validFrequency.value) {
-    error.value = "扫描间隔需为 1–3600 的整数，群聊条数需为 1–1000 的整数。";
+    error.value =
+      "重试次数需为 0–100 的整数，扫描间隔需为 1–3600 的整数，群聊条数需为 1–1000 的整数。";
     return false;
   }
   if (!dirty.value) return true;
@@ -131,6 +139,9 @@ async function save(): Promise<boolean> {
       account_id: props.accountId,
       conversation_id: props.conversation.conversation_id,
       expected_revision: original.value.revision,
+      ...(maxRetries.value !== (original.value.ai_max_retries ?? 10)
+        ? { ai_max_retries: maxRetries.value }
+        : {}),
       ...(scanInterval.value !== (original.value.scan_interval_seconds ?? 2)
         ? { scan_interval_seconds: scanInterval.value }
         : {}),
@@ -157,6 +168,7 @@ async function save(): Promise<boolean> {
     profile.value = result.api_profile_id ?? null;
     memory.value = result.memory;
     scanInterval.value = result.scan_interval_seconds ?? 2;
+    maxRetries.value = result.ai_max_retries ?? 10;
     proactiveEnabled.value =
       (result.group_proactive_message_threshold ?? 0) > 0;
     proactiveThreshold.value = result.group_proactive_message_threshold || 20;
@@ -251,6 +263,22 @@ defineExpose({ beforeLeave });
         }}</span>
       </div>
       <fieldset class="editor-fields" :disabled="busy">
+        <label class="editor-field"
+          ><span>AI 失败后额外重试次数</span
+          ><input
+            v-model.number="maxRetries"
+            type="number"
+            aria-label="AI 失败后额外重试次数"
+            min="0"
+            max="100"
+            step="1"
+            :disabled="busy"
+            class="editor-input"
+          /><small
+            >默认额外重试 10 次，共最多 11 次；0
+            为关闭。修改对下一轮请求生效，重试可能增加 API 用量。</small
+          ></label
+        >
         <label class="editor-field">
           <span>扫描微信频率 <small>秒</small></span>
           <input

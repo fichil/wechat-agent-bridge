@@ -40,6 +40,9 @@ class LogClear(LogAccount):
     scope: Literal["account", "global"]
 
 class LogSummary(BaseModel):
+    attempt_count: int | None = None
+    max_retries: int | None = None
+    next_retry_at: float | None = None
     trigger_reason: str | None = None
     round_id: str | None = None
     batch_index: int | None = None

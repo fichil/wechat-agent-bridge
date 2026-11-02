@@ -91,6 +91,15 @@ class AccountQuery(StartScanRequest):
     account_id: str = Field(min_length=1, max_length=128)
 
 
+class AccountDelete(AccountQuery):
+    expected_revision: int = Field(ge=0)
+
+
+class AccountDeleted(BaseModel):
+    account_id: str
+    deleted: Literal[True] = True
+
+
 class ApiError(BaseModel):
     code: str
     message: str

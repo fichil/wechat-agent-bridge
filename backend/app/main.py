@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 
 from .adapters import AccountProbe, discover_local_accounts
 from .models import Account, AccountSnapshot, ApiError, Health, ScanTask, StartScanRequest, ScanQuery, AccountQuery
+from .models import AccountDelete, AccountDeleted
+from .notification_models import NotificationSettings, NotificationUpdate, NotificationTest, NotificationResult
 from .conversation_models import (ConversationAccountRequest, RefreshQuery, ConversationQuery,
                                   SettingsUpdate, ConversationSettings, ConversationRefresh, ConversationPage)
 from .conversation_settings import ConversationSettingsStore, SettingsError
@@ -58,6 +60,9 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         app.state.ai = AiExecution(store, bridge, ai_provider, False)
         from .delivery import DeliveryExecution
         app.state.sender = DeliveryExecution(store,bridge,send_transport,False)
+        from .notifications import Notifications
+        app.state.notifications = Notifications(store)
+        if enabled: app.state.notifications.start()
         bridge.compatibility.sender = app.state.sender
         def notify(event):
             app.state.events.publish(event)
@@ -82,6 +87,7 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         finally:
             import asyncio
             if owner: await asyncio.to_thread(owner.close)
+            await asyncio.to_thread(app.state.notifications.close)
             app.state.ai.stopped.set()
             app.state.sender.stop.set()
             await asyncio.gather(asyncio.to_thread(app.state.ai.close), asyncio.to_thread(app.state.sender.close))
@@ -275,6 +281,24 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
     def conversation_refresh(body: RefreshQuery, request: Request):
         return request.app.state.conversations.task(body.account_id, body.refresh_id)
 
+    @app.post('/api/v1/accounts/delete', response_model=AccountDeleted, responses=failures)
+    def delete_account(body: AccountDelete, request: Request):
+        return request.app.state.bridge.delete_account(body.account_id, body.expected_revision)
+
+    @app.post('/api/v1/notification-settings/query', response_model=NotificationSettings, responses=failures)
+    def notification_settings(body: JsonRequest, request: Request):
+        return request.app.state.store.notification_settings()
+
+    @app.post('/api/v1/notification-settings/update', response_model=NotificationSettings, responses=failures)
+    def save_notification_settings(body: NotificationUpdate, request: Request):
+        return request.app.state.store.save_notification_settings(body)
+
+    @app.post('/api/v1/notification-settings/test', response_model=NotificationResult, status_code=202, responses=failures)
+    def test_notification(body: NotificationTest, request: Request):
+        result = request.app.state.store.queue_notification_test(body.expected_revision)
+        request.app.state.notifications.start()
+        return result
+
     @app.post("/api/v1/conversations/query", response_model=ConversationPage, responses=failures)
     def conversations(body: ConversationQuery, request: Request):
         return request.app.state.conversations.page(body)
@@ -316,7 +340,7 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
 
     @app.post("/api/v1/conversation-preferences/update", response_model=ConversationPreferences, responses=failures)
     def update_preferences(body: PreferencesUpdate, request: Request):
-        patch = body.model_dump(exclude_unset=True, include={"ai_enabled", "role_card_code", "api_profile_id", "memory", "scan_interval_seconds", "group_proactive_message_threshold"})
+        patch = body.model_dump(exclude_unset=True, include={"ai_enabled", "role_card_code", "api_profile_id", "memory", "scan_interval_seconds", "group_proactive_message_threshold", "ai_max_retries"})
         return request.app.state.store.save_preferences(body.account_id, body.conversation_id, body.expected_revision, patch, body.expected_memory_revision)
 
     @app.post("/api/v1/api-profiles/query", response_model=ProfileList, responses=failures)

@@ -33,6 +33,7 @@ class AiExecutionStoreMixin:
     def _ai_recover(self):
         for row in self.db.execute("SELECT * FROM ai_runs WHERE status IN ('queued','running')").fetchall():
             payload = json.loads(row["payload"])
+            if self._recover_retry(payload): continue
             payload.update(status="failed", error="ai_interrupted", message="服务在调用完成前停止，请手动重试。", completed_at=stamp())
             self._ai_write_run(payload)
             self.db.execute("UPDATE ai_sessions SET paused=1 WHERE account_id=? AND conversation_id=?", (row["account_id"], row["conversation_id"]))
@@ -117,6 +118,7 @@ class AiExecutionStoreMixin:
                 run = json.loads(row[0])
                 run.update(status="cancelled", completed_at=stamp(), message="AI 已关闭，结果不会应用。")
                 self._ai_write_run(run)
+                self.db.execute('DELETE FROM ai_request_snapshots WHERE run_id=?', (run['run_id'],))
                 self.db.execute("UPDATE ai_message_state SET status='pending' WHERE run_id=? AND status='processing'", (run["run_id"],))
             self._ai_touch(aid, cid)
 
@@ -186,6 +188,9 @@ class AiExecutionStoreMixin:
         return event
 
     def _ai_write_run(self, run):
+        if run['status'] not in ('queued', 'running'):
+            run['next_retry_at'] = None
+            self.db.execute('DELETE FROM ai_request_snapshots WHERE run_id=?', (run['run_id'],))
         self.db.execute("UPDATE ai_runs SET status=?,payload=? WHERE run_id=?", (run["status"], pack(run), run["run_id"]))
 
     def ai_run(self, aid, cid, rid):
@@ -244,7 +249,8 @@ class AiExecutionStoreMixin:
                 if trigger != "auto":
                     self.db.execute("UPDATE ai_sessions SET paused=0,auto_pending=1 WHERE account_id=? AND conversation_id=?", (aid, cid))
                 run = dict(run_id=uuid4().hex, account_id=aid, conversation_id=cid, status="queued", trigger=trigger,
-                           started_at=stamp(), message_count=0, memory_revision=prefs["memory_revision"], epoch=self._ai_session(aid, cid)["epoch"])
+                           started_at=stamp(), message_count=0, memory_revision=prefs["memory_revision"], epoch=self._ai_session(aid, cid)["epoch"],
+                           attempt_count=0, max_retries=prefs['ai_max_retries'], next_retry_at=None)
                 group = self._group_prepare_round(aid,cid) if self._is_group(aid,cid) else None
                 if group:
                     self._group_run_fields(run,group,False)
@@ -258,9 +264,15 @@ class AiExecutionStoreMixin:
         def write():
             with self.db:
                 self.db.execute("BEGIN IMMEDIATE")
-                run = json.loads(self.db.execute("SELECT payload FROM ai_runs WHERE run_id=?", (rid,)).fetchone()[0])
+                row = self.db.execute("SELECT payload FROM ai_runs WHERE run_id=?", (rid,)).fetchone()
+                if row is None: return None
+                run = json.loads(row[0])
                 if run["status"] != "queued":
                     return None
+                if self._ai_terminate_invalid(run): return None
+                if self._compatibility_blocked(aid): return None
+                resumed = self._ai_retry_snapshot(run)
+                if resumed is not None: return resumed
                 if self._compatibility_blocked(aid) or not self._group_run_allowed(run) or (run['trigger']=='auto' and not self._ai_auto_allowed(aid,cid)):
                     run.update(status='cancelled', completed_at=stamp(), message='当前群聊触发条件已失效。')
                     self._ai_write_run(run)
@@ -354,9 +366,16 @@ class AiExecutionStoreMixin:
         def write():
             with self.db:
                 row = self.db.execute("SELECT status,payload FROM ai_runs WHERE run_id=?", (rid,)).fetchone()
+                if row is None: return False
                 run = json.loads(row[1])
-                if row[0] != "running" or self._compatibility_blocked(aid) or not self._group_run_allowed(run):
+                if row[0] != "running" or self._ai_terminate_invalid(run):
                     return False
+                if self._compatibility_blocked(aid):
+                    run.update(status='queued',next_retry_at=time.time()+3)
+                    self._ai_write_run(run)
+                    return False
+                run.update(attempt_count=run.get('attempt_count',0)+1, next_retry_at=None, error=None, message=None)
+                self._ai_write_run(run)
                 self.db.execute("UPDATE ai_message_state SET attempted_at=? WHERE run_id=? AND status='processing'", (stamp(), rid))
             return True
         return self.call(write)
@@ -365,15 +384,25 @@ class AiExecutionStoreMixin:
         def write():
             with self.db:
                 self.db.execute("BEGIN IMMEDIATE")
-                run = json.loads(self.db.execute("SELECT payload FROM ai_runs WHERE run_id=?", (rid,)).fetchone()[0])
+                row = self.db.execute("SELECT payload FROM ai_runs WHERE run_id=?", (rid,)).fetchone()
+                if row is None: return None
+                run = json.loads(row[0])
                 if run["status"] not in ("queued", "running"):
                     return run
                 prefs, session = self._preferences(aid, cid), self._ai_session(aid, cid)
-                if self._compatibility_blocked(aid) or not prefs["ai_enabled"] or session["epoch"] != run["epoch"] or not self._group_run_allowed(run):
+                if self._ai_terminate_invalid(run):
+                    pass
+                elif self._compatibility_blocked(aid) or not prefs["ai_enabled"] or session["epoch"] != run["epoch"] or not self._group_run_allowed(run):
                     run.update(status="cancelled", message="AI 已关闭，结果未应用。")
                 elif prefs["memory_revision"] != run["memory_revision"]:
                     run.update(status="conflicted", error="ai_memory_conflict", message="记忆已被手工修改，本次结果未覆盖记忆，请重试。")
                 elif error:
+                    if self._schedule_ai_retry(run,error):
+                        event=self._ai_touch(aid,cid,[])
+                        # Commit before notifying; no model worker sleeps during backoff.
+                        self.db.commit()
+                        self.notify(event)
+                        return run
                     run.update(status="failed", error=error.code, message=error.message)
                 else:
                     run.update(status="completed", reply=result["reply"], memory_revision=prefs["memory_revision"]+1)
@@ -381,6 +410,8 @@ class AiExecutionStoreMixin:
                     self._group_finish_batch(run)
                     self.db.execute("UPDATE conversation_preferences SET memory=?,memory_revision=memory_revision+1 WHERE account_id=? AND conversation_id=?", (result["memory"], aid, cid))
                 run["completed_at"] = stamp()
+                run['next_retry_at'] = None
+                self.db.execute('DELETE FROM ai_request_snapshots WHERE run_id=?',(rid,))
                 self._ai_write_run(run)
                 success = run["status"] == "completed"
                 self.db.execute("UPDATE ai_message_state SET status=?,memorized_at=? WHERE run_id=? AND status='processing'", ("memorized" if success else "pending" if run["status"] == "cancelled" else "failed", stamp() if success else None, rid))

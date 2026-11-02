@@ -1,3 +1,4 @@
+from migration_helpers import remove_v10
 from contextlib import closing
 from copy import deepcopy
 import json
@@ -170,6 +171,7 @@ class CompatibilityTests(RoleTestCase):
             with closing(sqlite3.connect(path)) as db: self.store.db.backup(db)
         self.store.call(backup)
         with closing(sqlite3.connect(path)) as db, db:
+            remove_v10(db)
             db.execute('DROP TABLE compatibility_state')
             db.execute('DELETE FROM schema_migrations WHERE version=9')
             db.execute('PRAGMA user_version=8')
@@ -180,7 +182,7 @@ class CompatibilityTests(RoleTestCase):
             self.assertFalse(db.execute("SELECT name FROM sqlite_master WHERE name='compatibility_state'").fetchone())
         with closing(Store(path)) as store:
             self.assertEqual(len(store.accounts()),2)
-            self.assertEqual(store.call(lambda:store.db.execute('PRAGMA user_version').fetchone()[0]),9)
+            self.assertEqual(store.call(lambda:store.db.execute('PRAGMA user_version').fetchone()[0]),10)
 
 
 class ProfileTests(unittest.TestCase):

@@ -1,5 +1,6 @@
 import { onBeforeUnmount, type Ref } from "vue";
-import { onBeforeRouteLeave, onBeforeRouteUpdate } from "vue-router";
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from "vue-router";
+import { useAccountsStore } from "./stores/accounts";
 import { ElMessageBox } from "element-plus";
 import "element-plus/es/components/message-box/style/css";
 import { authState } from "./auth";
@@ -9,9 +10,17 @@ export function useUnsavedChanges(
   save: () => Promise<boolean>,
   busy: Ref<boolean>,
 ) {
+  const route = useRoute(),
+    accounts = useAccountsStore();
   let pending: Promise<boolean> | null = null;
   async function decide() {
     if (authState.invalidating) return true;
+    if (
+      route?.params.accountId &&
+      accounts.initialized &&
+      !accounts.accounts.some((a) => a.account_id === route.params.accountId)
+    )
+      return true;
     if (busy.value) return false;
     if (!dirty.value) return true;
     try {

@@ -51,6 +51,7 @@ class CompatibilityStoreMixin:
             raise ConversationError('compatibility_paused', '自动检查尚未通过，条件恢复后将自动继续。', 409)
 
     def _compatibility_write(self, scope, fingerprint, held, reason, snapshot):
+        if scope != '*' and not self.db.execute('SELECT 1 FROM accounts WHERE account_id=?',(scope,)).fetchone(): return 0
         old = self._compatibility_row(scope)
         encoded = json.dumps(snapshot, sort_keys=True, separators=(',', ':'))
         value = (fingerprint, int(held), reason, encoded)
@@ -73,7 +74,7 @@ class CompatibilityStoreMixin:
         for row in self.db.execute("SELECT run_id,payload FROM ai_runs WHERE account_id=? AND status='queued'", (aid,)).fetchall():
             value = json.loads(row['payload'])
             value.update(status='cancelled', completed_at=timestamp, message='微信兼容状态变化，旧任务已取消。')
-            self.db.execute("UPDATE ai_runs SET status='cancelled',payload=? WHERE run_id=?", (json.dumps(value, ensure_ascii=False), row['run_id']))
+            self._ai_write_run(value)
         for row in self.db.execute("SELECT round_id,payload FROM group_rounds WHERE account_id=? AND status='active'", (aid,)).fetchall():
             value = json.loads(row['payload']); value['status'] = 'cancelled'
             self.db.execute("UPDATE group_rounds SET status='cancelled',payload=? WHERE round_id=?", (json.dumps(value), row['round_id']))

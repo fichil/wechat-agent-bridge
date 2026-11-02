@@ -25,6 +25,7 @@ async function switchAccount() {
         >Windows
       </div>
       <ElButton v-if="workspace" @click="switchAccount">切换账号</ElButton>
+      <RouterLink to="/settings/notifications">邮件通知设置</RouterLink>
       <AdminMenu />
     </div>
   </header>
