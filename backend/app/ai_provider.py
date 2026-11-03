@@ -124,7 +124,7 @@ def build_request(profile, key, envelope, mode):
         raise failure("ai_input_too_large", "本批图片超过请求大小上限，请减小图片后重试。")
     return base+path, headers, data
 
-def parse_response(protocol, data):
+def parse_response(protocol, data, *, reply_required=False):
     def invalid(reason):
         raise failure("ai_response_invalid", reason + "；记忆未更新。")
     try:
@@ -172,7 +172,9 @@ def parse_response(protocol, data):
         compact = dict(result, reply=DATA_URI.sub('[image_base64]',result['reply']))
         if len(encode(compact).encode()) > TEXT_LIMIT:
             invalid("AI 解析结果超过大小上限")
-        parse_reply(result['reply'])
+        parts = parse_reply(result['reply'])
+        if reply_required and not parts:
+            raise failure('ai_empty_reply', '本轮需要回复，但没有可发送的内容。')
         return result
     except (KeyError, IndexError, TypeError, ValueError, AttributeError):
         raise failure("ai_response_invalid", "服务商响应结构不符合所选协议，缺少有效回复字段；记忆未更新。") from None
@@ -185,9 +187,7 @@ class Provider:
         url, headers, body = build_request(profile, key, envelope, mode)
         capture = Capture(profile, key, envelope, mode, url, body)
         try:
-            result = self._request(profile, url, headers, body, capture)
-            if envelope.get('reply_required') and not result['reply'].strip():
-                raise failure('ai_empty_reply', '私聊回复为空，消息仍等待回复。')
+            result = self._request(profile, url, headers, body, capture, reply_required=envelope.get('reply_required', False))
             capture.finish(result=result)
             return result
         except ConversationError as exc:
@@ -197,7 +197,7 @@ class Provider:
             capture.finish(error=failure("ai_execution_failed", "AI 处理未完成。"))
             raise
 
-    def _request(self, profile, url, headers, body, capture):
+    def _request(self, profile, url, headers, body, capture, *, reply_required):
         started = time.monotonic()
         response_timeout = response_seconds(profile)
         response, chunks = None, []
@@ -239,7 +239,7 @@ class Provider:
                                 if math.isfinite(delay): error.retry_after = max(0,delay)
                             except (ValueError,TypeError,OverflowError): pass
                         raise error
-            return parse_response(profile["protocol"], json.loads(raw))
+            return parse_response(profile["protocol"], json.loads(raw), reply_required=reply_required)
         except (httpx.HTTPError, OSError) as exc:
             if response is not None:
                 capture.response(response, b"".join(chunks), True)

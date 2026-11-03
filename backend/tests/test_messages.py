@@ -151,6 +151,17 @@ class ContentTests(unittest.TestCase):
         self.assertEqual(parse_content(dict(local_type=1, message_content=text))[1]["text"], text)
         with self.assertRaises(ValueError): protobuf(b"\x00")
 
+    def test_quote_uses_only_outer_app_type_and_bounds_quoted_text(self):
+        quote = ('<appmsg><type>57</type><title>我的评论</title><refermsg><type>1</type>'
+                 '<content>' + '原文' * 1000 + '</content></refermsg></appmsg>')
+        kind, content, _ = parse_content(dict(local_type=49, message_content='<msg>' + quote + '</msg>'))
+        self.assertEqual(kind, 'text')
+        self.assertIn('我的评论', content['text'])
+        self.assertIn('原文', content['text'])
+        self.assertLess(len(content['text']), 600)
+        card = '<msg><appmsg><type>5</type><title>普通卡片</title><nested>' + quote + '</nested></appmsg></msg>'
+        self.assertEqual(parse_content(dict(local_type=49, message_content=card))[0], 'attachment')
+
     def test_image_v2_cipher_and_mime_corruption_limit(self):
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         output = io.BytesIO(); Image.new("RGB", (2, 2), "green").save(output, format="PNG")

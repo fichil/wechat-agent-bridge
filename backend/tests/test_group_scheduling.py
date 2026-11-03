@@ -3,10 +3,12 @@ import json
 import sqlite3
 from unittest.mock import patch
 from uuid import uuid4
+import httpx
 
 from backend.app.conversations import ConversationError
 from backend.app.group_round_storage import GROUP_SCHEMA
 from backend.app.storage import Store
+from wechat_messages.content import parse_content, parse_mentions
 from migration_helpers import remove_v8
 from test_conversations import rows
 import test_delivery as delivery
@@ -108,6 +110,65 @@ class GroupSchedulingTests(RoleTestCase):
         self.delta(6, type='voice', content={'transcript': '就绪'})
         self.assertEqual(len(self.ready()), 2)
 
+    def test_quoted_video_mention_retries_then_delivers_once(self):
+        self.group(20)
+        title = '@合成账号 评价一下'
+        xml = (f'other:\n<msg><appmsg><type>57</type><title>{title}</title>'
+               '<refermsg><type>43</type><content>private-video-metadata</content></refermsg></appmsg></msg>')
+        kind, content, _ = parse_content(dict(local_type=(57 << 32) | 49, message_content=xml), 'other')
+        mentions = parse_mentions('<msgsource><atuserlist>wxid_synthetic_0</atuserlist></msgsource>')
+        fields = dict(type=kind, content=content, **mentions)
+        # An archived attachment is re-read after upgrade, behind the live cursor.
+        self.delta(1, type='attachment', content={'text': title}, **mentions)
+        self.ingest(1, **fields)
+        self.delta(1, **fields)
+        self.assertEqual(self.start()['status'], 'empty')
+
+        self.delta(2, **fields)
+        self.settle()
+        aid, cid = self.ids[0], self.cids[0]
+        run = self.store.start_ai_run(aid, cid, uuid4().hex, 'auto')
+        rid = run['run_id']
+        self.assertEqual(run.get('trigger_reason'), 'mention')
+        empty = dict(status='completed', output=[dict(type='message', content=[
+            dict(type='output_text', text=json.dumps(dict(memory='未提交', reply='')))])])
+        with patch.object(self.provider, 'transport', httpx.MockTransport(lambda _: httpx.Response(200, json=empty))):
+            self.app.state.ai.perform(aid, cid, rid)
+        retry = self.store.ai_run(aid, cid, rid)
+        self.assertEqual((retry['status'], retry['error']), ('queued', 'ai_empty_reply'))
+        self.assertEqual(self.preferences()['memory_revision'], 0)
+        self.assertEqual(self.store.delivery_candidates(), [])
+
+        self.app.state.ai.perform(aid, cid, rid)
+        final = self.store.ai_run(aid, cid, rid)
+        self.assertEqual((final['attempt_count'], final['delivery']['total_parts']), (2, 1))
+        envelope = self.envelope()
+        self.assertTrue(envelope['reply_required'])
+        self.assertEqual(len(envelope['reply_target_ids']), 1)
+        target, = envelope['trigger_messages']
+        self.assertEqual(envelope['reply_target_ids'], [target['message_id']])
+        self.assertIn(title, target['content']['text'])
+        self.assertIn('视频', target['content']['text'])
+        self.assertNotIn('private-video-metadata', target['content']['text'])
+        self.finish(final)
+        self.delta(2, **fields)
+        self.assertEqual(self.start()['status'], 'empty')
+        self.assertEqual(self.store.delivery_candidates(), [])
+        self.assertEqual(self.store.ai_run(aid, cid, rid)['delivery']['sent_parts'], 1)
+
+    def test_mention_without_a_sendable_part_exhausts_budget_without_consuming_target(self):
+        self.group(20)
+        self.update(self.preferences()['revision'], ai_max_retries=0)
+        self.delta(1, mentioned_wxids=['wxid_synthetic_0'], mention_status='known')
+        with patch.object(self.provider, 'generate', return_value=dict(memory='未提交', reply='\n[[SPLIT]]\n')):
+            run = self.start()
+        self.assertEqual((run['status'], run['error']), ('failed', 'ai_empty_reply'))
+        self.assertEqual(run['delivery']['total_parts'], 0)
+        self.assertEqual(self.preferences()['memory_revision'], 0)
+        self.assertEqual(self.store.call(lambda: self.store.db.execute(
+            'SELECT message_id FROM reply_triggers WHERE consumed_run_id IS NULL').fetchone()[0]),
+            run['reply_trigger_ids'][0])
+
     def test_batches_keep_mention_and_later_arrivals_separate(self):
         self.group()
         self.delta(1, mentioned_wxids=['wxid_synthetic_0'], mention_status='known', content={'text': '请总结以上讨论'})
@@ -121,12 +182,14 @@ class GroupSchedulingTests(RoleTestCase):
         self.assertEqual(first['message_count'], 50)
         self.assertFalse(first['round_final'])
         self.assertFalse(self.envelope()['reply_allowed'])
+        self.assertFalse(self.envelope()['reply_required'])
         self.assertEqual(first['delivery']['status'], 'not_required')
         second = self.start()
         self.assertEqual(second['round_id'], first['round_id'])
         self.assertEqual(second['message_count'], 5)
         self.assertEqual(second['round_completed_count'], 55)
         self.assertTrue(self.envelope()['reply_allowed'])
+        self.assertTrue(self.envelope()['reply_required'])
         self.assertEqual(self.envelope()['trigger_messages'][0]['content']['text'], '请总结以上讨论')
         self.assertEqual(second['delivery']['status'], 'queued')
         self.assertEqual(len(self.ready()), 1)

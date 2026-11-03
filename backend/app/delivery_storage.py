@@ -182,9 +182,8 @@ class DeliveryStoreMixin:
         if not triggers and not (group_round and run['trigger_reason']=='group_threshold'):
             run['reply']=''
             return
-        # A completed empty reply also consumes its trigger; edits must not create a second response.
-        self.db.executemany('UPDATE reply_triggers SET consumed_run_id=? WHERE message_id=? AND consumed_run_id IS NULL',((rid,mid) for mid in triggers))
         if not run.get('reply','').strip(): return
+        self.db.executemany('UPDATE reply_triggers SET consumed_run_id=? WHERE message_id=? AND consumed_run_id IS NULL',((rid,mid) for mid in triggers))
         target=self._conversation(aid,cid)['source_id']
         parts = run.get('reply_parts')
         if parts is None: parts = [dict(index=i,kind='text',text=text) for i,text in enumerate(split_reply(run['reply']))]

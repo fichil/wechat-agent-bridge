@@ -337,10 +337,11 @@ class AiExecutionStoreMixin:
     def _ai_reply_envelope(self, run):
         if run.get('round_id'):
             return dict(reply_allowed=run['round_final'], reply_target_ids=run['reply_trigger_ids'],
+                        reply_required=bool(run['round_final'] and run['trigger_reason'] == 'mention' and run['reply_trigger_ids']),
                         trigger_reason=run['trigger_reason'], trigger_messages=run['trigger_messages'],
                         round_id=run['round_id'], round_final=run['round_final'], batch_index=run['batch_index'])
         return dict(reply_allowed=bool(run.get('reply_trigger_ids')), reply_target_ids=run.get('reply_trigger_ids',[]),
-                    reply_required=bool(run.get('reply_trigger_ids')) and not self._is_group(run['account_id'], run['conversation_id']))
+                    reply_required=bool(run.get('reply_trigger_ids')))
 
     def ai_reply_envelope(self, aid, cid, rid):
         run = self.ai_run(aid, cid, rid)
@@ -402,10 +403,9 @@ class AiExecutionStoreMixin:
                 run = json.loads(row[0])
                 if run["status"] not in ("queued", "running"):
                     return run
-                prefs, session = self._preferences(aid, cid), self._ai_session(aid, cid)
-                if (error is None and result is not None and run.get('reply_trigger_ids')
-                        and not self._is_group(aid, cid) and not result['reply'].strip()):
-                    error = ConversationError('ai_empty_reply', '私聊回复为空，消息仍等待回复。', 502)
+                prefs = self._preferences(aid, cid)
+                if error is None and result is not None and not result['reply'].strip() and self._ai_reply_envelope(run)['reply_required']:
+                    error = ConversationError('ai_empty_reply', '本轮需要回复，但没有可发送的内容。', 502)
                 if self._ai_terminate_invalid(run):
                     pass
                 elif not self._compatibility_capture_allowed(aid):
@@ -422,8 +422,8 @@ class AiExecutionStoreMixin:
                     run.update(status="failed", error=error.code, message=error.message)
                 else:
                     parts = self._prepare_reply(run,result['reply'])
-                    if run.get('reply_trigger_ids') and not self._is_group(aid,cid) and not parts:
-                        raise ConversationError('ai_empty_reply','私聊回复为空，消息仍等待回复。',502)
+                    if not parts and self._ai_reply_envelope(run)['reply_required']:
+                        raise ConversationError('ai_empty_reply', '本轮需要回复，但没有可发送的内容。', 502)
                     run['reply_parts'] = parts
                     run['reply_format_version'] = 2
                     display = '\n'.join(p['text'] if p['kind']=='text' else '['+('表情' if p['kind']=='sticker' else '图片')+'：'+p['name']+']' for p in parts)

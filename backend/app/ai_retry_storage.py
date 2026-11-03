@@ -65,6 +65,8 @@ class AiRetryStoreMixin:
         row = self.db.execute('SELECT payload FROM ai_request_snapshots WHERE run_id=?',(run['run_id'],)).fetchone()
         if not row: return None
         value = json.loads(row[0])
+        if run.get('round_id') and 'reply_required' not in value['envelope']:
+            value['envelope']['reply_required'] = self._ai_reply_envelope(run)['reply_required']
         if 'route_candidates' in run:
             vision = any(m['content'].get('image') for m in value['envelope']['messages'])
             if self._route_candidate(dict(profile_id=run['profile_id'], revision=run['profile_revision']), vision) is None:

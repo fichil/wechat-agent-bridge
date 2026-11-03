@@ -113,6 +113,15 @@ def message_text(row, sender=None):
     return text
 
 
+def quote_summary(app):
+    kind = app.findtext("refermsg/type")
+    if kind == "1":
+        snippet = (app.findtext("refermsg/content") or "").strip()[:512]
+        return "引用文字：" + snippet if snippet else "引用了一条文字消息"
+    return {"3": "引用了一张图片", "34": "引用了一条语音", "43": "引用了一条视频",
+            "47": "引用了一个表情"}.get(kind, "引用了一条消息")
+
+
 def parse_content(row, sender=None):
     issues = []
     try:
@@ -158,6 +167,12 @@ def parse_content(row, sender=None):
                         "unsupported": "暂不支持的消息类型"}
         result["description"] = descriptions[kind]
         if root is not None:
+            app = root if root.tag == "appmsg" else root.find("appmsg")
+            if kind == "attachment" and app is not None and app.findtext("type") == "57":
+                title = (app.findtext("title") or "").strip()[:4096]
+                summary = quote_summary(app)
+                result.update(text=f"{title}\n〔{summary}〕".lstrip(), description="引用消息")
+                return "text", result, issues
             title = root.findtext(".//appmsg/title")
             extension = root.findtext(".//appattach/fileext")
             subtype = root.findtext(".//appmsg/type")
