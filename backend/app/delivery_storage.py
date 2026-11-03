@@ -60,6 +60,22 @@ class DeliveryStoreMixin:
             'SELECT * FROM sync_state WHERE account_id=? AND source_id=(SELECT source_id FROM conversations WHERE conversation_id=?)',(aid,cid))}
         self.db.execute('INSERT OR REPLACE INTO delivery_sessions VALUES(?,?,?,?,0)',(aid,cid,stamp(),json.dumps(watermarks)))
 
+    def _delivery_resume(self, aid, cid, previous_epoch):
+        # Re-login is not a user enable action: retain its original time/cursor.
+        if not self.db.execute('SELECT 1 FROM delivery_sessions WHERE account_id=? AND conversation_id=?',(aid,cid)).fetchone():
+            self._delivery_enable(aid,cid)
+            return
+        epoch = self._ai_session(aid,cid)['epoch']
+        if previous_epoch is None or epoch != previous_epoch + 1:
+            return  # A user disable/re-enable during the outage starts a new window.
+        for table in ('reply_triggers','group_message_eligibility'):
+            self.db.execute('UPDATE '+table+' SET epoch=? WHERE account_id=? AND conversation_id=? AND epoch=? AND consumed_run_id IS NULL',
+                            (epoch,aid,cid,previous_epoch))
+        self._delivery_reopen_pending(aid,cid)
+        if any(self.db.execute('SELECT 1 FROM '+table+' WHERE account_id=? AND conversation_id=? AND epoch=? AND consumed_run_id IS NULL LIMIT 1',
+                              (aid,cid,epoch)).fetchone() for table in ('reply_triggers','group_message_eligibility')):
+            self.db.execute('UPDATE ai_sessions SET auto_pending=1 WHERE account_id=? AND conversation_id=?',(aid,cid))
+
     def _delivery_recover(self):
         self.db.execute("UPDATE deliveries SET status='unknown',code='send_interrupted' WHERE status='sending'")
         self.db.execute("UPDATE delivery_attempts SET status='unknown',code='send_interrupted',completed_at=? WHERE status='sending'",(stamp(),))
@@ -81,7 +97,7 @@ class DeliveryStoreMixin:
             return
         if not incremental or item.get('is_self') is not False or item.get('type') not in ('text','image','sticker','voice'):
             return
-        if not self._compatibility_capture_allowed(aid):
+        if not self._compatibility_capture_allowed(aid) and not self._compatibility_defer_triggers(aid):
             return
         prefs=self._preferences(aid,cid)
         if not prefs['ai_enabled']: return

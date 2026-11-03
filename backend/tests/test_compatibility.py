@@ -176,6 +176,86 @@ class CompatibilityTests(RoleTestCase):
         self.delta(3)
         self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_triggers WHERE epoch=?',(epoch,)).fetchone()[0]),1)
 
+    def test_relogin_keeps_enable_window_for_delayed_mention_and_sends_once(self):
+        with patch('backend.app.delivery_storage.stamp', return_value='2026-11-03T02:00:00+00:00'):
+            groups.GroupSchedulingTests.group(self,20);self.enable()
+        aid,cid=self.ids[0],self.cids[0]
+        before=self.store.call(lambda:dict(self.store.db.execute('SELECT * FROM delivery_sessions WHERE conversation_id=?',(cid,)).fetchone()))
+        self.store.compatibility_hold('probe_failed')
+        self.store.set_state(aid,'unknown','probe_failed')
+        self.store.set_state(aid,'online','relogin')
+        self.store.compatibility_observe(self.states,[])
+        with patch('backend.app.delivery_storage.stamp', return_value='2026-11-03T02:22:00+00:00'):
+            self.restore()
+        after=self.store.call(lambda:dict(self.store.db.execute('SELECT * FROM delivery_sessions WHERE conversation_id=?',(cid,)).fetchone()))
+        self.assertEqual(before,after)
+        self.delta(77,sent_at='2026-11-03T02:17:45+00:00',mention_status='known',mentioned_wxids=[self.store.account(aid)['wxid']])
+        self.settle()
+        self.assertEqual(len(self.store.ai_candidates()),1)
+        run=self.wait_run(self.app.state.ai.start(aid,cid,'late-mention','auto'))
+        self.assertEqual(run['trigger_reason'],'mention')
+        self.assertEqual(run['delivery']['status'],'queued')
+        self.finish(run)
+        self.restore()
+        self.delta(77,sent_at='2026-11-03T02:17:45+00:00',mention_status='known',mentioned_wxids=[self.store.account(aid)['wxid']])
+        self.assertEqual(self.store.ai_candidates(),[])
+        self.assertEqual(self.store.delivery_candidates(),[])
+
+    def test_relogin_captures_live_mention_before_readiness_without_sending(self):
+        groups.GroupSchedulingTests.group(self,20);self.enable()
+        aid,cid=self.ids[0],self.cids[0]
+        wxid=self.store.account(aid)['wxid']
+        self.delta(1,mention_status='known',mentioned_wxids=[wxid])
+        self.store.compatibility_hold('unidentified_client')
+        self.store.compatibility_observe(self.states,[])
+        self.store.compatibility_send_state(aid,False,'sync_pending')
+        self.delta(2,mention_status='known',mentioned_wxids=[wxid])
+        self.assertEqual(self.store.ai_candidates(),[])
+        self.assertEqual(self.store.delivery_candidates(),[])
+        self.store.compatibility_send_state(aid,True,'ready');self.restore()
+        self.settle()
+        run=self.wait_run(self.app.state.ai.start(aid,cid,'two-recovered-mentions','auto'))
+        self.assertEqual(len(run['reply_trigger_ids']),2)
+        self.assertEqual(run['delivery']['status'],'queued')
+
+    def test_relogin_does_not_revive_consumed_unknown_or_user_disabled_triggers(self):
+        self.configured();self.enable();self.delta(1)
+        run=self.wait_run(self.start());self.finish(run,'unknown')
+        self.delta(2)
+        aid,cid=self.ids[0],self.cids[0]
+        self.store.compatibility_hold('probe_failed')
+        self.update(self.preferences()['revision'],ai_enabled=False)
+        self.update(self.preferences()['revision'],ai_enabled=True)
+        window=self.store.call(lambda:self.store.db.execute('SELECT enabled_at FROM delivery_sessions WHERE conversation_id=?',(cid,)).fetchone()[0])
+        self.store.compatibility_observe(self.states,[]);self.restore()
+        self.assertEqual(self.store.ai_run(aid,cid,run['run_id'])['delivery']['status'],'unknown')
+        epoch=self.store.call(lambda:self.store._ai_session(aid,cid)['epoch'])
+        self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_triggers WHERE conversation_id=? AND epoch=?',(cid,epoch)).fetchone()[0]),0)
+        self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT enabled_at FROM delivery_sessions WHERE conversation_id=?',(cid,)).fetchone()[0]),window)
+        self.assertEqual(self.store.delivery_candidates(),[])
+
+    def test_relogin_window_survives_restart_but_not_changed_binding_or_import(self):
+        self.configured();self.enable();self.delta(1)
+        aid,cid=self.ids[0],self.cids[0]
+        window=self.store.call(lambda:self.store.db.execute('SELECT enabled_at FROM delivery_sessions WHERE conversation_id=?',(cid,)).fetchone()[0])
+        self.store.compatibility_hold('probe_failed')
+        copy=self.path.with_name('relogin.sqlite3')
+        def backup():
+            with closing(sqlite3.connect(copy)) as db:self.store.db.backup(db)
+        self.store.call(backup)
+        with closing(Store(copy)) as reopened:
+            reopened.compatibility_start();reopened.compatibility_observe(self.states,[])
+            state=reopened.compatibility_send_state(aid,True,'ready');reopened.compatibility_resume(aid,state['revision'])
+            self.assertEqual(reopened.call(lambda:reopened.db.execute('SELECT enabled_at FROM delivery_sessions WHERE conversation_id=?',(cid,)).fetchone()[0]),window)
+            self.assertEqual(len(reopened.call(lambda:reopened._reply_ids(aid,cid,{r[0] for r in reopened.db.execute('SELECT message_id FROM messages')}))),1)
+            for imported in (False,True):
+                reopened.compatibility_hold('probe_failed')
+                if imported: reopened.migration_token='new-import'
+                else: self.states[aid]['fingerprint']='new-process-binding'
+                reopened.compatibility_observe(self.states,[])
+                state=reopened.compatibility_send_state(aid,True,'ready');reopened.compatibility_resume(aid,state['revision'])
+                self.assertEqual(reopened.call(lambda:reopened._reply_ids(aid,cid,{r[0] for r in reopened.db.execute('SELECT message_id FROM messages')})),[])
+
     def test_guard_readiness_race_preserves_epoch_and_pending_triggers(self):
         self.configured();self.enable();self.delta(1)
         aid,cid=self.ids[0],self.cids[0]

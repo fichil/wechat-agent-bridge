@@ -9,6 +9,7 @@ COMPATIBILITY_SCHEMA = (
     'CREATE TABLE compatibility_state(scope TEXT PRIMARY KEY, revision INTEGER NOT NULL, fingerprint TEXT NOT NULL, held INTEGER NOT NULL, reason TEXT NOT NULL, snapshot TEXT NOT NULL)',
 )
 TRANSIENT_SEND_HOLDS = frozenset(('native_busy', 'sync_pending', 'sync_error', 'native_unavailable'))
+LOGIN_RECOVERY_HOLDS = frozenset(('source_offline', 'unidentified_client', 'probe_failed', 'process_changed'))
 
 
 def upgrade_v9(db):
@@ -78,6 +79,20 @@ class CompatibilityStoreMixin:
         if self._compatibility_blocked(aid):
             raise ConversationError('compatibility_paused', '自动检查尚未通过，条件恢复后将自动继续。', 409)
 
+    def _compatibility_defer_triggers(self, aid):
+        """Keep verified live arrivals while the same binding is being recovered.
+
+        This only permits recording eligibility. Models and native sends retain
+        the full compatibility gate, and a changed fingerprint discards it.
+        """
+        state = self._compatibility_row(aid)
+        snapshot = json.loads(state['snapshot'])
+        return bool(not self.deployment_hold and not self.migration_hold and not self.migration_pending_for(aid)
+                    and snapshot.get('reply_resume', {}).get('fingerprint') == state['fingerprint']
+                    and state['fingerprint'] and snapshot.get('readable')
+                    and self._account(aid)['source_state'] == 'online'
+                    and state['reason'] in LOGIN_RECOVERY_HOLDS | TRANSIENT_SEND_HOLDS)
+
     def _compatibility_write(self, scope, fingerprint, held, reason, snapshot):
         if scope != '*' and not self.db.execute('SELECT 1 FROM accounts WHERE account_id=?',(scope,)).fetchone(): return 0
         old = self._compatibility_row(scope)
@@ -111,10 +126,15 @@ class CompatibilityStoreMixin:
                 self.db.execute('RELEASE compatibility_diagnostic')
         return revision
 
-    def _compatibility_invalidate(self, aid):
+    def _compatibility_invalidate(self, aid, *, recover_login=False):
         """Invalidate eligibility, never change a submitted send into retryable work."""
         old = self._compatibility_row(aid)
         snapshot = json.loads(old["snapshot"])
+        if recover_login and old['fingerprint'] and snapshot.get('readable') and not snapshot.get('needs_baseline', True):
+            snapshot['reply_resume'] = dict(fingerprint=old['fingerprint'], epochs={r[0]:r[1] for r in self.db.execute(
+                'SELECT conversation_id,epoch FROM ai_sessions WHERE account_id=?', (aid,))})
+        elif not recover_login:
+            snapshot.pop('reply_resume', None)
         snapshot["needs_baseline"] = True
         self._compatibility_write(aid, old["fingerprint"], True, old["reason"], snapshot)
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -144,7 +164,7 @@ class CompatibilityStoreMixin:
                 for row in self.db.execute('SELECT account_id FROM accounts').fetchall():
                     aid = row[0]; old = self._compatibility_row(aid)
                     if not old['held']:
-                        self._compatibility_invalidate(aid)
+                        self._compatibility_invalidate(aid, recover_login=reason in LOGIN_RECOVERY_HOLDS)
                     self._compatibility_write(aid, old['fingerprint'], True, reason, json.loads(self._compatibility_row(aid)['snapshot']))
             self.notify(dict(type='changed', resources=['compatibility', 'ai_runs']))
         self.call(write)
@@ -179,7 +199,10 @@ class CompatibilityStoreMixin:
                     reason = ('unidentified_client' if unresolved else 'unsupported_build' if not value['readable'] else
                               'build_changed' if changed else old['reason'] if held else '')
                     if changed or (held and not old['held']):
-                        self._compatibility_invalidate(aid)
+                        self._compatibility_invalidate(aid, recover_login=not changed and bool(unresolved))
+                        recovery = json.loads(self._compatibility_row(aid)['snapshot']).get('reply_resume')
+                        value.pop('reply_resume', None)
+                        if recovery: value['reply_resume'] = recovery
                         value['needs_baseline'] = True
                     self._compatibility_write(aid, value['fingerprint'], held, reason, value)
                 for row in self.db.execute('SELECT account_id FROM accounts').fetchall():
@@ -187,7 +210,7 @@ class CompatibilityStoreMixin:
                     if aid not in states:
                         old = self._compatibility_row(aid)
                         if not old['held']:
-                            self._compatibility_invalidate(aid)
+                            self._compatibility_invalidate(aid, recover_login=True)
                         self._compatibility_write(aid, old['fingerprint'], True,
                                                   'unidentified_client' if unresolved else 'source_offline', json.loads(self._compatibility_row(aid)['snapshot']))
             self.notify(dict(type='changed', resources=['compatibility', 'ai_runs']))
@@ -226,9 +249,16 @@ class CompatibilityStoreMixin:
                         self.db.execute("SELECT 1 FROM deliveries WHERE account_id=? AND status='sending'", (aid,)).fetchone()):
                     raise ConversationError('compatibility_busy', '等待在途任务结束后自动继续。', 409)
                 if needs_baseline:
-                    self._compatibility_invalidate(aid)
+                    recovery = snapshot.get('reply_resume', {})
+                    same_binding = bool(state['fingerprint'] and recovery.get('fingerprint') == state['fingerprint']
+                                        and not self.migration_pending_for(aid))
+                    if not same_binding: self._compatibility_invalidate(aid)
                     for cid, in self.db.execute('SELECT conversation_id FROM conversation_preferences WHERE account_id=? AND ai_enabled=1', (aid,)).fetchall():
-                        self._delivery_enable(aid, cid)
+                        if same_binding:
+                            self._delivery_resume(aid, cid, recovery.get('epochs', {}).get(cid))
+                        else:
+                            self._delivery_enable(aid, cid)
+                snapshot.pop('reply_resume', None)
                 snapshot['needs_baseline'] = False
                 if self.migration_token:
                     snapshot['migration_token'] = self.migration_token

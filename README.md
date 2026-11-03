@@ -440,6 +440,8 @@ powershell -NoProfile -File scripts/build_native_send.ps1
 
 账号扫描和原生兼容检查在后台执行，查询读取已保存状态；慢检查不会阻塞历史访问。重新登录后自动识别新绑定、同步并恢复符合条件的自动处理；旧检查结果通过账号代次、状态代次和兼容修订校验，不能覆盖新身份或重新创建已删除账号。回归与运行环境记录见 [掉线与重新登录恢复验收](docs/acceptance-account-recovery-2026-11-03.md)。
 
+同一已验证进程绑定恢复登录时，保留用户原先开启自动回复的时间与消息水位，不把恢复时刻当作重新开启。期间已确认的实时消息可暂存触发，兼容检查通过后再处理；仅恢复尚未消费的触发。进程绑定变化、导入迁移，以及用户关闭后重新开启仍建立新的基线。此前已被旧逻辑漏掉并完成记忆处理的消息需单独核对，不能据“模型调用完成”判断已回复。详情见 [重新登录后漏掉 @ 的修复](docs/acceptance-relogin-mentions-2026-11-03.md)。
+
 接口均为登录、CSRF 保护的 POST：`/api/v1/accounts/delete`、`/api/v1/notification-settings/query`、`/update`、`/test`，写操作使用 `expected_revision`；契约见 `backend/openapi.json`。数据库升级与兼容回退见 [数据库设计](docs/database.md)。
 
 ## 自动生产部署
