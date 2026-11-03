@@ -51,7 +51,7 @@ class RoutingTests(RoleTestCase):
         error.retryable, error.retry_after = retryable, retry_after
         return error
 
-    def test_immediate_fallback_wraps_and_sticks_per_conversation_across_restart(self):
+    def test_fallback_wraps_and_next_batch_starts_at_explicit_profile(self):
         self.configured()
         b = self.create_api(name='B', provider='anthropic', protocol='anthropic_messages', base_url='https://example.test')
         c = self.create_api(name='C', provider='gemini', protocol='gemini_generate_content', base_url='https://example.test')
@@ -74,15 +74,16 @@ class RoutingTests(RoleTestCase):
         self.assertEqual(envelopes[0], envelopes[1]); self.assertEqual(envelopes[1], envelopes[2])
         self.assertEqual((run['status'], run['attempt_count'], run['retry_count']), ('completed', 3, 0))
         self.assertEqual(self.preferences()['api_profile_id'], b['profile_id'])
-        self.assertEqual(self.preferences()['effective']['active_api_profile_id'], self.profile['profile_id'])
+        self.assertEqual(self.preferences()['effective']['active_api_profile_id'], b['profile_id'])
         self.assertEqual(self.preferences()['memory_revision'], 1)
         self.assertEqual(len(self.sql('SELECT * FROM deliveries')), 1)
         self.finish(run)
-        with closing(self.copied_store()) as restored:
-            prefs = restored.preferences(self.ids[0], self.cids[0])
-            self.assertEqual(prefs['effective']['active_api_profile_id'], self.profile['profile_id'])
         self.delta(2)
-        self.assertEqual(self.begin()['profile_id'], self.profile['profile_id'])
+        with patch.object(self.provider, 'generate', wraps=original) as generate:
+            second = self.begin()
+        self.assertEqual((second['status'], second['attempt_count']), ('completed', 1))
+        generate.assert_called_once()
+        self.assertEqual(generate.call_args.args[0]['profile_id'], b['profile_id'])
         self.update(self.preferences(1)['revision'], index=1, ai_enabled=True, api_profile_id=b['profile_id'])
         self.delta(1, account=1)
         self.assertEqual(self.begin(account=1)['profile_id'], b['profile_id'])
@@ -299,18 +300,31 @@ class RoutingTests(RoleTestCase):
         generate.assert_not_called()
         self.assertEqual(final['status'], 'conflicted')
 
-    def test_disable_resets_sticky_route_and_no_cross_account_deletion(self):
+    def test_new_batch_after_upgrade_ignores_legacy_route_and_uses_default(self):
         self.configured(); b = self.create_api(name='B'); self.delta()
         with patch.object(self.provider, 'generate', side_effect=self.failure()):
             run = self.begin()
         run = self.step(run); self.finish(run)
-        self.assertEqual(self.preferences()['effective']['active_api_profile_id'], b['profile_id'])
-        self.update(self.preferences()['revision'], ai_enabled=False)
-        self.update(self.preferences()['revision'], ai_enabled=True)
-        self.assertEqual(self.preferences()['effective']['active_api_profile_id'], self.profile['profile_id'])
-        self.delta(2); self.begin()
-        self.store.set_state(self.ids[0], 'offline')
-        self.store.delete_account(self.ids[0], self.store.account(self.ids[0])['revision'])
+        self.assertEqual([(a['profile_id'], a['status']) for a in run['profile_attempts']],
+                         [(self.profile['profile_id'], 'failed'), (b['profile_id'], 'completed')])
+        self.assertEqual(self.sql("SELECT * FROM metadata WHERE key GLOB 'ai_agent_route:*'"), [])
+        aid, cid = self.ids[0], self.cids[0]
+        legacy_route = dict(configuration=run['route_configuration'], epoch=run['epoch'],
+                            profile_id=b['profile_id'], revision=b['revision'])
+        self.sql('INSERT INTO metadata VALUES(?,?)', (f'ai_agent_route:{aid}:{cid}', json.dumps(legacy_route)))
+        self.delta(2)
+        with closing(self.copied_store()) as restored:
+            prefs = restored.preferences(aid, cid)['effective']
+            self.assertEqual((prefs['api_source'], prefs['active_api_profile_id']), ('default', self.profile['profile_id']))
+            with closing(AiExecution(restored, self.app.state.ai.bridge, self.provider, automatic=False)) as ai:
+                second = restored.start_ai_run(aid, cid, uuid4().hex, 'manual')
+                with patch.object(self.provider, 'generate', wraps=self.provider.generate) as generate:
+                    ai.perform(aid, cid, second['run_id'])
+                generate.assert_called_once()
+                self.assertEqual(generate.call_args.args[0]['profile_id'], self.profile['profile_id'])
+                self.assertEqual(restored.ai_run(aid, cid, second['run_id'])['status'], 'completed')
+        self.store.set_state(aid, 'offline')
+        self.store.delete_account(aid, self.store.account(aid)['revision'])
         self.assertEqual(self.sql("SELECT * FROM metadata WHERE key GLOB 'ai_agent_route:*'"), [])
         self.assertEqual(len(self.store.api_profiles()['items']), 2)
 

@@ -1,4 +1,4 @@
-"""Conversation-local Agent routing; all helpers run on the SQL owner thread."""
+"""Per-run Agent routing; all helpers run on the SQL owner thread."""
 import json
 import time
 
@@ -14,9 +14,6 @@ FAILOVER_ERRORS = {
 
 
 class AiRoutingStoreMixin:
-    def _route_key(self, aid, cid):
-        return f'ai_agent_route:{aid}:{cid}'
-
     def _route_configuration(self, prefs):
         pid = prefs['api_profile_id'] or self._defaults()['api_profile_id']
         row = self.db.execute('SELECT revision FROM api_profiles WHERE profile_id=?', (pid,)).fetchone()
@@ -29,16 +26,7 @@ class AiRoutingStoreMixin:
             return []
         profiles = [self._profile(r[0]) for r in self.db.execute(
             'SELECT profile_id FROM api_profiles ORDER BY created_at,profile_id').fetchall()]
-        start = configured['profile_id']
-        saved = self.db.execute('SELECT value FROM metadata WHERE key=?',
-                                (self._route_key(prefs['account_id'], prefs['conversation_id']),)).fetchone()
-        if saved:
-            route = json.loads(saved[0])
-            if (route['configuration'] == configured and
-                    route['epoch'] == self._ai_session(prefs['account_id'], prefs['conversation_id'])['epoch'] and
-                    any(p['profile_id'] == route['profile_id'] and p['revision'] == route['revision'] for p in profiles)):
-                start = route['profile_id']
-        index = next((i for i, p in enumerate(profiles) if p['profile_id'] == start), 0)
+        index = next((i for i, p in enumerate(profiles) if p['profile_id'] == configured['profile_id']), 0)
         return [p for p in profiles[index:] + profiles[:index]
                 if p['key_readable'] and p['verification']['status'] == 'passed'
                 and (not vision or p['verification'].get('vision') == 'supported')]
@@ -54,15 +42,6 @@ class AiRoutingStoreMixin:
         run.update(route_configuration=self._route_configuration(prefs),
                    route_candidates=[dict(profile_id=p['profile_id'], revision=p['revision']) for p in profiles],
                    route_tried=[], route_errors={}, retry_count=0, profile_attempts=[])
-
-    def _route_success(self, run):
-        if 'route_candidates' not in run:
-            return
-        self._route_attempt_result(run, 'completed')
-        self.db.execute('INSERT OR REPLACE INTO metadata VALUES(?,?)', (
-            self._route_key(run['account_id'], run['conversation_id']),
-            pack(dict(configuration=run['route_configuration'], epoch=run['epoch'],
-                      profile_id=run['profile_id'], revision=run['profile_revision']))))
 
     def _route_attempt_result(self, run, status, error=None):
         attempts = run.get('profile_attempts', [])

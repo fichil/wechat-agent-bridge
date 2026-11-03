@@ -166,7 +166,7 @@ async function toggle(page: Page) {
     .click();
 }
 
-test("Agent failure switches once, combines private messages and retains the working Agent", async ({
+test("Agent failure switches once for a merged batch and the next batch starts at the default API", async ({
   page,
 }) => {
   await page.goto(`/workspace/${ids[0]!.account_id}/agents`);
@@ -216,8 +216,9 @@ test("Agent failure switches once, combines private messages and retains the wor
   expect(first.delivery.total_parts).toBe(1);
   const prefs = await post(page, "conversation-preferences/query", ids[0]!);
   expect(prefs.effective).toMatchObject({
+    api_source: "default",
     api_profile_name: "首选连接",
-    active_api_profile_name: "备用连接",
+    active_api_profile_name: "首选连接",
   });
   expect(prefs.memory_revision).toBe(1);
   await fixturePost(page, service + "/test/message", { data: { index: 4 } });
@@ -225,15 +226,14 @@ test("Agent failure switches once, combines private messages and retains the wor
     .getByRole("button", { name: "处理未处理消息", exact: true })
     .click();
   await expect
-    .poll(
-      async () => (await post(page, "ai-runs/list", ids[0]!)).items[0]?.status,
-    )
-    .toBe("completed");
-  expect((await post(page, "ai-runs/list", ids[0]!)).items[0]).toMatchObject({
-    profile_name: "备用连接",
-    attempt_count: 1,
-    message_count: 1,
-  });
+    .poll(async () => (await post(page, "ai-runs/list", ids[0]!)).items[0])
+    .toMatchObject({
+      status: "completed",
+      profile_name: "首选连接",
+      profile_attempts: [{ profile_name: "首选连接", status: "completed" }],
+      attempt_count: 1,
+      message_count: 1,
+    });
 });
 
 test("uncertain delivery requires a decision and failed delivery retries the existing reply", async ({
