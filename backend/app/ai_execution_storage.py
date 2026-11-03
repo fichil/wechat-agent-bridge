@@ -105,8 +105,6 @@ class AiExecutionStoreMixin:
 
     def _ai_preference_change(self, previous, current):
         aid, cid = current["account_id"], current["conversation_id"]
-        if any(previous[k] != current[k] for k in ('api_profile_id', 'ai_enabled')):
-            self.db.execute('DELETE FROM metadata WHERE key=?', (self._route_key(aid, cid),))
         self._delivery_preference_change(previous, current)
         self.db.execute("INSERT OR IGNORE INTO ai_sessions(account_id,conversation_id) VALUES(?,?)", (aid, cid))
         self._group_preferences_changed(previous, current)
@@ -430,7 +428,7 @@ class AiExecutionStoreMixin:
                     run['reply_format_version'] = 2
                     display = '\n'.join(p['text'] if p['kind']=='text' else '['+('表情' if p['kind']=='sticker' else '图片')+'：'+p['name']+']' for p in parts)
                     run.update(status="completed", reply=display, memory_revision=prefs["memory_revision"]+1)
-                    self._route_success(run)
+                    self._route_attempt_result(run, 'completed')
                     self._queue_delivery(run)
                     if not run.get('reply'): run['reply_parts'] = []
                     self._group_finish_batch(run)

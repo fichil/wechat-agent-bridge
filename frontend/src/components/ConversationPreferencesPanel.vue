@@ -403,8 +403,9 @@ defineExpose({ beforeLeave });
           v-if="original.effective?.active_api_profile_name"
           class="settings-note"
         >
-          当前运行 Agent：{{ original.effective.active_api_profile_name }}。
-          失败后按 Agent 列表顺序切换，成功后此会话继续使用。
+          可用列表的首个 Agent：{{
+            original.effective.active_api_profile_name
+          }}。 每次新任务优先使用配置的 API，失败后按列表顺序切换。
         </p>
         <label class="editor-field memory-field"
           ><span>记忆 <small>可随时编辑，保存后仅存于本机</small></span

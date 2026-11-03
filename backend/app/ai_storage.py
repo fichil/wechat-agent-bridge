@@ -129,8 +129,6 @@ class AiStoreMixin:
                         raise ConversationError("api_key_unreadable", "密钥无法读取，请在 Agent 中重新填写。", 409)
                 current = {**previous, **patch}
                 if current != previous:
-                    if current['api_profile_id'] != previous['api_profile_id']:
-                        self.db.execute("DELETE FROM metadata WHERE key GLOB 'ai_agent_route:*' AND json_extract(value,'$.configuration.source')='default'")
                     self.db.execute("UPDATE ai_defaults SET role_card_code=?,api_profile_id=?,revision=revision+1 WHERE singleton=1",
                                     (current["role_card_code"], current["api_profile_id"]))
                     changed = True
