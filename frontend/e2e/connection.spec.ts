@@ -12,7 +12,7 @@ test("poll timeout and disconnection invalidate readiness, then recover", async 
   );
   await page.route("**/api/v1/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
-    if (path === "/api/v1/auth/session") {
+    if (path === "/api/v1/auth/session" || path === "/api/v1/updates/query") {
       await mockAuthenticatedSession(route, path);
       return;
     }

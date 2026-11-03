@@ -139,7 +139,14 @@ def main():
                     time.sleep(.25)
                 else: raise RuntimeError('Backend startup timed out')
         print(('Started private loopback access at ' if mode == 'private' else 'Started. Verify HTTPS certificate and login at ')+origin,flush=True)
-        while not stop_file.exists() and all(p.poll() is None for p in children): time.sleep(.5)
+        from bridge_portable.updates import Updates
+        updates = Updates()
+        while not stop_file.exists() and all(p.poll() is None for p in children):
+            if updates.mode == 'portable':
+                from bridge_portable.update_engine import spawn_if_pending
+                try: spawn_if_pending(updates.root)
+                except OSError: pass  # A transient sharing error must never stop the backend.
+            time.sleep(.5)
         if not stop_file.exists(): raise RuntimeError('A managed service exited; inspect the local production logs')
     except KeyboardInterrupt:
         pass

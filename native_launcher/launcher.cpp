@@ -16,6 +16,9 @@
 static HWND window, originBox, usernameBox, passwordBox, confirmBox, outputBox, privateBox;
 static HFONT font;
 static bool busy = false;
+static bool updatePending = false;
+static bool updateRequest = false;
+static std::wstring targetVersion, targetRelease;
 static std::wstring root;
 static std::vector<HWND> controls;
 constexpr UINT Finished = WM_APP + 1;
@@ -101,14 +104,17 @@ static std::wstring invoke(std::string request) {
 }
 static void request(const wchar_t* action, const std::wstring& path=L"") {
     if (busy) return;
-    auto password = readText(passwordBox), confirmation = readText(confirmBox);
+    bool update = std::wstring(action).find(L"update-") == 0;
+    updateRequest = update;
+    auto password = update ? L"" : readText(passwordBox), confirmation = update ? L"" : readText(confirmBox);
     std::string body = "{\"action\":" + quote(action) + ",\"origin\":" + quote(readText(originBox)) +
         ",\"username\":" + quote(readText(usernameBox)) + ",\"password\":" + quote(password) +
         ",\"confirmation\":" + quote(confirmation) + ",\"path\":" + quote(path) + ",\"private\":" +
-        (SendMessageW(privateBox,BM_GETCHECK,0,0)==BST_CHECKED ? "true" : "false") + ",\"confirmed\":true}";
+        (SendMessageW(privateBox,BM_GETCHECK,0,0)==BST_CHECKED ? "true" : "false") +
+        ",\"version\":" + quote(targetVersion) + ",\"release_id\":" + (targetRelease.empty() ? "0" : utf8(targetRelease)) + "}";
     SecureZeroMemory(password.data(), password.size()*sizeof(wchar_t));
     SecureZeroMemory(confirmation.data(), confirmation.size()*sizeof(wchar_t));
-    SetWindowTextW(passwordBox, L""); SetWindowTextW(confirmBox, L"");
+    if (!update) { SetWindowTextW(passwordBox, L""); SetWindowTextW(confirmBox, L""); }
     busy = true; for (HWND h : controls) EnableWindow(h, FALSE);
     SetWindowTextW(outputBox, L"正在处理，请稍候。停止时会等待在途任务正常结束。\r\n结果会显示在这里。");
     std::thread([body=std::move(body)]() mutable {
@@ -137,19 +143,32 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
         confirmBox=make(L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL|ES_PASSWORD,210,210,454,30);
         make(L"STATIC",L"初始化/重置：填写两次新密码。自动回复会在检查通过后恢复。",0,24,251,660,24);
         controls={privateBox,originBox,usernameBox,passwordBox,confirmBox};
-        const wchar_t* labels[]={L"保存首次配置",L"环境检查",L"启动后台",L"停止后台",L"打开后台",L"刷新状态",L"查看日志",L"重置密码",L"导出全部数据",L"导入迁移包",L"使用说明",L"仅导出角色/API"};
-        for (int i=0;i<12;++i) {
+        const wchar_t* labels[]={L"保存首次配置",L"环境检查",L"启动后台",L"停止后台",L"打开后台",L"刷新状态",L"查看日志",L"重置密码",L"导出全部数据",L"导入迁移包",L"使用说明",L"仅导出角色/API",L"检查版本更新",L"一键升级"};
+        for (int i=0;i<14;++i) {
             int row=i/4,col=i%4;
             controls.push_back(make(L"BUTTON",labels[i],WS_TABSTOP|BS_PUSHBUTTON,24+col*164,288+row*43,148,33,100+i));
         }
         outputBox=make(L"EDIT",L"",ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL,24,475,640,150);
-        PostMessageW(h, WM_COMMAND, 105, 0); return 0;
+        SetTimer(h,1,24*60*60*1000,nullptr);
+        SetTimer(h,2,3000,nullptr);
+        PostMessageW(h, WM_COMMAND, 114, 0); return 0;
     }
+    case WM_TIMER:
+        if (!busy && wp==1) request(L"update-auto");
+        if (!busy && wp==2 && updatePending) request(L"update-status");
+        return 0;
     case WM_COMMAND: {
         if (busy) return 0;
         int id=LOWORD(wp);
         if (id==200) { EnableWindow(originBox,SendMessageW(privateBox,BM_GETCHECK,0,0)!=BST_CHECKED); return 0; }
         const wchar_t* actions[]={L"setup",L"check",L"start",L"stop",L"open",L"status",L"logs",L"reset",L"export",L"import",L"help",L"export-config"};
+        if (id==112 || id==114) { request(id==112 ? L"update-check" : L"update-auto"); return 0; }
+        if (id==113) {
+            if (targetVersion.empty()) return 0;
+            auto confirm=L"升级到 v"+targetVersion+L"？程序将下载并校验附件，备份数据后切换版本。运行中的后台会短暂重启。";
+            if (MessageBoxW(h,confirm.c_str(),L"确认升级",MB_OKCANCEL|MB_ICONQUESTION)==IDOK) request(L"update-install");
+            return 0;
+        }
         if (id<100 || id>111) return 0;
         std::wstring path;
         if (id==108 || id==109 || id==111) { path=chooseFile(id!=109); if(path.empty()) return 0; }
@@ -160,12 +179,25 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
     }
     case Finished: {
         std::unique_ptr<Reply> reply((Reply*)lp);
+        if (reply->text.rfind(L"UPDATE:",0)==0) {
+            auto end=reply->text.find(L'\n');
+            auto token=reply->text.substr(7,end-7);
+            if (!token.empty() && token.back()==L'\r') token.pop_back();
+            updatePending=token==L"busy";
+            targetVersion.clear(); targetRelease.clear();
+            auto sep=token.find(L':');
+            if (sep!=std::wstring::npos && token.substr(sep+1).find_first_not_of(L"0123456789")==std::wstring::npos) {
+                targetVersion=token.substr(0,sep); targetRelease=token.substr(sep+1);
+            }
+            reply->text.erase(0,end+1);
+        }
         SetWindowTextW(outputBox,reply->text.c_str()); busy=false;
         for(HWND control:controls) EnableWindow(control,TRUE);
+        EnableWindow(GetDlgItem(h,113),!targetVersion.empty() && !updatePending);
         EnableWindow(originBox,SendMessageW(privateBox,BM_GETCHECK,0,0)!=BST_CHECKED); return 0;
     }
     case WM_CLOSE:
-        if(busy) { MessageBoxW(h,L"请等待当前操作完成。",L"操作进行中",MB_OK); return 0; }
+        if(busy && !updateRequest) { MessageBoxW(h,L"请等待当前操作完成。",L"操作进行中",MB_OK); return 0; }
         DestroyWindow(h); return 0;
     case WM_DESTROY: DeleteObject(font); PostQuitMessage(0); return 0;
     }
@@ -175,6 +207,9 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int show) {
     SetProcessDPIAware();
     wchar_t file[32768]; GetModuleFileNameW(nullptr,file,32768);
     root=file; root.resize(root.find_last_of(L"\\/"));
+    auto bootstrap=invoke("{\"action\":\"bootstrap\"}");
+    if (bootstrap.rfind(L"opened",0)==0) return 0;
+    if (bootstrap.rfind(L"continue",0)!=0) { MessageBoxW(nullptr,bootstrap.c_str(),L"启动失败",MB_OK|MB_ICONERROR); return 1; }
     uint64_t hash=1469598103934665603ULL;
     for(wchar_t c:root) { hash^=towlower(c); hash*=1099511628211ULL; }
     auto mutexName=L"Local\\WeChatAgentBridgeLauncher-"+std::to_wstring(hash);

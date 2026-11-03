@@ -32,6 +32,17 @@ class BusinessControl:
         os.replace(temp, path)
 
     def step(self):
+        drain_path = self.data / 'update-drain.json'
+        if drain_path.is_file():
+            request = json.loads(drain_path.read_text(encoding='utf-8'))
+            with self.ai.lock, self.sender.lock:
+                self.ai.update_draining = self.sender.update_draining = True
+                idle = not self.ai.pending and not self.sender.pending
+            if idle:
+                from bridge_portable.deploy import write
+                write(self.data / 'production/update-drained.json', dict(task_id=request['task_id'], pid=os.getpid()))
+            return
+        self.ai.update_draining = self.sender.update_draining = False
         if not self.active:
             self.bridge.store.deployment_hold = (self.data / 'deployment-hold.json').is_file()
             if not self.bridge.store.deployment_hold:
@@ -40,7 +51,7 @@ class BusinessControl:
                 if self.send_auto: self.sender.start_automatic()
                 self.active = True
             self.publish()
-        if self.active:
+        if self.active and self.monitor:
             self.bridge.compatibility.reconcile()
 
     def loop(self):

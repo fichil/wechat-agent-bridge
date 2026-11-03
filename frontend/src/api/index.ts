@@ -70,6 +70,19 @@ function value<T>(result: {
 }
 
 export const api = {
+  async updates() {
+    return value(await client.POST("/api/v1/updates/query", { body: {} }));
+  },
+  async checkUpdates() {
+    return value(await client.POST("/api/v1/updates/check", { body: {} }));
+  },
+  async installUpdate(version: string, release_id: number) {
+    return value(
+      await client.POST("/api/v1/updates/install", {
+        body: { version, release_id },
+      }),
+    );
+  },
   async stickers() {
     return value(await client.POST("/api/v1/stickers/query", { body: {} }));
   },

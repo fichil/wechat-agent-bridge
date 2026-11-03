@@ -15,6 +15,47 @@ os.environ['BRIDGE_DATA_DIR'] = str(DEFAULT_DATA)
 def dispatch(request):
     from . import control
     action = request.get('action')
+    if action == 'bootstrap':
+        from .deploy import read
+        from .updates import installation
+        from .update_engine import bootstrap
+        if installation(ROOT) != ROOT and installation(ROOT) is not None: return 'continue'
+        manifest = read(ROOT / 'portable-manifest.json', {})
+        if not manifest or manifest.get('development'): return 'continue'
+        release = bootstrap(ROOT)
+        os.startfile(release / 'WeChatAgentBridge.exe')
+        return 'opened'
+    if action in ('update-check', 'update-auto', 'update-status', 'update-install'):
+        from .updates import Updates, TERMINAL
+        updates = Updates()
+        if action == 'update-install': state = updates.install(request['version'], request['release_id'])
+        elif action == 'update-status': state = updates.query()
+        else: state = updates.check(force=action == 'update-check')
+        latest, task = state['latest'], state['task']
+        lines = ['当前版本：' + state['current_version'], '发布页：' + state['releases_url']]
+        token = ''
+        if state['mode'] == 'managed': lines.append('本机由服务器自动部署管理。')
+        elif state['mode'] == 'source': lines.append('源码或开发模式：请从发布页获取正式便携包。')
+        elif latest:
+            lines.extend(['发现 v' + latest['version'] + ' · ' + latest['published_at'], latest['notes'], latest.get('reason') or ''])
+            if latest['ready']: token = latest['version'] + ':' + str(latest['release_id'])
+        elif not state['error']: lines.append('当前没有可用的新版。')
+        if state['error']: lines.append(state['error'])
+        pending = bool(task and task['stage'] not in TERMINAL)
+        if task:
+            lines.append(task['message'])
+            if task.get('total'): lines.append('下载进度：' + str(task['downloaded'] * 100 // task['total']) + '%')
+        return ('UPDATE:' + ('busy' if pending else token) + '\n' + '\n'.join(lines))
+    if action in ('start', 'stop', 'setup', 'reset', 'export', 'export-config', 'import'):
+        from .updates import Updates, TERMINAL
+        updates = Updates()
+        if updates.mode == 'portable':
+            from .deploy import read
+            task = updates.query()['task']
+            if (task and task['stage'] not in TERMINAL) or (updates.directory / 'transaction.json').exists():
+                raise ValueError('更新任务尚未结束，请稍后再操作。')
+            if read(updates.root / 'current.json')['directory'] != ROOT.name:
+                raise ValueError('此启动器版本已过期，请从安装根目录重新打开。')
     username = request.get('username') or 'admin'
     password = request.get('password', '')
     confirmation = request.get('confirmation', '')
@@ -64,7 +105,14 @@ def main():
         request = json.loads(raw)
         # Diagnostic helpers may print. Do not mix that into the GUI protocol.
         with contextlib.redirect_stdout(io.StringIO()):
-            message = dispatch(request)
+            if request.get('action') in ('start','stop','setup','reset','export','export-config','import'):
+                from .updates import Updates
+                from .deploy import lock
+                updates = Updates()
+                # Serialize a long import/export/start with accepting a new update.
+                guard = lock(updates.directory) if updates.mode == 'portable' else contextlib.nullcontext()
+                with guard: message = dispatch(request)
+            else: message = dispatch(request)
         print(message, flush=True)
         return 0
     except Exception as exc:

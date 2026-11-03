@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
 import sqlite3
@@ -42,9 +42,22 @@ def read(path, default=None):
 def write(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix('.tmp')
-    temp.write_text(json.dumps(value, ensure_ascii=True, indent=2), encoding='utf-8')
-    os.replace(temp, path)
+    from uuid import uuid4
+    temp = path.with_name(path.name + '.' + uuid4().hex + '.tmp')
+    try:
+        with temp.open('x', encoding='utf-8') as stream:
+            json.dump(value, stream, ensure_ascii=True, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        for attempt in range(10):
+            try:
+                os.replace(temp, path)
+                break
+            except PermissionError as exc:
+                if attempt == 9 or getattr(exc, 'winerror', None) not in (5, 32, 33): raise
+                time.sleep(.025 * (attempt + 1))
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def digest(path):
@@ -95,6 +108,7 @@ def unpack(archive, destination, expected_hash, commit):
             name = PurePosixPath(entry.filename)
             if ('\\' in entry.filename or ':' in entry.filename or name.is_absolute() or
                     '..' in name.parts or len(name.parts) < 2 or entry.is_dir() or
+                    any(part.rstrip(' .') != part or PureWindowsPath(part).is_reserved() for part in name.parts) or
                     (entry.external_attr >> 16) & 0o170000 == 0o120000):
                 raise ValueError('Invalid package path')
             roots.add(name.parts[0])
@@ -121,10 +135,11 @@ def unpack(archive, destination, expected_hash, commit):
             raise
 
 
-def database_check(data, expected_schema=(9, 10, 11)):
+def database_check(data, expected_schema=(9, 10, 11), *, allow_missing=False):
     allowed = (expected_schema,) if isinstance(expected_schema, int) else expected_schema
     for name in ('bridge.sqlite3', 'auth.sqlite3'):
         path = Path(data) / name
+        if allow_missing and not path.exists(): continue
         with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=10)) as db:
             if db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
                 raise ValueError('Database integrity check failed')
@@ -134,6 +149,21 @@ def database_check(data, expected_schema=(9, 10, 11)):
 
 def compatible_schemas(manifest):
     return manifest.get('database_compatible_schemas', [manifest.get('database_schema')])
+
+
+def cold_backup(data, backup, *, validate=database_check):
+    """Publish only a completely copied, verified snapshot; safe to resume."""
+    backup = Path(backup)
+    if not backup.is_dir():
+        staging = backup.with_name(backup.name + '.partial')
+        if staging.exists(): remove(backup.parent, staging)
+        shutil.copytree(data, staging)
+        validate(staging)
+        for path in Path(data).rglob('*'):
+            if path.is_file() and digest(path) != digest(staging / path.relative_to(data)):
+                raise ValueError('Data backup verification failed')
+        os.replace(staging, backup)
+    validate(backup)
 
 
 def owner(data, release):
@@ -187,9 +217,9 @@ def start_task(name, root=None):
     powershell("$ErrorActionPreference='Stop'; Start-ScheduledTask -TaskName '" + name + "'")
 
 
-def wait_healthy(root, commit, *, active, timeout=240):
+def wait_healthy(root, commit, *, active, timeout=240, release=None):
     root = Path(root)
-    release = root / 'releases' / commit
+    release = release or root / 'releases' / commit
     managed_version = bool(read(release / 'portable-manifest.json').get('database_schema'))
     config = read(root / 'data/portable-config.json')
     origin = config['origin']
@@ -327,15 +357,7 @@ class Deployment:
             stopped = True
             database_check(data)
             backup = root / 'backups' / request['request_id'] / 'data'
-            if backup.exists():
-                # A previous attempt stopped before switching; never overwrite its cold snapshot.
-                database_check(backup)
-            else:
-                shutil.copytree(data, backup)
-            database_check(backup)
-            for path in data.rglob('*'):
-                if path.is_file() and digest(path) != digest(backup / path.relative_to(data)):
-                    raise ValueError('Data backup verification failed')
+            cold_backup(data, backup)
             self.record(request, 'starting', backup=str(backup))
             write(data / 'deployment-hold.json', request)
             write(root / 'current.json', {'commit': request['commit']})

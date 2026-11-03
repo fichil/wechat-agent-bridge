@@ -32,7 +32,9 @@ export class AuthFailure extends Error {
 
 export function safeReturn(value: unknown): string {
   return typeof value === "string" &&
-    /^\/(accounts|workspace)(\/|\?|$)/.test(value) &&
+    /^\/(accounts|workspace|settings\/(?:updates|notifications))(\/|\?|$)/.test(
+      value,
+    ) &&
     !value.includes("\\")
     ? value
     : "/accounts";
@@ -179,7 +181,11 @@ export async function authenticatedFetch(request: Request): Promise<Response> {
       timedOut = true;
       controller.abort();
     },
-    polling ? 8_000 : 15_000,
+    polling
+      ? 8_000
+      : new URL(request.url).pathname === "/api/v1/updates/check"
+        ? 70_000
+        : 15_000,
   );
   const abort = () => controller.abort();
   request.signal.addEventListener("abort", abort, { once: true });

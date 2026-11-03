@@ -1,5 +1,9 @@
 # 微信 Agent Bridge
 
+[下载 Windows x64 正式版](https://github.com/fichil/wechat-agent-bridge/releases/latest) · [安装、首次迁入与程序内升级](docs/portable-windows.md#升级备份与排错)
+
+从 v0.4.0 起，网页后台和 Windows 启动器会提示新的正式版本。客户确认后才下载、校验并升级，原有聊天和配置保留。
+
 Windows 本机微信工作台：Vue 3 / TypeScript 前端，Python 3.12 / FastAPI 后端。
 账号、会话、聊天历史和按需读取的图片、静态表情及 GIF 保存到本地 SQLite。页面和 API 优先读取数据库，微信退出、后端重启后仍能查询已保存历史。
 

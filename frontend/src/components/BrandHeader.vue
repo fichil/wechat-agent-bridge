@@ -2,6 +2,7 @@
 import { useRouter } from "vue-router";
 import { useAccountsStore } from "../stores/accounts";
 import AdminMenu from "./AdminMenu.vue";
+import UpdateLink from "./UpdateLink.vue";
 
 defineProps<{ workspace?: boolean }>();
 const accounts = useAccountsStore();
@@ -26,6 +27,7 @@ async function switchAccount() {
       </div>
       <ElButton v-if="workspace" @click="switchAccount">切换账号</ElButton>
       <RouterLink to="/settings/notifications">邮件通知设置</RouterLink>
+      <UpdateLink />
       <AdminMenu />
     </div>
   </header>

@@ -55,6 +55,7 @@ class DeliveryExecution:
         self.store,self.bridge=store,bridge
         self.transport=transport or NativeTransport()
         self.stop=threading.Event(); self.lock=threading.RLock(); self.pending=set(); self.cache={}
+        self.update_draining = False
         self.wake=threading.Event(); self.retry_after={}
         self.executor=ThreadPoolExecutor(max_workers=2,thread_name_prefix='wechat-send')
         self.thread=None
@@ -142,7 +143,7 @@ class DeliveryExecution:
     def tick(self):
         for job in self.store.delivery_candidates():
             with self.lock:
-                if self.stop.is_set() or len(self.pending)>=2: return
+                if self.stop.is_set() or self.update_draining or len(self.pending)>=2: return
                 if job['account_id'] in self.pending or time.monotonic()<self.retry_after.get(job['account_id'],0): continue
                 self.pending.add(job['account_id'])
                 self.executor.submit(self.perform,job)

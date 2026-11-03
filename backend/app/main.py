@@ -28,6 +28,8 @@ from .delivery_models import Delivery, DeliveryAction, DeliveryResolve, SendCapa
 from .media_models import (StickerList, StickerDetail, Sticker, StickerQuery, StickerCreate, StickerUpdate,
                            StickerDelete, StickerDeleted, ReplyMediaQuery, MediaData)
 from .compatibility import CompatibilitySnapshot
+from .update_models import UpdateInstall, UpdateState
+from bridge_portable.updates import AutomaticChecks, Updates
 from .auth import AuthConfig, AuthStore, AuthError, Login, PasswordChange, AuthSession, AuthOk, DEFAULT_AUTH_PATH, SESSION_SECONDS
 
 def error(code: str, message: str, status: int):
@@ -77,7 +79,7 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         automatic_ai = enabled if ai_auto is None else ai_auto
         automatic_send = enabled if send_auto is None else send_auto
         owner = None
-        if enabled and data:
+        if data and (enabled or Updates().mode == 'portable'):
             owner = BusinessControl(bridge, app.state.ai, app.state.sender, data=data,
                                     monitor=enabled, ai_auto=automatic_ai, send_auto=automatic_send)
         else:
@@ -101,7 +103,9 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         app.state.auth = AuthStore(auth_path if auth_path is not None else os.environ.get('BRIDGE_AUTH_DATABASE', str(DEFAULT_AUTH_PATH)))
         try:
             async with business_lifespan(app):
-                yield
+                checks = AutomaticChecks()
+                try: yield
+                finally: checks.close()
         finally:
             app.state.auth.close()
 
@@ -135,6 +139,9 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
             response = error('csrf_invalid', '登录校验已失效，请刷新页面重试。', 403)
         elif request.url.path.startswith('/api/v1/auth/') and len(await request.body()) > 8192:
             response = error('invalid_request', '请求格式不正确', 422)
+        elif (request.method == 'POST' and getattr(getattr(request.app.state, 'ai', None), 'update_draining', False)
+              and not request.url.path.startswith(('/api/v1/updates/', '/api/v1/auth/'))):
+            response = error('update_draining', '正在准备升级，请稍后重试。', 503)
         else:
             response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
@@ -203,6 +210,20 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
     @app.get("/api/v1/health", response_model=Health)
     async def health():
         return Health()
+
+    @app.post('/api/v1/updates/query', response_model=UpdateState, responses=failures)
+    def update_query(_body: JsonRequest):
+        return Updates().query()
+
+    @app.post('/api/v1/updates/check', response_model=UpdateState, responses=failures)
+    def update_check(_body: JsonRequest):
+        return Updates().check(force=True)
+
+    @app.post('/api/v1/updates/install', response_model=UpdateState, status_code=202, responses=failures)
+    def update_install(body: UpdateInstall):
+        try: return Updates().install(body.version, body.release_id, from_web=True)
+        except (OSError, ValueError) as exc:
+            return error('update_conflict', str(exc) if isinstance(exc, ValueError) else '更新操作正忙或无法写入，请重试。', 409)
 
     @app.post("/api/v1/account-scans", response_model=ScanTask, status_code=202,
               responses=failures)

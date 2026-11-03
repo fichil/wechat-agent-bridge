@@ -17,6 +17,7 @@ class AiExecution:
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ai-request")
         self.lock = threading.RLock()
         self.pending = set()
+        self.update_draining = False
         self.conversation_locks = {}
         self.stopped = threading.Event()
         self.wake = threading.Event()
@@ -31,7 +32,7 @@ class AiExecution:
 
     def submit(self, key, work):
         with self.lock:
-            if self.stopped.is_set():
+            if self.stopped.is_set() or self.update_draining:
                 raise ConversationError("service_stopping", "服务正在停止。", 503)
             if key in self.pending:
                 return
@@ -184,6 +185,7 @@ class AiExecution:
             except ConversationError: pass  # Account/run may have been deleted while HTTP was in flight.
 
     def tick(self):
+        if self.update_draining: return
         for run in self.store.ai_retry_candidates():
             with self.lock:
                 if len(self.pending) >= 2 or self.stopped.is_set(): break

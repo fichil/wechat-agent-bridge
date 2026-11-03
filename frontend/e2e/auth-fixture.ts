@@ -1,6 +1,18 @@
 import type { Route } from "@playwright/test";
 
 export async function mockAuthenticatedSession(route: Route, path: string) {
+  if (path === "/api/v1/updates/query") {
+    await route.fulfill({
+      json: {
+        mode: "source",
+        current_version: "source",
+        current_commit: "source",
+        can_install: false,
+        releases_url: "https://github.com/fichil/wechat-agent-bridge/releases",
+      },
+    });
+    return true;
+  }
   if (path === "/api/v1/compatibility/query") {
     await route.fulfill({
       json: {
