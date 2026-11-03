@@ -3,6 +3,82 @@ import { mockAuthenticatedSession } from "./auth-fixture";
 import { snapshot } from "../tests/fixtures";
 import type { NotificationSettings } from "../src/api";
 
+test("QQ preset preserves recipient, requires a fresh secret and shows retry diagnostics", async ({
+  page,
+}) => {
+  let settings: NotificationSettings = {
+    revision: 3,
+    enabled: true,
+    recipient: "owner@gmail.com",
+    sender: "old@gmail.com",
+    host: "smtp.gmail.com",
+    port: 465,
+    username: "old@gmail.com",
+    security: "ssl",
+    has_password: true,
+    password_readable: true,
+    latest: {
+      notification_id: "outage",
+      status: "queued",
+      attempts: 8,
+      stage: "connect",
+      error_code: "connection_timeout",
+      last_attempt_at: 1793664000,
+      next_at: 1793665800,
+    },
+  };
+  let saves = 0;
+  await page.routeWebSocket("**/api/v1/events", (socket) =>
+    socket.onMessage(() => socket.send(JSON.stringify({ type: "ready" }))),
+  );
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (await mockAuthenticatedSession(route, path)) return;
+    if (path.endsWith("/accounts/query"))
+      return route.fulfill({ json: snapshot() });
+    if (path.endsWith("/notification-settings/query"))
+      return route.fulfill({ json: settings });
+    if (path.endsWith("/notification-settings/update")) {
+      const { password, expected_revision, ...fields } = route
+        .request()
+        .postDataJSON();
+      expect(password).toBe("qq-synthetic-only");
+      expect(expected_revision).toBe(3);
+      expect(fields.recipient).toBe("owner@gmail.com");
+      expect(fields.host).toBe("smtp.qq.com");
+      settings = { ...settings, ...fields, revision: 4 };
+      saves++;
+      return route.fulfill({ json: settings });
+    }
+    throw new Error(path);
+  });
+  await page.goto("/settings/notifications");
+  await expect(page.getByText(/下次重试：/)).toBeVisible();
+  await expect(page.getByText(/原因：connection_timeout/)).toBeVisible();
+  await page.getByRole("button", { name: "使用 QQ 邮箱配置" }).click();
+  await expect(page.getByLabel("SMTP 服务器", { exact: true })).toHaveValue(
+    "smtp.qq.com",
+  );
+  await expect(page.getByLabel("收件邮箱", { exact: true })).toHaveValue(
+    "owner@gmail.com",
+  );
+  await page.getByLabel("发件邮箱", { exact: true }).fill("synthetic@qq.com");
+  await page
+    .getByLabel("SMTP 用户名", { exact: true })
+    .fill("synthetic@qq.com");
+  await page.getByRole("button", { name: "保存邮件设置" }).click();
+  expect(saves).toBe(0);
+  await page
+    .getByLabel("SMTP 授权码", { exact: true })
+    .fill("qq-synthetic-only");
+  await page.getByRole("button", { name: "保存邮件设置" }).click();
+  await expect(
+    page.getByText("邮件设置已保存。", { exact: true }),
+  ).toBeVisible();
+  expect(saves).toBe(1);
+  await expect(page.getByLabel("SMTP 授权码", { exact: true })).toHaveValue("");
+});
+
 test("global SMTP settings save without echoing secrets, preserve blank password and test delivery", async ({
   page,
 }) => {

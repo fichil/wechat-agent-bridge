@@ -102,21 +102,16 @@ class Discovery:
             result = browser_values(self.probe())
             # Validate before persisting any result from a reader.
             checked = AccountSnapshot.model_validate(dict(result, scan_id=uuid4().hex, scanned_at=now()))
-            with self.lock:
-                result = self.bridge.store.save_accounts(checked.model_dump(mode="json"), generation)
-                self.live_accounts = {a['account_id']: Account.model_validate(dict(a, source_state='online'))
-                    for a in result['accounts'] if a.get('account_id') and a.get('instances')}
-                self.latest = result
-                self.needs_rediscovery = bool(not result['summary']['coverage_complete'] or result.get('skipped_instances') or not self.live_accounts)
-                self.bridge.compatibility.observe(result)
-                self.bridge.process_signature = tuple(sorted((i['pid'],int(i['created'])) for i in result.get('client_instances',[])))
+            result = self.bridge.store.save_accounts(checked.model_dump(mode="json"), generation, publish=self.publish)
+            self.bridge.compatibility.observe(result, generation=generation)
             for item in result["accounts"]:
                 if item.get("account_id"):
                     record_source(self.bridge.store,"accounts",{},item,aid=item["account_id"],automatic=automatic,elapsed=time.monotonic()-started)
             record_source(self.bridge.store,"accounts",{},dict(account_count=len(result["accounts"]),summary=result["summary"]),automatic=automatic,elapsed=time.monotonic()-started)
             return dict(summary=result["summary"], exit_code=result["exit_code"], error=result.get("error"))
         except Exception as exc:
-            if isinstance(exc, ConversationError) and exc.code == 'account_scan_obsolete':
+            if ((isinstance(exc, ConversationError) and exc.code == 'account_scan_obsolete') or
+                    generation != self.bridge.store.call(lambda: self.bridge.store.account_generation)):
                 self.bridge.process_signature = None
                 return dict(error='account_scan_obsolete')
             self.bridge.store.compatibility_hold('probe_failed')
@@ -124,11 +119,21 @@ class Discovery:
             record_source(self.bridge.store,"accounts",{},None,automatic=automatic,elapsed=time.monotonic()-started,error="probe_failed")
             from wechat_account_probe.models import failure_result
             result = failure_result("probe_failed")
-            self.bridge.store.save_accounts(result)
-            with self.lock:
-                self.live_accounts = {}
-                self.latest = dict(result, scan_id=uuid4().hex, scanned_at=now())
+            try:
+                self.bridge.store.save_accounts(dict(result, scan_id=uuid4().hex, scanned_at=now()),
+                                               generation, publish=self.publish)
+            except ConversationError as failed:
+                if failed.code != 'account_scan_obsolete': raise
             return dict(summary=result["summary"], exit_code=1, error="probe_failed")
+
+    def publish(self, result):
+        live = {a['account_id']: Account.model_validate(dict(a, source_state='online'))
+                for a in result['accounts'] if a.get('account_id') and a.get('instances')}
+        with self.lock:
+            self.live_accounts = live
+            self.latest = result
+            self.needs_rediscovery = bool(not result['summary']['coverage_complete'] or result.get('skipped_instances') or not live)
+            self.bridge.process_signature = tuple(sorted((i['pid'], int(i['created'])) for i in result.get('client_instances', [])))
 
     def task(self, scan_id):
         return ScanTask.model_validate(self.bridge.queue.query(scan_id))
@@ -136,14 +141,16 @@ class Discovery:
     def snapshot(self):
         from wechat_account_probe.models import failure_result
         with self.lock:
-            value = dict(self.latest or dict(failure_result("not_scanned"), scan_id="archive", scanned_at=now()))
+            latest = self.latest
+            live_accounts = dict(self.live_accounts)
+            value = dict(latest or dict(failure_result("not_scanned"), scan_id="archive", scanned_at=now()))
         values = self.bridge.store.accounts()
         for item in values:
-            live = self.live_accounts.get(item["account_id"])
+            live = live_accounts.get(item["account_id"])
             item["instances"] = [i.model_dump() for i in live.instances] if live and item["source_state"] == "online" else []
         value["accounts"] = values
-        value["accounts"].extend(a for a in (self.latest or {}).get("accounts", []) if not a.get("account_id"))
-        if self.latest is None:
+        value["accounts"].extend(a for a in (latest or {}).get("accounts", []) if not a.get("account_id"))
+        if latest is None:
             value.update(exit_code=0, error=None)
         return AccountSnapshot.model_validate(value)
 
@@ -281,8 +288,8 @@ class Bridge:
             self.thread.start()
 
     def delete_account(self, aid, revision):
+        result = self.store.delete_account(aid, revision)
         with self.discovery.lock:
-            result = self.store.delete_account(aid, revision)
             self.discovery.live_accounts.pop(aid, None)
             if self.discovery.latest:
                 self.discovery.latest['accounts'] = [a for a in self.discovery.latest['accounts'] if a.get('account_id') != aid]

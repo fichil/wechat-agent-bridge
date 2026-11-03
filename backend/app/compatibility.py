@@ -69,37 +69,37 @@ class Compatibility:
         if enabled:
             self.store.compatibility_start()
 
-    def observe(self, result):
+    def observe(self, result, *, generation=None):
         if not self.enabled:
             return
+        instances = result.get('client_instances', [])
+        states, bound = {}, set()
+        for account in result.get('accounts', []):
+            aid = account.get('account_id')
+            if not aid:
+                continue
+            current = account.get('instances', [])
+            caps = {name: bool(current) for name in CAPABILITIES}
+            revisions = []
+            for item in current:
+                profile = profile_for_hash(item.get('core_sha256',''))
+                valid = profile and profile['version'] == item['version']
+                for name in caps:
+                    caps[name] = caps[name] and bool(valid and profile['capabilities'][name])
+                if valid:
+                    revisions.append(profile_digest(profile))
+                bound.add((item['pid'], int(item['created'])))
+            fingerprint = hashlib.sha256(json.dumps([signature(current), sorted(revisions)]).encode()).hexdigest()
+            states[aid] = dict(fingerprint=fingerprint, readable=caps['account'] and caps['messages'],
+                               capabilities=caps, instances=current)
+        # An explicitly observed logged-out supported instance cannot own archived accounts.
+        skipped = {(i['pid'], int(i['created'])) for a in result.get('skipped_instances', [])
+                   if a.get('status') == 'not_logged_in' for i in a.get('instances', [])}
+        unresolved = [i for i in instances if (i['pid'], int(i['created'])) not in bound | skipped]
+        self.store.compatibility_observe(states, unresolved, generation=generation)
+        if result.get('issues') or result.get('error'):
+            self.store.compatibility_hold('probe_failed', dict(instances=unresolved))
         with self.lock:
-            instances = result.get('client_instances', [])
-            states, bound = {}, set()
-            for account in result.get('accounts', []):
-                aid = account.get('account_id')
-                if not aid:
-                    continue
-                current = account.get('instances', [])
-                caps = {name: bool(current) for name in CAPABILITIES}
-                revisions = []
-                for item in current:
-                    profile = profile_for_hash(item.get('core_sha256',''))
-                    valid = profile and profile['version'] == item['version']
-                    for name in caps:
-                        caps[name] = caps[name] and bool(valid and profile['capabilities'][name])
-                    if valid:
-                        revisions.append(profile_digest(profile))
-                    bound.add((item['pid'], int(item['created'])))
-                fingerprint = hashlib.sha256(json.dumps([signature(current), sorted(revisions)]).encode()).hexdigest()
-                states[aid] = dict(fingerprint=fingerprint, readable=caps['account'] and caps['messages'],
-                                   capabilities=caps, instances=current)
-            # An explicitly observed logged-out supported instance cannot own archived accounts.
-            skipped = {(i['pid'], int(i['created'])) for a in result.get('skipped_instances', [])
-                       if a.get('status') == 'not_logged_in' for i in a.get('instances', [])}
-            unresolved = [i for i in instances if (i['pid'], int(i['created'])) not in bound | skipped]
-            self.store.compatibility_observe(states, unresolved)
-            if result.get('issues') or result.get('error'):
-                self.store.compatibility_hold('probe_failed', dict(instances=unresolved))
             self.seen = signature(instances)
 
     def check_processes(self):
@@ -110,11 +110,12 @@ class Compatibility:
             instances, issues = enumerate_instances()
             values = [dict(asdict(i), created=str(i.created)) for i in instances]
             with self.lock:
-                if issues or signature(values) != self.seen:
-                    if issues or self.seen is not None:
-                        self.store.compatibility_hold('process_changed', dict(instances=values))
-                    self.bridge.discovery.start()
-                    return False
+                seen = self.seen
+            if issues or signature(values) != seen:
+                if issues or seen is not None:
+                    self.store.compatibility_hold('process_changed', dict(instances=values))
+                self.bridge.discovery.start()
+                return False
             return True
         except Exception:
             self.store.compatibility_hold('probe_failed')
@@ -125,41 +126,47 @@ class Compatibility:
             return
         self.check_processes()
         self.store.call(self.store._compatibility_require, aid)
+        fence = self.store.compatibility_fence(aid)
         capability = self.sender.capability(aid, refresh=True) if self.sender else dict(ready=False, code='not_checked')
+        self.store.call(self.store._compatibility_check_fence, aid, fence)
         if not capability['ready']:
             if capability['code'] in TRANSIENT_SEND_HOLDS:
-                self.store.compatibility_send_state(aid, False, capability['code'])
+                self.store.compatibility_send_state(aid, False, capability['code'], expected=fence)
             else:
-                self.store.compatibility_pause(aid, capability['code'])
+                self.store.compatibility_pause(aid, capability['code'], expected=fence)
             self.store.call(self.store._compatibility_require, aid)
 
     def reconcile(self):
         """Run by the background readiness owner, never dependent on a browser query."""
         if not self.enabled or self.sender is None or self.store.deployment_hold:
             return
-        with self.lock:
-            if not self.check_processes():
-                return
-            rows = self.store.compatibility_rows()
-            for row in rows:
-                aid = row['scope']
-                if aid == '*':
+        if not self.check_processes():
+            return
+        rows = self.store.compatibility_rows()
+        for row in rows:
+            aid = row['scope']
+            if aid == '*':
+                continue
+            try:
+                fence = self.store.compatibility_fence(aid)
+                if (row['revision'], row['fingerprint']) != fence[-2:]:
                     continue
-                try:
-                    snapshot = json.loads(row['snapshot'])
-                    account = self.bridge.discovery.account(aid)
-                    caps = snapshot.get('capabilities', {})
-                    reason = ('source_offline' if account.source_state != 'online' else
-                              'source_ambiguous' if len(account.instances) != 1 else
-                              'unsupported_build' if not all(caps.get(k) for k in ('account', 'messages', 'send_text')) else
-                              'sync_error' if account.sync_issues else
-                              'sync_pending' if account.sync_pending and snapshot.get('needs_baseline', True) else '')
-                    send = self.sender.capability(aid, refresh=True) if not reason else dict(ready=False, code=reason)
-                    state = self.store.compatibility_send_state(aid, send['ready'], send.get('code', 'native_unavailable'))
-                    if send['ready']:
-                        self.store.compatibility_resume(aid, state['revision'])
-                except ConversationError:
-                    continue  # Identity/revision may change during inspection; retry next pass.
+                snapshot = json.loads(row['snapshot'])
+                account = self.bridge.discovery.account(aid)
+                if account.source_state == 'online' and signature([i.model_dump() for i in account.instances]) != signature(snapshot.get('instances', [])):
+                    continue
+                caps = snapshot.get('capabilities', {})
+                reason = ('source_offline' if account.source_state != 'online' else
+                          'source_ambiguous' if len(account.instances) != 1 else
+                          'unsupported_build' if not all(caps.get(k) for k in ('account', 'messages', 'send_text')) else
+                          'sync_error' if account.sync_issues else
+                          'sync_pending' if account.sync_pending and snapshot.get('needs_baseline', True) else '')
+                send = self.sender.capability(aid, refresh=True) if not reason else dict(ready=False, code=reason)
+                state = self.store.compatibility_send_state(aid, send['ready'], send.get('code', 'native_unavailable'), expected=fence)
+                if send['ready']:
+                    self.store.compatibility_resume(aid, state['revision'], expected=state['_fence'])
+            except ConversationError:
+                continue  # Identity/revision may change during inspection; retry next pass.
 
     def query(self, refresh=True, refresh_sender=False):
         rows = {r['scope']: r for r in self.store.compatibility_rows()}

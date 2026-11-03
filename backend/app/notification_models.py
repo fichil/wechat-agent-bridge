@@ -42,6 +42,9 @@ class NotificationResult(BaseModel):
     attempts: int = 0
     message: str | None = None
     next_at: float | None = None
+    stage: str | None = None
+    error_code: str | None = None
+    last_attempt_at: float | None = None
 
 
 class NotificationSettings(NotificationFields):

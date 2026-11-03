@@ -2531,6 +2531,12 @@ export interface components {
             message?: string | null;
             /** Next At */
             next_at?: number | null;
+            /** Stage */
+            stage?: string | null;
+            /** Error Code */
+            error_code?: string | null;
+            /** Last Attempt At */
+            last_attempt_at?: number | null;
         };
         /** NotificationSettings */
         NotificationSettings: {

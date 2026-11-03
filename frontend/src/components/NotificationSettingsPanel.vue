@@ -50,6 +50,35 @@ const statuses: Record<string, string> = {
   unknown: "结果待核对",
   cancelled: "已取消",
 };
+const stages: Record<string, string> = {
+  credentials: "读取授权码",
+  connect: "连接服务器",
+  greeting: "SMTP 握手",
+  tls: "TLS 验证",
+  authentication: "账号认证",
+  sender: "提交发件人",
+  recipient: "提交收件人",
+  data: "提交邮件",
+};
+const credentialsChanged = computed(
+  () =>
+    !!original.value?.has_password &&
+    (draft.value.host.toLowerCase() !== original.value.host.toLowerCase() ||
+      draft.value.username !== original.value.username),
+);
+const timeText = (value: number) =>
+  new Date(value * 1000).toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour12: false,
+  });
+function useQQ() {
+  draft.value.host = "smtp.qq.com";
+  draft.value.port = 465;
+  draft.value.security = "ssl";
+  if (!/@(qq|foxmail)\.com$/i.test(draft.value.sender)) draft.value.sender = "";
+  draft.value.username = draft.value.sender;
+  password.value = "";
+}
 function apply(value: NotificationSettings) {
   original.value = value;
   draft.value = {
@@ -87,6 +116,10 @@ async function save() {
   error.value = notice.value = "";
   generation++;
   try {
+    if (credentialsChanged.value && !password.value) {
+      error.value = "更换 SMTP 服务器或用户名后，请重新填写授权码。";
+      return false;
+    }
     const result = await api.saveNotificationSettings({
       ...draft.value,
       expected_revision: original.value.revision,
@@ -147,6 +180,7 @@ onBeforeUnmount(() => {
     <p class="settings-note">
       所有账号共用。已在线账号离线或身份无法确认持续 1
       分钟后通知，同一次异常只提醒一次。后台需持续运行并能连接邮件服务器。
+      暂时连接失败会持续退避重试，最长每 30 分钟一次；恢复在线后取消待发提醒。
     </p>
     <p v-if="error" class="conversation-alert" role="alert">{{ error }}</p>
     <p v-if="external" class="conversation-alert">
@@ -155,6 +189,16 @@ onBeforeUnmount(() => {
       >
     </p>
     <form v-if="original" @submit.prevent="save" class="notification-form">
+      <div>
+        <ElButton :disabled="busy" @click="useQQ">使用 QQ 邮箱配置</ElButton>
+      </div>
+      <p
+        v-if="draft.host.toLowerCase() === 'smtp.qq.com'"
+        class="settings-note"
+      >
+        QQ 邮箱使用完整邮箱地址作为 SMTP 用户名，并填写开启 SMTP
+        服务后生成的授权码。服务器直接连接，不依赖 VPN。
+      </p>
       <label class="notification-toggle"
         ><input
           type="checkbox"
@@ -215,6 +259,7 @@ onBeforeUnmount(() => {
           type="password"
           maxlength="8192"
           autocomplete="new-password"
+          :required="credentialsChanged"
           :placeholder="
             original.has_password
               ? '已保存，留空保留'
@@ -227,6 +272,9 @@ onBeforeUnmount(() => {
         class="conversation-alert"
       >
         已有授权码无法在当前 Windows 用户下读取，请重新填写。
+      </p>
+      <p v-if="credentialsChanged" class="settings-note">
+        服务器或用户名已更改，必须填写新的授权码。
       </p>
       <div class="editor-actions">
         <ElButton type="primary" native-type="submit" :loading="busy"
@@ -242,6 +290,22 @@ onBeforeUnmount(() => {
         最近投递：{{ statuses[original.latest.status] }} · 已尝试
         {{ original.latest.attempts }} 次<span v-if="original.latest.message">
           · {{ original.latest.message }}</span
+        >
+        <span v-if="original.latest.stage">
+          · 阶段：{{
+            stages[original.latest.stage] ?? original.latest.stage
+          }}</span
+        >
+        <span v-if="original.latest.error_code">
+          · 原因：{{ original.latest.error_code }}</span
+        >
+        <span v-if="original.latest.last_attempt_at">
+          · 最近尝试：{{
+            timeText(original.latest.last_attempt_at)
+          }}（北京时间）</span
+        >
+        <span v-if="original.latest.next_at">
+          · 下次重试：{{ timeText(original.latest.next_at) }}（北京时间）</span
         >
       </p>
     </form>

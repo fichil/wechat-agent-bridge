@@ -21,7 +21,9 @@ class NotificationStoreMixin:
     def _notification_public(row):
         payload = json.loads(row['payload'])
         return dict(notification_id=row['notification_id'], status=row['status'], attempts=row['attempts'],
-                    message=payload.get('message'), next_at=row['next_at'] if row['status']=='queued' else None)
+                    message=payload.get('message'), next_at=row['next_at'] if row['status']=='queued' else None,
+                    stage=payload.get('stage'), error_code=payload.get('error_code'),
+                    last_attempt_at=payload.get('last_attempt_at'))
 
     def notification_settings(self):
         return self.call(self._notification_settings)
@@ -35,16 +37,30 @@ class NotificationStoreMixin:
                 self.db.execute('BEGIN IMMEDIATE')
                 old = self.db.execute('SELECT * FROM notification_settings').fetchone()
                 if old['revision'] != body.expected_revision: conflict()
+                previous = {**NotificationFields().model_dump(), **json.loads(old['payload'])}
+                identity_changed = (previous['host'].lower(), previous['username']) != (fields['host'].lower(), fields['username'])
+                if identity_changed and old['secret'] and secret is None:
+                    raise ConversationError('smtp_password_required', '更换 SMTP 服务器或用户名后，请重新填写授权码。', 422)
                 chosen = secret if secret is not None else old['secret']
                 if fields['enabled'] and (not chosen or not secret_protection.verify(bytes(chosen))):
                     raise ConversationError('smtp_password_required', '请填写可用的 SMTP 授权码。', 422)
                 if json.loads(old['payload']) != fields or secret is not None:
                     self.db.execute('UPDATE notification_settings SET revision=revision+1,payload=?,secret=?', (json.dumps(fields), chosen))
-                    self.db.execute("UPDATE notification_outbox SET status='cancelled' WHERE status='queued'")
-                    self.db.execute('DELETE FROM account_observations')
-                    if fields['enabled']:
-                        for row in self.db.execute("SELECT account_id,source_state FROM accounts WHERE source_state='online'").fetchall():
-                            self._observe_account(row[0], row[1], 'notification_enabled')
+                    revision = old['revision'] + 1
+                    self.db.execute("UPDATE notification_outbox SET status='cancelled' WHERE kind='test' AND status='queued'")
+                    if not fields['enabled'] or not previous['enabled']:
+                        self.db.execute("UPDATE notification_outbox SET status='cancelled' WHERE kind='outage' AND status='queued'")
+                        self.db.execute('DELETE FROM account_observations')
+                        if fields['enabled']:
+                            for row in self.db.execute("SELECT account_id,source_state FROM accounts WHERE source_state='online'").fetchall():
+                                self._observe_account(row[0], row[1], 'notification_enabled')
+                    else:
+                        # Keep outage identity across a transport/configuration correction.
+                        for row in self.db.execute("SELECT * FROM notification_outbox WHERE kind='outage' AND status IN ('queued','failed','cancelled')").fetchall():
+                            payload = json.loads(row['payload'])
+                            if self._notification_episode_current(row) and (row['status']=='queued' or payload.get('safe_to_retry')):
+                                self.db.execute("UPDATE notification_outbox SET status='queued',settings_revision=?,next_at=? WHERE notification_id=?",
+                                                (revision, time.time(), row['notification_id']))
             self.notify(dict(type='changed', resources=['notification_settings']))
             return self._notification_settings()
         return self.call(write)
@@ -87,6 +103,10 @@ class NotificationStoreMixin:
             return self._notification_public(row)
         return self.call(write)
 
+    def _notification_episode_current(self, row):
+        obs = self.db.execute('SELECT state,event_id FROM account_observations WHERE account_id=?', (row['account_id'],)).fetchone()
+        return bool(obs and obs['state'] != 'online' and obs['event_id'] == row['notification_id'])
+
     def claim_notification(self):
         def write():
             if self.deployment_hold or self.migration_hold: return None
@@ -105,7 +125,9 @@ class NotificationStoreMixin:
                     if row['settings_revision'] != settings['revision'] or (row['kind']=='outage' and (not settings['enabled'] or not obs or obs['state']=='online' or obs['event_id']!=row['notification_id'])):
                         self.db.execute("UPDATE notification_outbox SET status='cancelled' WHERE notification_id=?", (row['notification_id'],))
                         continue
-                    self.db.execute("UPDATE notification_outbox SET status='sending',attempts=attempts+1 WHERE notification_id=?", (row['notification_id'],))
+                    payload = {**json.loads(row['payload']), 'last_attempt_at':time.time()}
+                    self.db.execute("UPDATE notification_outbox SET status='sending',attempts=attempts+1,payload=? WHERE notification_id=?",
+                                    (json.dumps(payload),row['notification_id']))
                     secret = self.db.execute('SELECT secret FROM notification_settings').fetchone()[0]
                     return dict(row, settings=settings, encrypted_password=bytes(secret),
                                 state=obs['state'] if obs else None, attempts=row['attempts']+1)
@@ -124,18 +146,37 @@ class NotificationStoreMixin:
         return self.call(query)
 
     def finish_notification(self, job, status, message, retry=False):
-        def write():
+        def write(status=status):
             with self.db:
                 row = self.db.execute('SELECT * FROM notification_outbox WHERE notification_id=?', (job['notification_id'],)).fetchone()
                 if not row or row['status'] != 'sending': return
-                payload = {**json.loads(row['payload']), 'message':message}
-                delay = (60,300,900)[row['attempts']-1] if retry and row['attempts'] <= 3 else None
-                self.db.execute('UPDATE notification_outbox SET status=?,next_at=?,payload=? WHERE notification_id=?',
-                                ('queued' if delay else status,time.time()+(delay or 0),json.dumps(payload),row['notification_id']))
+                diagnostic = job.get('diagnostic', dict(retryable=retry, safe_to_retry=status in ('failed','cancelled')))
+                payload = {**json.loads(row['payload']), **diagnostic, 'message':message}
+                settings = self.db.execute('SELECT revision,payload FROM notification_settings').fetchone()
+                enabled = json.loads(settings['payload']).get('enabled',False)
+                current = enabled and self._notification_episode_current(row)
+                changed = settings['revision'] != row['settings_revision']
+                revision = row['settings_revision']
+                delay = None
+                if row['kind'] == 'outage' and status not in ('sent','unknown'):
+                    if not current:
+                        status = 'cancelled'
+                    elif changed and payload.get('safe_to_retry'):
+                        delay, revision = 0, settings['revision']
+                    elif retry:
+                        delay = (60,300,900,1800)[min(row['attempts']-1,3)]
+                elif row['kind'] == 'test' and retry and not changed and row['attempts'] <= 3:
+                    delay = (60,300,900)[row['attempts']-1]
+                self.db.execute('UPDATE notification_outbox SET status=?,next_at=?,payload=?,settings_revision=? WHERE notification_id=?',
+                                ('queued' if delay is not None else status,time.time()+(delay or 0),json.dumps(payload),revision,row['notification_id']))
             self.notify(dict(type='changed', resources=['notification_settings']))
         self.call(write)
 
     def _notification_recover(self):
         self.db.execute("UPDATE notification_outbox SET status='unknown',payload=json_set(payload,'$.message','发送期间服务中断，请核对邮箱；不会自动重复发送。') WHERE status='sending'")
+        self.db.execute("""UPDATE notification_outbox SET status='queued',
+            payload=json_set(payload,'$.safe_to_retry',json('true'),'$.retryable',json('true'))
+            WHERE kind='outage' AND status='failed'
+              AND json_extract(payload,'$.message')='无法连接邮件服务器或完成 TLS 验证。'""")
         # A startup scan establishes fresh facts before any outage mail is sent.
         self.notification_scan_ready = False

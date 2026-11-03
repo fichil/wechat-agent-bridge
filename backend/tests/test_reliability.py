@@ -365,3 +365,78 @@ class ReliabilityTests(RoleTestCase):
         self.store.finish_notification(job,'failed','temporary',True)
         self.mail_config(False)
         self.assertIsNone(self.store.claim_notification())
+
+
+    def test_outage_retries_continue_at_30_minutes_and_keep_diagnostics(self):
+        self.mail_config()
+        with patch('time.time', return_value=1000): self.offline()
+        current = 1060
+        for attempt, delay in enumerate((60,300,900,1800,1800,1800), 1):
+            with patch('time.time', return_value=current):
+                job = self.store.claim_notification()
+                self.assertEqual(job['attempts'], attempt)
+                job['diagnostic'] = dict(stage='connect',error_code='connection_timeout',safe_to_retry=True,retryable=True)
+                self.store.finish_notification(job,'failed','temporary',True)
+                latest = self.store.notification_settings()['latest']
+                self.assertEqual((latest['status'],latest['next_at']),('queued',current+delay))
+                self.assertEqual(latest['last_attempt_at'],current)
+                self.assertEqual(latest['error_code'],'connection_timeout')
+            current += delay
+        self.store.set_state(self.ids[0],'online')
+        with patch('time.time',return_value=current): self.assertIsNone(self.store.claim_notification())
+
+    def test_transport_change_requires_password_and_preserves_outage_identity(self):
+        settings=self.mail_config()
+        with patch('time.time',return_value=1000): self.offline()
+        with patch('time.time',return_value=1060): job=self.store.claim_notification()
+        self.store.finish_notification(job,'failed','authentication failed')
+        fields={k:settings[k] for k in ('enabled','recipient','sender','host','port','username','security')}
+        fields.update(host='smtp.qq.com',sender='synthetic@qq.com',username='synthetic@qq.com')
+        response=self.post('notification-settings/update',**fields,expected_revision=settings['revision'])
+        self.assertEqual(response.json()['code'],'smtp_password_required')
+        response=self.post('notification-settings/update',**fields,expected_revision=settings['revision'],password='new-synthetic-only')
+        self.assertEqual(response.status_code,200,response.text)
+        second=self.store.claim_notification()
+        self.assertEqual(second['notification_id'],job['notification_id'])
+        self.assertEqual(second['settings']['host'],'smtp.qq.com')
+        self.store.finish_notification(second,'sent','accepted')
+        fields['recipient']='another@example.test'
+        changed=self.post('notification-settings/update',**fields,expected_revision=response.json()['revision'])
+        self.assertEqual(changed.status_code,200)
+        self.assertIsNone(self.store.claim_notification())
+
+    def test_config_change_while_sending_requeues_only_definite_non_delivery(self):
+        for outcome in ('cancelled','sent','unknown'):
+            with self.subTest(outcome=outcome):
+                settings=self.mail_config()
+                self.store.set_state(self.ids[0],'online')
+                with patch('time.time',return_value=1000): self.offline()
+                with patch('time.time',return_value=1060): job=self.store.claim_notification()
+                fields={k:settings[k] for k in ('enabled','recipient','sender','host','port','username','security')}
+                fields['recipient']=outcome+'@example.test'
+                result=self.post('notification-settings/update',**fields,expected_revision=settings['revision'])
+                self.assertEqual(result.status_code,200,result.text)
+                self.assertFalse(self.store.notification_may_send(job))
+                self.store.finish_notification(job,outcome,'synthetic')
+                queued=self.store.claim_notification()
+                self.assertEqual(queued is not None,outcome=='cancelled')
+                if queued:self.store.finish_notification(queued,'sent','accepted')
+
+    def test_restart_preserves_retry_deadline_and_unknown_never_replays(self):
+        self.mail_config()
+        with patch('time.time',return_value=1000): self.offline()
+        with patch('time.time',return_value=1060):
+            job=self.store.claim_notification()
+            self.store.finish_notification(job,'failed','temporary',True)
+        def recover():
+            with self.store.db:self.store._notification_recover()
+        self.store.call(recover)
+        with patch('time.time',return_value=1120):
+            self.assertIsNone(self.store.claim_notification())
+            self.store.notification_scan_ready=True
+            second=self.store.claim_notification()
+            self.assertEqual(second['notification_id'],job['notification_id'])
+            self.assertEqual(second['attempts'],2)
+            self.store.finish_notification(second,'unknown','uncertain')
+        self.store.call(recover);self.store.notification_scan_ready=True
+        with patch('time.time',return_value=99999999):self.assertIsNone(self.store.claim_notification())

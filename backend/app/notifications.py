@@ -25,33 +25,56 @@ def send_mail(job):
         text = f"账号：{data.get('nickname') or '未取得昵称'}（{data.get('wxid') or '未取得标识'}）\n状态：{label}\n最后在线：{local(data['last_online_at'])}\n异常发现：{local(data['abnormal_since'])}\n时间均为北京时间。请检查服务器上的微信；若出现二维码，请重新扫码登录。"
     message.set_content(text)
     client, data_started = None, False
+    stage = 'credentials'
+    def result(status, message, retry=False, code=None, *, safe=False):
+        job['diagnostic'] = dict(stage=stage, error_code=code, retryable=retry, safe_to_retry=safe)
+        return status, message, retry
     try:
         password = secret_protection.reveal(job['encrypted_password'])
         context = ssl.create_default_context()
+        stage = 'connect'
         client = (smtplib.SMTP_SSL(fields['host'], fields['port'], timeout=20, context=context)
                   if fields['security']=='ssl' else smtplib.SMTP(fields['host'], fields['port'], timeout=20))
+        stage = 'greeting'
         client.ehlo()
         if fields['security']=='starttls':
+            stage = 'tls'
             client.starttls(context=context); client.ehlo()
+        stage = 'authentication'
         client.login(fields['username'], password)
+        stage = 'sender'
         code, _ = client.mail(fields['sender'])
         if code != 250: raise smtplib.SMTPSenderRefused(code, b'', fields['sender'])
+        stage = 'recipient'
         code, _ = client.rcpt(fields['recipient'])
         if code not in (250,251): raise smtplib.SMTPResponseException(code,b'')
         if not job.get('can_send', lambda: True)():
-            return 'cancelled', '账号或邮件设置已变化，邮件未提交。', False
+            return result('cancelled', '账号或邮件设置已变化，邮件未提交。', code='settings_or_account_changed', safe=True)
+        stage = 'data'
         data_started = True
         code, _ = client.data(message.as_bytes())
         if code != 250: raise smtplib.SMTPDataError(code,b'')
-        return 'sent', 'SMTP 服务器已接受邮件，请查看收件箱。', False
+        return result('sent', 'SMTP 服务器已接受邮件，请查看收件箱。')
     except smtplib.SMTPResponseException as exc:
-        return 'failed', f'邮件服务器拒绝请求（SMTP {exc.smtp_code}）。', 400 <= exc.smtp_code < 500
-    except (ssl.SSLCertVerificationError, smtplib.SMTPNotSupportedError):
-        return 'failed', '邮件服务器的 TLS 证书或认证方式不可用，请检查配置。', False
-    except (OSError, smtplib.SMTPException):
-        return ('unknown', '邮件投递结果不确定，请核对邮箱；不会自动重复发送。', False) if data_started else ('failed', '无法连接邮件服务器或完成 TLS 验证。', True)
+        return result('failed', f'邮件服务器拒绝请求（SMTP {exc.smtp_code}）。',
+                      400 <= exc.smtp_code < 500, f'smtp_{exc.smtp_code}', safe=True)
+    except ssl.SSLCertVerificationError:
+        stage = 'tls'
+        return result('failed', '邮件服务器的 TLS 证书验证失败，请检查配置。', code='tls_certificate_invalid', safe=True)
+    except smtplib.SMTPNotSupportedError:
+        return result('failed', '邮件服务器不支持所需的加密或认证方式，请检查配置。',
+                      code='smtp_feature_unsupported', safe=True)
+    except (OSError, smtplib.SMTPException) as exc:
+        code = ('connection_timeout' if isinstance(exc, TimeoutError) else
+                'tls_connection_failed' if isinstance(exc, ssl.SSLError) else
+                'smtp_disconnected' if isinstance(exc, smtplib.SMTPServerDisconnected) else 'connection_failed')
+        if data_started:
+            return result('unknown', '邮件投递结果不确定，请核对邮箱；不会自动重复发送。', code='delivery_uncertain')
+        return result('failed', '邮件连接中断或超时，尚未提交邮件，将按计划重试。', True, code, safe=True)
     except Exception:
-        return 'failed', '邮件配置或授权码不可用，请重新保存。', False
+        if data_started:
+            return result('unknown', '邮件投递结果不确定，请核对邮箱；不会自动重复发送。', code='delivery_uncertain')
+        return result('failed', '邮件配置或授权码不可用，请重新保存。', code='credentials_unavailable', safe=True)
     finally:
         if client:
             try: client.close()

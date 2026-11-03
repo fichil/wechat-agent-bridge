@@ -41,6 +41,19 @@ class CompatibilityStoreMixin:
     def compatibility_rows(self):
         return self.call(lambda: [dict(r) for r in self.db.execute('SELECT * FROM compatibility_state ORDER BY scope')])
 
+    def _compatibility_fence(self, aid):
+        self._account(aid)
+        row = self._compatibility_row(aid)
+        return (self.account_generation, self.source_generation, self._compatibility_row('*')['revision'],
+                row['revision'], row['fingerprint'])
+
+    def compatibility_fence(self, aid):
+        return self.call(self._compatibility_fence, aid)
+
+    def _compatibility_check_fence(self, aid, expected):
+        if expected is not None and self._compatibility_fence(aid) != expected:
+            raise ConversationError('revision_conflict', '微信身份或检查状态已变化，将自动重新检查。', 409)
+
     def _compatibility_blocked(self, aid):
         return self.deployment_hold or self.migration_hold or self.migration_pending_for(aid) or (self.compatibility_enforced and (
             self._compatibility_row('*')['held'] or self._compatibility_row(aid)['held']))
@@ -136,9 +149,10 @@ class CompatibilityStoreMixin:
             self.notify(dict(type='changed', resources=['compatibility', 'ai_runs']))
         self.call(write)
 
-    def compatibility_pause(self, aid, reason):
+    def compatibility_pause(self, aid, reason, *, expected=None):
         def write():
             with self.db:
+                self._compatibility_check_fence(aid, expected)
                 old = self._compatibility_row(aid)
                 if not old['held']:
                     self._compatibility_invalidate(aid)
@@ -146,10 +160,12 @@ class CompatibilityStoreMixin:
             self.notify(dict(type='changed', account_id=aid, resources=['compatibility','ai_runs']))
         self.call(write)
 
-    def compatibility_observe(self, states, unresolved):
+    def compatibility_observe(self, states, unresolved, *, generation=None):
         if not self.compatibility_enforced:
             return
         def write():
+            if generation is not None and generation != self.account_generation:
+                raise ConversationError('account_scan_obsolete', '账号已删除，请重新识别。', 409)
             with self.db:
                 self._compatibility_write('*', '', bool(unresolved), 'unidentified_client' if unresolved else '', dict(instances=unresolved))
                 for aid, value in states.items():
@@ -177,22 +193,26 @@ class CompatibilityStoreMixin:
             self.notify(dict(type='changed', resources=['compatibility', 'ai_runs']))
         self.call(write)
 
-    def compatibility_send_state(self, aid, ready, code):
+    def compatibility_send_state(self, aid, ready, code, *, expected=None):
         def write():
             with self.db:
+                self._compatibility_check_fence(aid, expected)
                 old = self._compatibility_row(aid)
                 snapshot = json.loads(old['snapshot'])
                 snapshot['send'] = dict(ready=bool(ready), code=code)
                 self._compatibility_write(aid, old['fingerprint'], bool(old['held'] or not ready),
                                           code if not ready else old['reason'], snapshot)
-                return self._compatibility_row(aid)
+                result = self._compatibility_row(aid)
+                if expected is not None: result['_fence'] = self._compatibility_fence(aid)
+                return result
         return self.call(write)
 
-    def compatibility_resume(self, aid, expected_revision):
+    def compatibility_resume(self, aid, expected_revision, *, expected=None):
         """Internal compare-and-swap after automatic live checks; no public resume action."""
         def write():
             with self.db:
                 self.db.execute('BEGIN IMMEDIATE')
+                self._compatibility_check_fence(aid, expected)
                 state = self._compatibility_row(aid)
                 if state['revision'] != expected_revision:
                     raise ConversationError('revision_conflict', '兼容状态已变化，将自动重新检查。', 409)

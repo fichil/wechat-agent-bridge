@@ -98,6 +98,7 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
         self.notify = lambda event: None
         self.source_reads = {}
         self.source_versions = {}
+        self.source_generation = 0
         from bridge_paths import ROOT as bundle_root
         try: self.build_commit = json.loads((bundle_root/'portable-manifest.json').read_text(encoding='utf-8')).get('commit','source')
         except (OSError,ValueError): self.build_commit = 'source'
@@ -314,7 +315,7 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
         row = self.db.execute("SELECT mime_type,data FROM media_cache WHERE cache_key=?", (key,)).fetchone()
         return dict(mime_type=row[0], data_base64=base64.b64encode(row[1]).decode()) if row else None
 
-    def save_accounts(self, snapshot, scan_generation=None):
+    def save_accounts(self, snapshot, scan_generation=None, *, publish=None):
         def write():
             if scan_generation is not None and scan_generation != self.account_generation:
                 raise ConversationError('account_scan_obsolete', '账号已删除，请重新识别。', 409)
@@ -344,6 +345,10 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
                     elif row[0] not in found:
                         self._observe_account(row[0], state, snapshot.get('error') or 'account_scan')
             self.notification_scan_ready = True
+            self.source_generation += 1
+            # Publish only memory on the SQL owner, ordered with deletion and state changes.
+            if publish is not None:
+                publish(snapshot)
             for event in events:
                 self.notify(event)
             return snapshot
@@ -381,6 +386,7 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
                 self.db.execute("UPDATE accounts SET source_state=? WHERE account_id=?", (state, aid))
                 self._observe_account(aid, state, reason)
                 event = self._changed(aid, ["accounts"])
+            self.source_generation += 1
             self.notify(event)
         self.call(write)
 
