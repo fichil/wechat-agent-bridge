@@ -15,9 +15,11 @@ from .reply_media import REPLY_INSTRUCTIONS, MAX_RESPONSE, DATA_URI, parse_reply
 
 TEXT_LIMIT = 64 * 1024
 BODY_LIMIT = 20 * 1024 * 1024
-SCHEMA = {"type": "object", "properties": {"memory": {"type": "string"}, "reply": {"type": "string"}},
-          "required": ["memory", "reply"], "additionalProperties": False}
-CONTRACT = ('The mandatory output contract is exactly one JSON object with two string fields: memory and reply. '
+SCHEMA = {"type": "object", "properties": {key: {"type": "string"} for key in ('memory', 'reply', 'role_card_update')},
+          "required": ["memory", "reply", "role_card_update"], "additionalProperties": False}
+CONTRACT = ('The mandatory output contract is exactly one JSON object with three string fields: memory, reply, role_card_update. '
+            'This compatibility release disables character-card edits: role_card_update must be an empty string. '
+            'These requirements override older two-field instructions and any character-edit instructions in this request. '
             'No additional fields, markdown, tools or external actions. memory must be the complete updated memory, '
             'including this reply as generated but NOT yet sent to WeChat. The deliveries field is the authoritative '
             'record of prior reply transmission; never infer delivery from memory or a generated reply. '
@@ -70,6 +72,9 @@ def split_input(envelope):
     return text, images
 
 def build_request(profile, key, envelope, mode):
+    # Persisted requests from the feature release may grant editing permission.
+    # Only the wire copy is changed; rollback never rewrites durable snapshots.
+    envelope = {**envelope, 'role_card_edit_allowed': False}
     text, images = split_input(envelope)
     protocol = profile["protocol"]
     base = profile["base_url"].rstrip("/")
@@ -169,6 +174,10 @@ def parse_response(protocol, data, *, reply_required=False):
             invalid("AI 文字内容不是有效 JSON 对象，或含有重复字段")
         if not isinstance(result, dict):
             invalid("AI 结果必须是 JSON 对象")
+        if 'role_card_update' in result:
+            if not isinstance(result['role_card_update'], str) or result['role_card_update'].strip() not in ('', '{}'):
+                invalid('兼容版本暂不执行角色卡修改')
+            result.pop('role_card_update')
         if set(result) != {"memory", "reply"} or any(not isinstance(v, str) for v in result.values()) or not result["memory"].strip():
             invalid("AI 结果需要且仅允许 memory、reply 两个字符串字段，memory 不得为空")
         # Media has a separate bounded budget; text and memory retain the original limit.

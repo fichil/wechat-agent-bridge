@@ -135,7 +135,7 @@ def unpack(archive, destination, expected_hash, commit):
             raise
 
 
-def database_check(data, expected_schema=(9, 10, 11), *, allow_missing=False):
+def database_check(data, expected_schema=(9, 10, 11, 12), *, allow_missing=False):
     allowed = (expected_schema,) if isinstance(expected_schema, int) else expected_schema
     for name in ('bridge.sqlite3', 'auth.sqlite3'):
         path = Path(data) / name
@@ -312,7 +312,7 @@ class Deployment:
         if shutil.disk_usage(root).free < size + archive.stat().st_size * 4 + 512 * 1024**2:
             raise ValueError('Insufficient space for release and data backup')
         manifest = unpack(archive, destination, request['sha256'], request['commit'])
-        if manifest.get('database_schema') not in (9, 10, 11): raise ValueError('Incompatible release database schema')
+        if manifest.get('database_schema') not in (9, 10, 11, 12): raise ValueError('Incompatible release database schema')
         database_check(root / 'data', compatible_schemas(manifest))
         current = read(root / 'current.json')
         verify_release(root / 'releases' / current['commit'], current['commit'])

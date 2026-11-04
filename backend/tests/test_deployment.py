@@ -146,6 +146,20 @@ class DeploymentTests(unittest.TestCase):
         with closing(sqlite3.connect(self.root / 'data/bridge.sqlite3')) as db:
             self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 11)
 
+    def test_role_upgrade_rollback_keeps_v12_and_new_evidence(self):
+        self.stage_upgrade(True, 12)
+        def healthy(root, commit, *, active, **kwargs):
+            if commit == self.new:
+                with closing(sqlite3.connect(root / 'data/bridge.sqlite3')) as db, db:
+                    db.execute('PRAGMA user_version=12')
+                    if active: db.execute("INSERT INTO evidence VALUES('role-created-and-reply-sent')")
+                if active: raise TimeoutError('candidate failure')
+        with patch('bridge_portable.deploy.stop'), patch('bridge_portable.deploy.start_task'), patch('bridge_portable.deploy.wait_healthy', side_effect=healthy):
+            self.assertEqual(self.manager.apply(self.request)['stage'], 'rolled_back')
+        self.assertEqual(self.evidence(), ['preserve', 'role-created-and-reply-sent'])
+        with closing(sqlite3.connect(self.root / 'data/bridge.sqlite3')) as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 12)
+
     def test_zip_traversal_rejected_without_destination_changes(self):
         with zipfile.ZipFile(self.archive, 'a') as z: z.writestr('package/../../outside.txt', 'bad')
         with self.assertRaises(ValueError):

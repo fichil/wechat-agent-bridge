@@ -127,6 +127,9 @@ class RoleStoreMixin:
                         current[field] != previous[field] for field in ("role_card_code", "api_profile_id"))):
                     self._validate_ai(current)
                 if current != previous:
+                    if (current['role_card_code'] != previous['role_card_code'] and self.db.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='role_card_derivations'").fetchone()):
+                        self.db.execute('UPDATE role_card_derivations SET active=0 WHERE account_id=? AND conversation_id=?', (aid, cid))
                     current["revision"] += 1
                     current["memory_revision"] += int(current["memory"] != previous["memory"])
                     self.db.execute("INSERT INTO conversation_preferences(account_id,conversation_id,ai_enabled,role_card_code,memory,revision,api_profile_id,memory_revision,scan_interval_seconds,group_proactive_message_threshold) VALUES(?,?,?,?,?,?,?,?,?,?) "
