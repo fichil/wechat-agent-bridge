@@ -232,13 +232,86 @@ class LogStoreMixin:
         return self.call(read)
 
     def clear_logs(self, aid, scope):
-        def clear():
+        from .log_clear import clear_batches
+        task, targets = self.begin_log_clear(aid, scope)
+        for batch in clear_batches(targets):
+            task = self.log_clear_batch(task, batch)
+        if not targets:
+            task = self.log_clear_batch(task, [])
+        return dict(deleted_count=task["deleted_count"])
+
+    def _save_log_clear(self, task):
+        self.db.execute("INSERT OR REPLACE INTO sync_jobs VALUES(?,?,?,?,?)",
+            (task["task_id"], task["account_id"], "log_clear", pack(task), time.time()))
+
+    def begin_log_clear(self, aid, scope):
+        def begin():
             self._account(aid)
+            where, args = ("l.account_id IS NULL", ()) if scope == "global" else ("l.account_id=?", (aid,))
+            targets = [tuple(row) for row in self.db.execute(
+                "SELECT l.log_id,l.updated_at,COALESCE(d.size_bytes,0) FROM diagnostic_logs l "
+                "LEFT JOIN diagnostic_details d INDEXED BY logs_detail_sizes USING(log_id) WHERE l.active=0 AND " + where + " ORDER BY l.log_id", args)]
+            task = dict(task_id=uuid4().hex, account_id=None if scope == "global" else aid, scope=scope,
+                status="queued", total_count=len(targets), processed_count=0, deleted_count=0,
+                started_at=stamp(), completed_at=None, error=None, message=None)
             with self.db:
-                cursor=self.db.execute("DELETE FROM diagnostic_logs WHERE active=0 AND "+("account_id IS NULL" if scope=="global" else "account_id=?"), () if scope=="global" else (aid,))
-            self.notify(dict(type="changed", account_id=None if scope=="global" else aid, resources=["logs"]))
-            return dict(deleted_count=cursor.rowcount)
-        return self.call(clear)
+                self._save_log_clear(task)
+                self.db.execute("DELETE FROM sync_jobs WHERE kind='log_clear' AND updated_at<? AND json_extract(payload,'$.status') NOT IN ('queued','running')", (time.time()-86400,))
+            return task, targets
+        return self.call(begin)
+
+    def log_clear_task(self, aid, scope, task_id=None):
+        def read():
+            self._account(aid)
+            where, args = ("account_id IS NULL", []) if scope == "global" else ("account_id=?", [aid])
+            if task_id:
+                where += " AND task_id=?"
+                args.append(task_id)
+            row = self.db.execute("SELECT payload FROM sync_jobs WHERE kind='log_clear' AND " + where +
+                " ORDER BY updated_at DESC LIMIT 1", args).fetchone()
+            if row is None and task_id:
+                raise ConversationError("task_not_found", "清理任务不存在或已过期。", 404)
+            return json.loads(row[0]) if row else None
+        return self.call(read)
+
+    def log_clear_batch(self, task, targets):
+        def clear():
+            if task["account_id"]:
+                self._account(task["account_id"])
+            value = dict(task)
+            with self.db:
+                where, args = ("account_id IS NULL", ()) if task["scope"] == "global" else ("account_id=?", (task["account_id"],))
+                cursor = self.db.executemany("DELETE FROM diagnostic_logs WHERE log_id=? AND updated_at=? AND active=0 AND " + where,
+                    [(identity, updated, *args) for identity, updated, _ in targets])
+                value["processed_count"] += len(targets)
+                value["deleted_count"] += max(0, cursor.rowcount)
+                value["status"] = "completed" if value["processed_count"] == value["total_count"] else "running"
+                if value["status"] == "completed":
+                    value["completed_at"] = stamp()
+                self._save_log_clear(value)
+            return value
+        result = self.call(clear)
+        resources = ["log_clear_tasks"] + (["logs"] if result["status"] == "completed" else [])
+        self.notify(dict(type="changed", account_id=task["account_id"], resources=resources))
+        return result
+
+    def fail_log_clear(self, task_id, code):
+        def fail():
+            row = self.db.execute("SELECT payload FROM sync_jobs WHERE kind='log_clear' AND task_id=?", (task_id,)).fetchone()
+            if not row:
+                return None
+            task = json.loads(row[0])
+            if task["status"] not in ("queued", "running"):
+                return task
+            task.update(status="failed", error=code, completed_at=stamp(),
+                message="清理中断，已完成的删除已保留，可重新发起清理。" if code == "log_clear_interrupted" else "清理失败，已完成的删除已保留，可重新发起清理。")
+            with self.db:
+                self._save_log_clear(task)
+            return task
+        result = self.call(fail)
+        if result:
+            self.notify(dict(type="changed", account_id=result["account_id"], resources=["log_clear_tasks", "logs"]))
+        return result
 
     def ai_session_list(self, aid):
         def read():

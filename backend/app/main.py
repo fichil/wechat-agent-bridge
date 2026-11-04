@@ -23,6 +23,7 @@ from .ai_models import (ProfileQuery, ProfileCreate, ProfileUpdate, ProfileDelet
 from .ai_execution_models import (AiSettings, AiSettingsUpdate, TaskQuery, ProfileTest, ProfileTask,
                                   RunStart, RunQuery, RunRetry, AiRun, RunList)
 from .log_models import (LogAccount, LogQuery, LogGet, LogClear, LogPage, LogDetail, LogDeleted,
+                         LogClearTask, LogClearTaskQuery, LogClearTaskResult,
                          SessionPage, RunMessagesQuery, RunMessagesPage)
 from .delivery_models import Delivery, DeliveryAction, DeliveryResolve, SendCapability
 from .media_models import (StickerList, StickerDetail, Sticker, StickerQuery, StickerCreate, StickerUpdate,
@@ -59,6 +60,8 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         bridge = Bridge(store, probe, conversation_reader or LocalConversationReader(), message_reader=message_reader,
                         monitor=False, compatibility_enabled=probe is discover_local_accounts)
         app.state.bridge, app.state.store = bridge, store
+        from .log_clear import LogClearService
+        app.state.log_clear = LogClearService(store)
         app.state.discovery, app.state.conversations, app.state.messages = bridge.discovery, bridge.conversations, bridge.messages
         from .ai_execution import AiExecution
         app.state.ai = AiExecution(store, bridge, ai_provider, False)
@@ -92,6 +95,7 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
             import asyncio
             if owner: await asyncio.to_thread(owner.close)
             await asyncio.to_thread(app.state.notifications.close)
+            await asyncio.to_thread(app.state.log_clear.close)
             app.state.ai.stopped.set()
             app.state.sender.stop.set()
             await asyncio.gather(asyncio.to_thread(app.state.ai.close), asyncio.to_thread(app.state.sender.close))
@@ -449,7 +453,15 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
 
     @app.post("/api/v1/logs/clear", response_model=LogDeleted, responses=failures)
     def clear_logs(body: LogClear, request: Request):
-        return request.app.state.store.clear_logs(body.account_id, body.scope)
+        return request.app.state.log_clear.clear_and_wait(body.account_id, body.scope)
+
+    @app.post("/api/v1/logs/clear-tasks", response_model=LogClearTask, status_code=202, responses=failures)
+    def start_log_clear(body: LogClear, request: Request):
+        return request.app.state.log_clear.start(body.account_id, body.scope)
+
+    @app.post("/api/v1/logs/clear-tasks/query", response_model=LogClearTaskResult, responses=failures)
+    def query_log_clear(body: LogClearTaskQuery, request: Request):
+        return dict(task=request.app.state.log_clear.query(body.account_id, body.scope, body.task_id))
 
     @app.post("/api/v1/ai-runs/sessions/query", response_model=SessionPage, responses=failures)
     def ai_sessions(body: LogAccount, request: Request):

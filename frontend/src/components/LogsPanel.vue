@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { ElMessageBox } from "element-plus";
 import "element-plus/es/components/message-box/style/css";
 import {
   api,
@@ -15,6 +14,7 @@ import { onChange } from "../api/events";
 import { settingsError } from "../role-cards";
 import AiRunsPanel from "./AiRunsPanel.vue";
 import AiProcessingDetails from "./AiProcessingDetails.vue";
+import { useLogClear, clearScopeName, clearActive } from "../log-clear";
 const props = defineProps<{ accountId: string }>();
 const category = ref<"ai" | "source">("ai");
 const scope = ref<"all" | "account" | "global">("all");
@@ -42,6 +42,7 @@ const warning = ref("");
 const size = ref(0);
 const viewport = ref<HTMLElement>();
 let generation = 0,
+  logGeneration = 0,
   listTicket = 0,
   messagesTicket = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -118,7 +119,8 @@ async function load(append = false, refresh = false) {
     return;
   }
   const ticket = ++listTicket,
-    version = generation;
+    version = generation,
+    logVersion = logGeneration;
   loading.value = true;
   try {
     const result = await api.logs(query(append ? cursor.value : null));
@@ -132,7 +134,12 @@ async function load(append = false, refresh = false) {
         result.next_cursor = more.next_cursor;
       }
     }
-    if (version !== generation || ticket !== listTicket) return;
+    if (
+      version !== generation ||
+      logVersion !== logGeneration ||
+      ticket !== listTicket
+    )
+      return;
     const top = viewport.value?.getBoundingClientRect().top || 0;
     const anchor = [
       ...(viewport.value?.querySelectorAll<HTMLElement>(".log-entry") || []),
@@ -166,8 +173,16 @@ async function load(append = false, refresh = false) {
         viewport.value.scrollTop +=
           node.getBoundingClientRect().top - top - offset;
     }
+    return true;
   } catch (cause) {
-    if (version === generation) error.value = settingsError(cause);
+    if (
+      version === generation &&
+      logVersion === logGeneration &&
+      ticket === listTicket
+    ) {
+      error.value = settingsError(cause);
+      return false;
+    }
   } finally {
     if (version === generation && ticket === listTicket) {
       loading.value = false;
@@ -225,16 +240,20 @@ async function loadMessages(append = false) {
   }
 }
 async function detail(id: string) {
-  const version = generation;
+  const version = generation,
+    logVersion = logGeneration;
   if (detailBusy.value[id]) return;
   detailBusy.value[id] = true;
   try {
     const result = await api.logDetail(props.accountId, id);
-    if (version === generation) details.value[id] = result;
+    if (version === generation && logVersion === logGeneration)
+      details.value[id] = result;
   } catch (cause) {
-    if (version === generation) error.value = settingsError(cause);
+    if (version === generation && logVersion === logGeneration)
+      error.value = settingsError(cause);
   } finally {
-    if (version === generation) detailBusy.value[id] = false;
+    if (version === generation && logVersion === logGeneration)
+      detailBusy.value[id] = false;
   }
 }
 function open(id: string, event: Event) {
@@ -249,28 +268,33 @@ async function copy(value: unknown) {
     error.value = "复制失败，请选择正文手动复制。";
   }
 }
-async function clear(target: "account" | "global") {
-  try {
-    await ElMessageBox.confirm(
-      `清空${target === "account" ? "当前账号" : "全局测试及账号扫描摘要"}的已结束日志？聊天、记忆和运行中的任务会保留。`,
-      "清空日志",
-      { confirmButtonText: "清空", cancelButtonText: "取消", type: "warning" },
-    );
-  } catch {
-    return;
-  }
-  const version = generation;
-  try {
-    await api.clearLogs(props.accountId, target);
-    if (version !== generation) return;
-    items.value = [];
-    details.value = {};
-    expanded.value = {};
-    await load();
-  } catch (cause) {
-    if (version === generation) error.value = settingsError(cause);
-  }
+function resetLogs() {
+  logGeneration++;
+  listTicket++;
+  clearTimeout(timer);
+  refreshPending = false;
+  loading.value = false;
+  items.value = [];
+  cursor.value = null;
+  details.value = {};
+  expanded.value = {};
+  detailBusy.value = {};
 }
+const {
+  tasks: clearTasks,
+  busy: clearBusy,
+  error: clearError,
+  queryError: clearQueryError,
+  clear,
+} = useLogClear(
+  () => props.accountId,
+  async () => {
+    const version = generation;
+    resetLogs();
+    if ((await load()) === false && version === generation)
+      error.value = "清理已结束，但日志列表刷新失败：" + error.value;
+  },
+);
 watch(
   () => props.accountId,
   async () => {
@@ -290,10 +314,7 @@ watch(
   { immediate: true },
 );
 watch([category, scope, conversation, profile, status, since, until], () => {
-  items.value = [];
-  cursor.value = null;
-  expanded.value = {};
-  details.value = {};
+  resetLogs();
   void load();
   void loadMessages();
 });
@@ -335,10 +356,43 @@ onBeforeUnmount(() => {
       </div>
       <div class="editor-actions">
         <ElButton @click="load(false, true)">刷新日志</ElButton
-        ><ElButton @click="clear('account')">清空当前账号日志</ElButton
-        ><ElButton @click="clear('global')">清空全局日志</ElButton>
+        ><ElButton
+          :disabled="clearBusy || !!clearQueryError"
+          @click="clear('account')"
+          >清空当前账号日志</ElButton
+        ><ElButton
+          :disabled="clearBusy || !!clearQueryError"
+          @click="clear('global')"
+          >清空全局测试／扫描摘要</ElButton
+        >
       </div>
     </header>
+    <p v-if="clearError || clearQueryError" role="alert">
+      {{ clearError }} {{ clearQueryError }}
+    </p>
+    <template v-for="task in clearTasks" :key="task?.task_id">
+      <p v-if="task" :role="task.status === 'failed' ? 'alert' : 'status'">
+        {{ clearScopeName(task.scope) }}：
+        <template v-if="clearActive(task)"
+          >正在后台清理，已检查 {{ task.processed_count }}/{{
+            task.total_count
+          }}
+          条，已删除 {{ task.deleted_count }} 条。切换页面后仍会继续。</template
+        >
+        <template v-else-if="task.status === 'completed'">
+          {{
+            task.deleted_count
+              ? `清理完成，已删除 ${task.deleted_count} 条日志。`
+              : "清理完成，没有可清理的已结束日志。"
+          }}
+          活动中及清理期间新增或更新的日志已保留。
+        </template>
+        <template v-else
+          >{{ task.message }}已删除 {{ task.deleted_count }} 条，已检查
+          {{ task.processed_count }}/{{ task.total_count }} 条。</template
+        >
+      </p>
+    </template>
     <div class="settings-menu" role="tablist" aria-label="日志分类">
       <button
         role="tab"

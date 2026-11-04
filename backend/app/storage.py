@@ -280,6 +280,8 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
                     job = json.loads(row["payload"])
                     if job["status"] in ("queued", "running"):
                         job.update(status="failed", error="sync_interrupted", completed_at=now())
+                        if row["kind"] == "log_clear":
+                            job.update(error="log_clear_interrupted", message="清理中断，已完成的删除已保留，可重新发起清理。")
                         self.db.execute("UPDATE sync_jobs SET payload=? WHERE task_id=?", (dump(job), row["task_id"]))
         except Exception:
             self.db.close()

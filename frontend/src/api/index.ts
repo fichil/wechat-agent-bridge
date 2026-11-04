@@ -41,6 +41,7 @@ export type Preset = components["schemas"]["Preset"];
 export type LogSummary = components["schemas"]["LogSummary"];
 export type LogDetail = components["schemas"]["LogDetail"];
 export type LogQuery = components["schemas"]["LogQuery"];
+export type LogClearTask = components["schemas"]["LogClearTask"];
 export type SessionSummary = components["schemas"]["SessionSummary"];
 
 export class ApiFailure extends Error {
@@ -186,6 +187,24 @@ export const api = {
   async clearLogs(account_id: string, scope: "account" | "global") {
     return value(
       await client.POST("/api/v1/logs/clear", { body: { account_id, scope } }),
+    );
+  },
+  async startLogClear(account_id: string, scope: "account" | "global") {
+    return value(
+      await client.POST("/api/v1/logs/clear-tasks", {
+        body: { account_id, scope },
+      }),
+    );
+  },
+  async logClearTask(
+    account_id: string,
+    scope: "account" | "global",
+    task_id?: string,
+  ) {
+    return value(
+      await client.POST("/api/v1/logs/clear-tasks/query", {
+        body: { account_id, scope, task_id },
+      }),
     );
   },
   async aiSessions(account_id: string) {

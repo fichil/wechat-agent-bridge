@@ -96,6 +96,25 @@ class LogPage(BaseModel):
 class LogDeleted(BaseModel):
     deleted_count: int
 
+class LogClearTaskQuery(LogClear):
+    task_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+class LogClearTask(BaseModel):
+    task_id: str
+    account_id: str | None
+    scope: Literal["account", "global"]
+    status: Literal["queued", "running", "completed", "failed"]
+    total_count: int
+    processed_count: int
+    deleted_count: int
+    started_at: str
+    completed_at: str | None = None
+    error: str | None = None
+    message: str | None = None
+
+class LogClearTaskResult(BaseModel):
+    task: LogClearTask | None = None
+
 class SessionSummary(BaseModel):
     account_id: str
     conversation_id: str
