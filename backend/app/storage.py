@@ -266,7 +266,7 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
         try:
             with self.db:
                 self._ai_recover()
-                self.db.execute("DELETE FROM reply_candidates WHERE run_id IN (SELECT run_id FROM ai_runs WHERE status NOT IN ('queued','running'))")
+                self.db.execute("DELETE FROM reply_candidates WHERE run_id IN (SELECT run_id FROM ai_runs WHERE status NOT IN ('queued','running','suspended'))")
                 self._media_collect()
                 self._notification_recover()
                 self._delivery_recover()

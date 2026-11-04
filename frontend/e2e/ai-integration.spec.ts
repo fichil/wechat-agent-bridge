@@ -71,6 +71,8 @@ test("sticker library uploads, previews, protects revisions and retains mixed re
   await expect(page.locator(".reply-part").nth(0)).toContainText(
     "第一行\n普通换行",
   );
+  // Stage timings can place the lazy media preview below the initial viewport.
+  await page.locator(".reply-part").nth(1).scrollIntoViewIfNeeded();
   await expect(page.locator(".reply-part").nth(1).locator("img")).toBeVisible();
   await post(page, "stickers/delete", {
     asset_id: asset.asset_id,
@@ -80,9 +82,10 @@ test("sticker library uploads, previews, protects revisions and retains mixed re
   await page
     .getByLabel("会话", { exact: true })
     .selectOption(ids[0]!.conversation_id);
+  await page.locator(".reply-part").nth(1).scrollIntoViewIfNeeded();
   await expect(page.locator(".reply-part").nth(1).locator("img")).toBeVisible();
   await expect(page.locator(".reply-part").nth(2)).toContainText("等待发送");
-  await page.locator('.reply-parts').scrollIntoViewIfNeeded();
+  await page.locator(".reply-parts").scrollIntoViewIfNeeded();
   await page.screenshot({
     path: "../.local/media-acceptance/mixed-desktop.png",
     fullPage: true,
@@ -90,7 +93,7 @@ test("sticker library uploads, previews, protects revisions and retains mixed re
   await page.setViewportSize({ width: 390, height: 844 });
   // Status polling may replace the card while the viewport is being resized.
   await expect(async () => {
-    await page.locator('.reply-part').nth(1).scrollIntoViewIfNeeded();
+    await page.locator(".reply-part").nth(1).scrollIntoViewIfNeeded();
   }).toPass({ timeout: 3000 });
   expect(
     await page.evaluate(
@@ -206,6 +209,9 @@ test("Agent failure switches once for a merged batch and the next batch starts a
     "备用连接 · 成功",
   );
   await expect(page.locator(".ai-runs")).toContainText("已发送");
+  await expect(
+    page.locator(".ai-runs").getByLabel("回复阶段耗时").first(),
+  ).toContainText("模型调用：");
   const first = (await post(page, "ai-runs/list", ids[0]!)).items[0];
   expect(first).toMatchObject({
     status: "completed",

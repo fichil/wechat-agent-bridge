@@ -26,6 +26,65 @@ def packed(value):
 
 
 class GroupRoundStoreMixin:
+    def _group_reply_rows(self, aid, cid):
+        """Ready, unconsumed mentions, including ones held by a queued memory retry."""
+        vision = self._ai_vision(aid, cid)
+        return [row for row in self.db.execute(
+            "SELECT m.* FROM reply_triggers t JOIN messages m USING(message_id) "
+            "WHERE t.account_id=? AND t.conversation_id=? AND t.epoch=? AND t.consumed_run_id IS NULL "
+            "ORDER BY m.sort_key,m.message_id", (aid, cid, self._ai_session(aid, cid)['epoch']))
+            if self._ai_item(row, vision)[3]['status'] not in ('waiting_image', 'waiting_transcript', 'unsupported')]
+
+    def _group_silence_round(self, aid, cid):
+        group = self._group_round(aid, cid)
+        if group and not group.get('memory_only'):
+            payload = json.loads(group['payload'])
+            payload['memory_only'] = True
+            self.db.execute('UPDATE group_rounds SET payload=? WHERE round_id=?', (packed(payload), group['round_id']))
+
+    def _group_reply_batch(self, aid, cid, vision):
+        targets, selected, context_only, images = [], [], [], 0
+        rows = self._group_reply_rows(aid, cid)
+        all_targets = {r['message_id'] for r in rows}
+        for row in rows:
+            value, fingerprint, digest, state = self._ai_item(row, vision, True)
+            is_image = value['type'] in ('image', 'sticker')
+            if is_image and (not vision or '_image_bytes' not in value['content']):
+                continue
+            if len(selected) >= 50 or (is_image and images >= 4):
+                break
+            selected.append((value, fingerprint, digest, 0))
+            targets.append(row['message_id'])
+            images += int(is_image)
+        if not targets:
+            return [], [], []
+        # Only the latest twenty neighbouring messages are optional context. Old
+        # pictures never force us to summarize the entire archive before replying.
+        context = self.db.execute('SELECT * FROM messages WHERE account_id=? AND conversation_id=? '
+                                  'ORDER BY sort_key DESC,message_id DESC LIMIT 20', (aid, cid)).fetchall()
+        for row in context:
+            if row['message_id'] in all_targets or len(selected) >= 50:
+                continue
+            value, fingerprint, digest, state = self._ai_item(row, vision, True)
+            if state['status'] in ('waiting_image', 'waiting_transcript', 'unsupported'):
+                continue
+            is_image = value['type'] in ('image', 'sticker')
+            if is_image and (images >= 4 or not vision or '_image_bytes' not in value['content']):
+                continue
+            selected.append((value, fingerprint, digest, 0))
+            images += int(is_image)
+            if state['status'] == 'memorized':
+                context_only.append(row['message_id'])
+        order = {r['message_id']: (r['sort_key'], r['message_id']) for r in [*rows, *context]}
+        selected.sort(key=lambda item: order[item[0]['message_id']])
+        return selected, targets, context_only
+
+    def _group_memory_ready(self, group):
+        vision = self._ai_vision(group['account_id'], group['conversation_id'])
+        return any(self._ai_item(row, vision)[3]['status'] not in ('waiting_image', 'waiting_transcript', 'unsupported')
+                   for row in self.db.execute('SELECT m.* FROM group_round_messages g JOIN messages m USING(message_id) '
+                                              'WHERE g.round_id=? AND g.done=0', (group['round_id'],)))
+
     def _is_group(self, aid, cid):
         return self._conversation(aid, cid)["source_id"].endswith("@chatroom")
 
@@ -51,13 +110,11 @@ class GroupRoundStoreMixin:
         return ready
 
     def _group_reason(self, aid, cid):
+        if self._group_reply_rows(aid, cid):
+            return 'mention'
         active = self._group_round(aid, cid)
         if active:
             return active["reason"]
-        vision = self._ai_vision(aid, cid)
-        for row in self.db.execute("SELECT m.* FROM reply_triggers t JOIN messages m USING(message_id) WHERE t.account_id=? AND t.conversation_id=? AND t.epoch=? AND t.consumed_run_id IS NULL", (aid, cid, self._ai_session(aid, cid)["epoch"])):
-            if self._ai_item(row, vision)[3]["status"] in ("pending", "failed"):
-                return "mention"
         threshold = self._preferences(aid, cid)["group_proactive_message_threshold"]
         if threshold and len(self._group_ready(aid, cid)) >= threshold:
             return "group_threshold"
@@ -86,7 +143,9 @@ class GroupRoundStoreMixin:
     def _group_prepare_round(self, aid, cid):
         active = self._group_round(aid, cid)
         if active:
-            return active
+            if self._group_reply_rows(aid, cid):
+                self._group_silence_round(aid, cid)
+            return self._group_round(aid, cid)
         reason = self._group_reason(aid, cid)
         if not reason:
             return None
@@ -94,14 +153,14 @@ class GroupRoundStoreMixin:
         selected = []
         for row in self.db.execute("SELECT * FROM messages WHERE account_id=? AND conversation_id=? ORDER BY sort_key,message_id", (aid, cid)):
             value, fingerprint, digest, state = self._ai_item(row, vision)
-            if state["status"] in ("pending", "failed"):
+            if state["status"] in ("pending", "failed") or (reason == 'mention' and state['status'] in ('waiting_image', 'waiting_transcript')):
                 selected.append((value, fingerprint, digest))
         if not selected:
             return None
         rid = uuid4().hex
         targets = self._reply_ids(aid, cid, {item[0]["message_id"] for item in selected})
         payload = dict(reply_trigger_ids=targets, trigger_messages=[v for v, _, _ in selected if v["message_id"] in targets],
-                       message_count=len(selected), batch_count=0)
+                       message_count=len(selected), batch_count=0, memory_only=reason == 'mention')
         self.db.execute("INSERT INTO group_rounds VALUES(?,?,?,?,?,'active',?)", (rid, aid, cid, self._ai_session(aid, cid)["epoch"], reason, packed(payload)))
         self.db.executemany("INSERT INTO group_round_messages VALUES(?,?,?,?,?,?,0)",
             ((rid, value["message_id"], index, fingerprint, digest, packed(value)) for index, (value, fingerprint, digest) in enumerate(selected)))
@@ -109,9 +168,23 @@ class GroupRoundStoreMixin:
 
     def _group_batch(self, group, include_media=True):
         selected, images = [], 0
+        vision = self._ai_vision(group['account_id'], group['conversation_id'])
         rows = self.db.execute("SELECT * FROM group_round_messages WHERE round_id=? AND done=0 ORDER BY ordinal", (group["round_id"],)).fetchall()
         for row in rows:
             value = json.loads(row["payload"])
+            # A foreground reply can process a corrected version of a snapshot
+            # member. Reconcile by fingerprint, never by message identity alone.
+            current = self.db.execute('SELECT * FROM messages WHERE message_id=?', (row['message_id'],)).fetchone()
+            latest, fingerprint, digest, state = self._ai_item(current, vision)
+            if group.get('memory_only') and state['status'] in ('waiting_image', 'waiting_transcript', 'unsupported'):
+                continue
+            if fingerprint != row['fingerprint'] and state['status'] not in ('waiting_image', 'waiting_transcript', 'unsupported'):
+                self.db.execute('UPDATE group_round_messages SET payload=?,fingerprint=?,media_digest=?,done=? WHERE round_id=? AND message_id=?',
+                                (packed(latest), fingerprint, digest, int(state['status'] == 'memorized'), group['round_id'], row['message_id']))
+                row = dict(row, payload=packed(latest), fingerprint=fingerprint, media_digest=digest)
+                value = latest
+                if state['status'] == 'memorized':
+                    continue
             is_image = value["type"] in ("image", "sticker")
             if len(selected) >= 50 or (is_image and images >= 4):
                 break
@@ -122,20 +195,26 @@ class GroupRoundStoreMixin:
                 value["content"].update(_image_bytes=bytes(media["data"]), _image_mime=media["mime_type"])
             selected.append((value, row["fingerprint"], row["media_digest"], row["ordinal"]))
             images += int(is_image)
-        return selected, len(rows) > len(selected)
+        remaining = self.db.execute('SELECT count(*) FROM group_round_messages WHERE round_id=? AND done=0', (group['round_id'],)).fetchone()[0]
+        if not remaining:
+            self.db.execute("UPDATE group_rounds SET status='completed' WHERE round_id=?", (group['round_id'],))
+        return selected, remaining > len(selected)
 
     def _group_run_allowed(self, run):
         if not run.get("round_id"):
             return True
         group = self._group_round(run["account_id"], run["conversation_id"])
         return bool(group and group["round_id"] == run["round_id"] and group["epoch"] == run["epoch"] and
-                    (group["reason"] != "group_threshold" or self._preferences(run["account_id"], run["conversation_id"])["group_proactive_message_threshold"] > 0))
+                    (group.get('memory_only') or group["reason"] != "group_threshold" or self._preferences(run["account_id"], run["conversation_id"])["group_proactive_message_threshold"] > 0))
 
     def _group_run_fields(self, run, group, final):
         done = self.db.execute("SELECT count(*) FROM group_round_messages WHERE round_id=? AND done=1", (group["round_id"],)).fetchone()[0]
         run.update(round_id=group["round_id"], trigger_reason=group["reason"], batch_index=group["batch_count"] + 1,
                    round_message_count=group["message_count"], round_completed_count=done, round_final=final,
                    reply_trigger_ids=group["reply_trigger_ids"], trigger_messages=group["trigger_messages"])
+        run['processing_type'] = 'memory_backfill' if group.get('memory_only') else 'group_threshold'
+        if run['processing_type'] == 'memory_backfill':
+            run.update(reply_trigger_ids=[], trigger_messages=[])
 
     def _group_finish_batch(self, run):
         # Successfully summarized raw messages count once, including explicit
@@ -144,13 +223,22 @@ class GroupRoundStoreMixin:
         if not run.get("round_id"):
             return
         group = self._group_round(run["account_id"], run["conversation_id"])
-        self.db.execute("UPDATE group_round_messages SET done=1 WHERE round_id=? AND message_id IN (SELECT message_id FROM ai_run_messages WHERE run_id=?)", (group["round_id"], run["run_id"]))
+        if group.get('memory_only') and run.get('processing_type') != 'realtime_reply':
+            run['processing_type'] = 'memory_backfill'
+        vision = self._ai_vision(run['account_id'], run['conversation_id'])
+        for row in self.db.execute('SELECT m.*,rm.fingerprint AS processed_fingerprint FROM ai_run_messages rm '
+                                   'JOIN messages m USING(message_id) WHERE rm.run_id=?', (run['run_id'],)).fetchall():
+            if self._ai_item(row, vision)[1] == row['processed_fingerprint']:
+                self.db.execute('UPDATE group_round_messages SET done=1 WHERE round_id=? AND message_id=? AND fingerprint=?',
+                                (group['round_id'], row['message_id'], row['processed_fingerprint']))
         payload = json.loads(self.db.execute("SELECT payload FROM group_rounds WHERE round_id=?", (group["round_id"],)).fetchone()[0])
         payload["batch_count"] += 1
         run["round_completed_count"] = self.db.execute("SELECT count(*) FROM group_round_messages WHERE round_id=? AND done=1", (group["round_id"],)).fetchone()[0]
-        self.db.execute("UPDATE group_rounds SET status=?,payload=? WHERE round_id=?", ("completed" if run["round_final"] else "active", packed(payload), group["round_id"]))
+        complete = run['round_completed_count'] == group['message_count']
+        run['round_final'] = complete
+        self.db.execute("UPDATE group_rounds SET status=?,payload=? WHERE round_id=?", ("completed" if complete else "active", packed(payload), group["round_id"]))
         self.db.execute("UPDATE ai_sessions SET auto_pending=1 WHERE account_id=? AND conversation_id=?", (run["account_id"], run["conversation_id"]))
-        run["chose_silence"] = bool(run["round_final"] and not run.get("reply", "").strip())
+        run["chose_silence"] = bool(run['processing_type'] == 'group_threshold' and complete and not run.get("reply", "").strip()) if run.get('processing_type') else bool(complete and not run.get('reply', '').strip())
 
     def _group_preferences_changed(self, previous, current):
         aid, cid = current["account_id"], current["conversation_id"]
@@ -161,9 +249,9 @@ class GroupRoundStoreMixin:
         if not (disabled or stopped):
             return
         group = self._group_round(aid, cid)
-        if group and (disabled or group["reason"] == "group_threshold"):
+        if group and (disabled or (group["reason"] == "group_threshold" and not group.get('memory_only'))):
             self.db.execute("UPDATE group_rounds SET status='cancelled' WHERE round_id=?", (group["round_id"],))
-            for row in self.db.execute("SELECT payload FROM ai_runs WHERE account_id=? AND conversation_id=? AND status IN ('queued','running')", (aid, cid)).fetchall():
+            for row in self.db.execute("SELECT payload FROM ai_runs WHERE account_id=? AND conversation_id=? AND status IN ('queued','running','suspended')", (aid, cid)).fetchall():
                 run = json.loads(row[0])
                 if run.get("round_id") != group["round_id"]:
                     continue

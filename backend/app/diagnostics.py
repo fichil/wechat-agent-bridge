@@ -187,6 +187,8 @@ class Capture:
             return
         if result is not None:
             self.details["parsed_result"] = self.safe_response(result)
+        duration = int((time.monotonic()-self.started)*1000)
+        self.details.setdefault('timings_ms', {})['model_request'] = duration
         self.store.log_write(dict(log_id=self.log_id, status="failed" if error else "completed",
-            duration_ms=int((time.monotonic()-self.started)*1000), error=getattr(error, "code", None),
+            duration_ms=duration, timings_ms=self.details['timings_ms'], error=getattr(error, "code", None),
             message=sanitize(getattr(error, "message", None), (self.key,))), self.details)

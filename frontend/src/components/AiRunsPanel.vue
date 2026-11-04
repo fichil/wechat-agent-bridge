@@ -4,6 +4,7 @@ import { api, type Conversation, type RunList } from "../api";
 import { onChange } from "../api/events";
 import { settingsError } from "../role-cards";
 import MediaPreview from "./MediaPreview.vue";
+import AiProcessingDetails from "./AiProcessingDetails.vue";
 const props = defineProps<{
   accountId: string;
   conversation: Pick<Conversation, "conversation_id" | "ai_enabled" | "name">;
@@ -51,6 +52,7 @@ const active = computed(() =>
     (r) =>
       r.status === "queued" ||
       r.status === "running" ||
+      r.status === "suspended" ||
       ["queued", "sending"].includes(r.delivery?.status ?? ""),
   ),
 );
@@ -62,6 +64,7 @@ const failed = computed(() =>
 const names: Record<string, string> = {
   queued: "排队中",
   running: "处理中",
+  suspended: "等待实时回复完成",
   completed: "已纳入记忆",
   failed: "失败",
   conflicted: "记忆冲突",
@@ -257,11 +260,15 @@ onBeforeUnmount(() => {
             <span v-if="attempt.error">（{{ attempt.error }}）</span>
           </li>
         </ul>
+        <AiProcessingDetails
+          :processing-type="run.processing_type"
+          :timings="run.timings_ms"
+        />
         <p v-if="run.round_id" class="settings-note">
           {{ run.trigger_reason === "mention" ? "@ 触发" : "累计条数触发" }} ·
           第 {{ run.batch_index }} 批 · 已处理
           {{ run.round_completed_count }}/{{ run.round_message_count }} 条 ·
-          {{ run.round_final ? "最终批次" : "分批记忆处理" }}
+          {{ run.round_final ? "本轮记忆已完成" : "本轮仍有待处理记忆" }}
           <span v-if="run.chose_silence"> · AI 选择不发言</span>
         </p>
         <div v-if="run.reply_parts?.length" class="reply-parts">

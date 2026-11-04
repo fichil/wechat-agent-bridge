@@ -14,6 +14,7 @@ import {
 import { onChange } from "../api/events";
 import { settingsError } from "../role-cards";
 import AiRunsPanel from "./AiRunsPanel.vue";
+import AiProcessingDetails from "./AiProcessingDetails.vue";
 const props = defineProps<{ accountId: string }>();
 const category = ref<"ai" | "source">("ai");
 const scope = ref<"all" | "account" | "global">("all");
@@ -55,6 +56,7 @@ const stateNames: Record<string, string> = {
   completed: "完成",
   running: "执行中",
   queued: "排队中",
+  suspended: "等待实时回复完成",
   interrupted: "执行中断",
   conflicted: "记忆冲突",
   cancelled: "已取消",
@@ -520,11 +522,15 @@ onBeforeUnmount(() => {
             }}</span
           >
         </p>
+        <AiProcessingDetails
+          :processing-type="item.processing_type"
+          :timings="item.timings_ms"
+        />
         <p v-if="item.round_id" class="settings-note">
           {{ item.trigger_reason === "mention" ? "@ 触发" : "累计条数触发" }} ·
           第 {{ item.batch_index }} 批 · 已处理
           {{ item.round_completed_count }}/{{ item.round_message_count }} 条 ·
-          {{ item.round_final ? "最终批次" : "分批记忆处理" }}
+          {{ item.round_final ? "本轮记忆已完成" : "本轮仍有待处理记忆" }}
           <span v-if="item.chose_silence"> · AI 选择不发言</span>
         </p>
         <p v-if="item.legacy" class="settings-note">

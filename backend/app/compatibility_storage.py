@@ -140,7 +140,7 @@ class CompatibilityStoreMixin:
         timestamp = datetime.now(timezone.utc).isoformat()
         self.db.execute('UPDATE ai_sessions SET epoch=epoch+1,auto_pending=0 WHERE account_id=?', (aid,))
         self.db.execute("UPDATE deliveries SET status='cancelled',code='compatibility_changed' WHERE account_id=? AND status IN ('queued','failed')", (aid,))
-        for row in self.db.execute("SELECT run_id,payload FROM ai_runs WHERE account_id=? AND status='queued'", (aid,)).fetchall():
+        for row in self.db.execute("SELECT run_id,payload FROM ai_runs WHERE account_id=? AND status IN ('queued','suspended')", (aid,)).fetchall():
             value = json.loads(row['payload'])
             value.update(status='cancelled', completed_at=timestamp, message='微信兼容状态变化，旧任务已取消。')
             self._ai_write_run(value)

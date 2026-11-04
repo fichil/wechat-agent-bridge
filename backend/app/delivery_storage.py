@@ -124,6 +124,8 @@ class DeliveryStoreMixin:
         inserted=self.db.execute('INSERT OR IGNORE INTO reply_triggers VALUES(?,?,?,?,NULL)',
             (item['message_id'],aid,cid,self._ai_session(aid,cid)['epoch'])).rowcount
         if inserted:
+            if source.endswith('@chatroom'):
+                self._group_silence_round(aid, cid)
             if not pending:
                 self.db.execute('UPDATE delivery_sessions SET last_trigger_at=? WHERE account_id=? AND conversation_id=?',(time.time(),aid,cid))
             # A history refresh may have memorized this message before the live cursor reaches it.
@@ -135,7 +137,7 @@ class DeliveryStoreMixin:
     def _delivery_reopen_pending(self, aid, cid):
         # Eligibility discovered during a memory-only model call belongs to its next round.
         group = self._group_round(aid, cid)
-        held = group['reply_trigger_ids'] if group else []
+        held = group['reply_trigger_ids'] if group and not group.get('memory_only') else []
         exclusion = ' AND message_id NOT IN (' + ','.join('?' for _ in held) + ')' if held else ''
         self.db.execute("UPDATE ai_message_state SET status='pending',memorized_at=NULL WHERE status='memorized' AND message_id IN (SELECT message_id FROM reply_triggers WHERE account_id=? AND conversation_id=? AND epoch=? AND consumed_run_id IS NULL)"+exclusion,(aid,cid,self._ai_session(aid,cid)['epoch'],*held))
 
@@ -174,7 +176,7 @@ class DeliveryStoreMixin:
         mids=[r[0] for r in self.db.execute('SELECT message_id FROM ai_run_messages WHERE run_id=?',(rid,))]
         group_round = bool(run.get('round_id'))
         if group_round:
-            if not run.get('round_final') or not self._group_run_allowed(run):
+            if not self._ai_reply_envelope(run)['reply_allowed'] or not self._group_run_allowed(run):
                 run['reply']=''
                 return
             mids = run['reply_trigger_ids']
@@ -227,6 +229,7 @@ class DeliveryStoreMixin:
 
     def finish_delivery(self, job, result):
         def write():
+            completed_run = None
             row=self.db.execute('SELECT * FROM deliveries WHERE run_id=? AND part_index=?', (job['run_id'],job['part_index'])).fetchone()
             if not row: return
             state=result.get('status')
@@ -242,9 +245,21 @@ class DeliveryStoreMixin:
                     current=self._preferences(job['account_id'],job['conversation_id'])
                     state='queued' if current['ai_enabled'] and self._ai_session(job['account_id'],job['conversation_id'])['epoch']==job['epoch'] else 'cancelled'
                 self.db.execute("UPDATE deliveries SET status=?,code=?,confirmation=?,archive_message_id=COALESCE(?,archive_message_id) WHERE run_id=? AND part_index=? AND status='sending'",(state,code,('native_archive' if archive else 'native') if state=='sent' else None,archive,job['run_id'],job['part_index']))
+                if state == 'sent' and not self.db.execute("SELECT 1 FROM deliveries WHERE run_id=? AND status!='sent'", (job['run_id'],)).fetchone():
+                    record = self.db.execute('SELECT payload FROM ai_runs WHERE run_id=?', (job['run_id'],)).fetchone()
+                    if record:
+                        run = json.loads(record[0])
+                        run['sent_at'] = stamp()
+                        if run.get('completed_at'):
+                            run.setdefault('timings_ms', {})['generated_to_sent'] = max(0, round((datetime.fromisoformat(run['sent_at']) - datetime.fromisoformat(run['completed_at'])).total_seconds() * 1000, 3))
+                        self._ai_write_run(run)
+                        completed_run = run
                 event=self._ai_touch(job['account_id'],job['conversation_id'],[])
             self.notify(event)
-        self.call(write)
+            return completed_run
+        completed_run = self.call(write)
+        if completed_run:
+            self.log_application(completed_run['run_id'], completed_run)
 
     def save_delivery_evidence(self,job,evidence):
         def write():

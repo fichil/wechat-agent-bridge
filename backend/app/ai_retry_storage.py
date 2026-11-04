@@ -6,6 +6,49 @@ from .ai_execution_storage import pack, stamp
 
 
 class AiRetryStoreMixin:
+    def _suspend_background(self, run):
+        aid, cid = run['account_id'], run['conversation_id']
+        if (run['status'] != 'queued' or not run.get('round_id')
+                or run.get('processing_type') == 'realtime_reply' or not self._group_reply_rows(aid, cid)):
+            return False
+        self._group_silence_round(aid, cid)
+        run.update(status='suspended', processing_type='memory_backfill',
+                   message='后台记忆等待实时回复完成后继续。')
+        self._ai_write_run(run)
+        self.db.execute("UPDATE ai_message_state SET status='pending' WHERE run_id=? AND status='processing'", (run['run_id'],))
+        self.db.execute('UPDATE ai_sessions SET auto_pending=1 WHERE account_id=? AND conversation_id=?', (aid, cid))
+        return True
+
+    def _resume_background(self, aid, cid):
+        row = self.db.execute("SELECT payload FROM ai_runs WHERE account_id=? AND conversation_id=? AND status='suspended' ORDER BY rowid LIMIT 1", (aid, cid)).fetchone()
+        if not row:
+            return None
+        run = json.loads(row[0])
+        if self._ai_terminate_invalid(run):
+            return run
+        if run.get('next_retry_at') and run['next_retry_at'] > time.time():
+            return run
+        # No request is in flight. Rebuild only the unprocessed snapshot members
+        # with the current memory, keeping the original routing/retry budget.
+        self.db.execute('DELETE FROM ai_request_snapshots WHERE run_id=?', (run['run_id'],))
+        self.db.execute('DELETE FROM ai_run_messages WHERE run_id=?', (run['run_id'],))
+        self.db.execute('DELETE FROM reply_candidates WHERE run_id=?', (run['run_id'],))
+        rebuild = bool(run.get('snapshot_taken') or run.get('route_candidates'))
+        run.update(status='queued', snapshot_taken=False, resume_background=rebuild)
+        self._ai_write_run(run)
+        return run
+
+    def _advance_suspended_memory(self, aid, cid, previous, current):
+        # Only our successful serialized commits can rebase a suspended job.
+        # A manual edit still produces the normal memory revision conflict.
+        for row in self.db.execute("SELECT payload FROM ai_runs WHERE account_id=? AND conversation_id=? AND status='suspended'", (aid, cid)).fetchall():
+            run = json.loads(row[0])
+            if run['memory_revision'] == previous:
+                run['memory_revision'] = current
+                if not self._group_round(aid, cid):
+                    run.update(status='empty', completed_at=stamp(), message='本轮剩余消息已由实时回复处理完成。')
+                self._ai_write_run(run)
+
     def defer_ai_run(self, rid):
         def write():
             with self.db:
@@ -24,7 +67,7 @@ class AiRetryStoreMixin:
             return ('cancelled','ai_cancelled','账号身份或会话处理代次已变化，旧请求已取消。')
         if not self._group_run_allowed(run):
             return ('cancelled','ai_cancelled','本轮群聊触发已失效，旧请求已取消。')
-        if run.get('snapshot_taken'):
+        if run.get('snapshot_taken') or run.get('resume_background'):
             if prefs['memory_revision'] != run['memory_revision']:
                 return ('conflicted','ai_memory_conflict','记忆已被手工修改，旧请求已停止，请重试。')
             effective = self._effective(prefs)
@@ -95,6 +138,8 @@ class AiRetryStoreMixin:
                 for row in self.db.execute("SELECT payload FROM ai_runs WHERE status='queued'").fetchall():
                     run=json.loads(row[0]); aid,cid=run['account_id'],run['conversation_id']
                     if self._ai_terminate_invalid(run):
+                        events.append(self._ai_touch(aid,cid,[])); continue
+                    if self._suspend_background(run):
                         events.append(self._ai_touch(aid,cid,[])); continue
                     if run.get('next_retry_at',0) and run['next_retry_at']>time.time(): continue
                     if not self._compatibility_blocked(aid): result.append(run)

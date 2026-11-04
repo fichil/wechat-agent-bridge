@@ -126,7 +126,8 @@ class AiExecution:
     def _perform(self, aid, cid, rid):
         try:
             self.bridge.compatibility.guard(aid)
-            self.request_images(aid, cid)
+            if self.store.ai_run(aid, cid, rid).get('processing_type') != 'realtime_reply':
+                self.request_images(aid, cid)
             snapshot = self.store.claim_ai_run(aid, cid, rid)
             if snapshot is None:
                 return
@@ -151,7 +152,15 @@ class AiExecution:
                 except ConversationError as exc:
                     if snapshot.get('resumed') or exc.code != "ai_input_too_large" or len(envelope["messages"]) <= 1:
                         raise
-                    envelope["messages"].pop()
+                    if envelope.get('processing_type') == 'realtime_reply':
+                        targets = set(envelope['reply_target_ids'])
+                        optional = next((m for m in envelope['messages'] if m['message_id'] not in targets), None)
+                        removed = optional or envelope['messages'][-1]
+                        envelope['messages'].remove(removed)
+                        envelope['reply_target_ids'] = [mid for mid in envelope['reply_target_ids'] if mid != removed['message_id']]
+                        envelope['trigger_messages'] = [m for m in envelope['trigger_messages'] if m['message_id'] != removed['message_id']]
+                    else:
+                        envelope["messages"].pop()
             if not snapshot.get('resumed'):
                 self.store.trim_ai_run(aid, cid, rid, {m["message_id"] for m in envelope["messages"]})
             reply_ids = self.store.ai_run(aid,cid,rid).get('reply_trigger_ids',[])
@@ -165,14 +174,16 @@ class AiExecution:
                 return
             run = self.store.ai_run(aid, cid, rid)
             trigger_at = self.store.call(lambda: self.store.db.execute("SELECT last_trigger_at FROM delivery_sessions WHERE account_id=? AND conversation_id=?", (aid,cid)).fetchone())
-            timings = dict(trigger_to_request=max(0, round((time.time()-trigger_at[0])*1000, 3))) if reply_ids and trigger_at and trigger_at[0] else {}
+            timings = run.get('timings_ms', {}) or (dict(trigger_to_request=max(0, round((time.time()-trigger_at[0])*1000, 3))) if reply_ids and trigger_at and trigger_at[0] else {})
+            request_started = time.monotonic()
             with log_context(self.store, timings_ms=timings, account_id=aid, conversation_id=cid, task_id=rid,
+                processing_type=run.get('processing_type'),
                 attempt_count=run.get('attempt_count'), max_retries=run.get('max_retries'),
                 profile_id=profile['profile_id'], profile_revision=profile['revision'],
                 operation="conversation", trigger=run["trigger"], memory_revision=run["memory_revision"],
                 role_revision=run["role_revision"], settings_revision=run["settings_revision"]):
                 result = self.provider.generate(profile, key, envelope, mode)
-            self.store.finish_ai_run(aid, cid, rid, result=result)
+            self.store.finish_ai_run(aid, cid, rid, result=result, model_duration_ms=round((time.monotonic()-request_started)*1000, 3))
         except ConversationError as exc:
             if exc.code != 'compatibility_paused':
                 self.store.finish_ai_run(aid, cid, rid, error=exc)
@@ -186,22 +197,24 @@ class AiExecution:
 
     def tick(self):
         if self.update_draining: return
-        for run in self.store.ai_retry_candidates():
+        retries = self.store.ai_retry_candidates()  # Also yields queued memory work to new mentions.
+        candidates = self.store.ai_candidates()
+        work = [(bool(r.get('reply_trigger_ids')) and r.get('processing_type') != 'memory_backfill', 'retry', r) for r in retries]
+        work += [(bool(c.get('reply_priority')), 'new', c) for c in candidates]
+        for _, kind, item in sorted(work, key=lambda entry: not entry[0]):
             with self.lock:
                 if len(self.pending) >= 2 or self.stopped.is_set(): break
-            self.submit('run:'+run['run_id'], lambda r=run: self.perform(r['account_id'],r['conversation_id'],r['run_id']))
+            try:
+                if kind == 'retry':
+                    self.submit('run:'+item['run_id'], lambda r=item: self.perform(r['account_id'],r['conversation_id'],r['run_id']))
+                else:
+                    self.start(item['account_id'], item['conversation_id'], uuid4().hex, 'auto')
+            except ConversationError:
+                pass
         for candidate in self.store.ai_enabled_sessions():
             if self.stopped.is_set():
                 return
             self.request_images(candidate["account_id"], candidate["conversation_id"])
-        for candidate in self.store.ai_candidates():
-            with self.lock:
-                if len(self.pending) >= 2 or self.stopped.is_set():
-                    return
-            try:
-                self.start(candidate["account_id"], candidate["conversation_id"], uuid4().hex, "auto")
-            except ConversationError:
-                pass  # Missing/unverified configuration remains visible; never invokes a model.
 
     def notify(self, event):
         if set(event.get("resources", ())) & {"compatibility", "messages", "conversation_preferences", "ai_runs", "api_profiles", "ai_defaults", "role_cards", "ai_settings"}:

@@ -113,7 +113,7 @@ def quarantine(db, reset_compatibility=False):
     """Preserve history/config, invalidate live eligibility and unfinished work."""
     timestamp = datetime.now(timezone.utc).isoformat()
     with db:
-        for rid, payload in db.execute("SELECT run_id,payload FROM ai_runs WHERE status IN ('queued','running')").fetchall():
+        for rid, payload in db.execute("SELECT run_id,payload FROM ai_runs WHERE status IN ('queued','running','suspended')").fetchall():
             value = json.loads(payload)
             value.update(status='failed', error='ai_interrupted', message='数据已迁移，旧任务未自动恢复。', completed_at=timestamp)
             db.execute("UPDATE ai_runs SET status='failed',payload=? WHERE run_id=?", (json.dumps(value, ensure_ascii=False), rid))

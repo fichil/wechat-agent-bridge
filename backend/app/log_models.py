@@ -40,6 +40,8 @@ class LogClear(LogAccount):
     scope: Literal["account", "global"]
 
 class LogSummary(BaseModel):
+    processing_type: Literal['realtime_reply', 'memory_backfill', 'group_threshold'] | None = None
+    timings_ms: dict[str, float] = Field(default_factory=dict)
     attempt_count: int | None = None
     max_retries: int | None = None
     next_retry_at: float | None = None

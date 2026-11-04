@@ -114,7 +114,7 @@ class AiExecutionStoreMixin:
             self.db.execute("UPDATE ai_sessions SET auto_pending=1 WHERE account_id=? AND conversation_id=?", (aid, cid))
         if previous["ai_enabled"] and not current["ai_enabled"]:
             self.db.execute("UPDATE ai_sessions SET epoch=epoch+1,auto_pending=0 WHERE account_id=? AND conversation_id=?", (aid, cid))
-            for row in self.db.execute("SELECT payload FROM ai_runs WHERE account_id=? AND conversation_id=? AND status IN ('queued','running')", (aid, cid)).fetchall():
+            for row in self.db.execute("SELECT payload FROM ai_runs WHERE account_id=? AND conversation_id=? AND status IN ('queued','running','suspended')", (aid, cid)).fetchall():
                 run = json.loads(row[0])
                 run.update(status="cancelled", completed_at=stamp(), message="AI 已关闭，结果不会应用。")
                 self._ai_write_run(run)
@@ -185,7 +185,7 @@ class AiExecutionStoreMixin:
         return event
 
     def _ai_write_run(self, run):
-        if run['status'] not in ('queued', 'running'):
+        if run['status'] not in ('queued', 'running', 'suspended'):
             run['next_retry_at'] = None
             self.db.execute('DELETE FROM ai_request_snapshots WHERE run_id=?', (run['run_id'],))
             self.db.execute('DELETE FROM reply_candidates WHERE run_id=?', (run['run_id'],))
@@ -208,9 +208,16 @@ class AiExecutionStoreMixin:
         return self.call(query)
 
     def ai_candidates(self):
-        return self.call(lambda: [dict(row) for row in self.db.execute("SELECT s.account_id,s.conversation_id FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.auto_pending=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM ai_runs r WHERE r.account_id=s.account_id AND r.conversation_id=s.conversation_id AND r.status IN ('queued','running')) ORDER BY EXISTS(SELECT 1 FROM reply_triggers t WHERE t.account_id=s.account_id AND t.conversation_id=s.conversation_id AND t.epoch=s.epoch AND t.consumed_run_id IS NULL) DESC,s.rowid") if not self._compatibility_blocked(row['account_id']) and self.configuration_ready(row['account_id'],row['conversation_id']) and not self._delivery_blocked(row['account_id'],row['conversation_id']) and self._ai_auto_allowed(row['account_id'],row['conversation_id']) and not self._delivery_debouncing(row['account_id'],row['conversation_id'])])
+        return self.call(lambda: [dict(row) for row in self.db.execute("SELECT s.account_id,s.conversation_id,EXISTS(SELECT 1 FROM reply_triggers t WHERE t.account_id=s.account_id AND t.conversation_id=s.conversation_id AND t.epoch=s.epoch AND t.consumed_run_id IS NULL) AS reply_priority FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.auto_pending=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM ai_runs r WHERE r.account_id=s.account_id AND r.conversation_id=s.conversation_id AND r.status IN ('queued','running')) ORDER BY EXISTS(SELECT 1 FROM reply_triggers t WHERE t.account_id=s.account_id AND t.conversation_id=s.conversation_id AND t.epoch=s.epoch AND t.consumed_run_id IS NULL) DESC,s.rowid") if not self._compatibility_blocked(row['account_id']) and self.configuration_ready(row['account_id'],row['conversation_id']) and not self._delivery_blocked(row['account_id'],row['conversation_id']) and self._ai_auto_allowed(row['account_id'],row['conversation_id']) and not self._delivery_debouncing(row['account_id'],row['conversation_id'])])
 
     def _ai_auto_allowed(self, aid, cid):
+        if self._is_group(aid, cid) and not self._group_reply_rows(aid, cid):
+            row = self.db.execute("SELECT payload FROM ai_runs WHERE account_id=? AND conversation_id=? AND status='suspended' LIMIT 1", (aid, cid)).fetchone()
+            if row and (json.loads(row[0]).get('next_retry_at') or 0) > time.time():
+                return False
+            group = self._group_round(aid, cid)
+            if group and group.get('memory_only') and not self._group_memory_ready(group):
+                return False
         return not self._is_group(aid, cid) or bool(self._group_reason(aid, cid))
 
     def ai_schedule_delay(self):
@@ -235,12 +242,19 @@ class AiExecutionStoreMixin:
                     return json.loads(old[0])
                 active = self.db.execute("SELECT payload FROM ai_runs WHERE account_id=? AND conversation_id=? AND status IN ('queued','running')", (aid, cid)).fetchone()
                 if active:
-                    return json.loads(active[0])
+                    existing = json.loads(active[0])
+                    if not self._suspend_background(existing):
+                        return existing
                 if not prefs["ai_enabled"]:
                     raise ConversationError("ai_disabled", "请先开启此会话的 AI。", 409)
                 if self._delivery_blocked(aid,cid):
                     raise ConversationError('delivery_pending','请先等待或处理上一轮发送结果。',409)
                 self._validate_ai(prefs)
+                realtime = self._is_group(aid, cid) and bool(self._group_reply_rows(aid, cid))
+                if not realtime:
+                    resumed = self._resume_background(aid, cid)
+                    if resumed:
+                        return resumed
                 if trigger == "auto" and (not self._ai_auto_allowed(aid,cid) or (not self._group_round(aid,cid) and not self._ai_counts(aid,cid)["pending_count"])):
                     self.db.execute("UPDATE ai_sessions SET auto_pending=0 WHERE account_id=? AND conversation_id=?", (aid,cid))
                     return dict(run_id=request_id, account_id=aid, conversation_id=cid, status="empty", trigger=trigger, started_at=stamp(), message_count=0, memory_revision=prefs["memory_revision"])
@@ -253,6 +267,8 @@ class AiExecutionStoreMixin:
                 group = self._group_prepare_round(aid,cid) if self._is_group(aid,cid) else None
                 if group:
                     self._group_run_fields(run,group,False)
+                    if realtime:
+                        run.update(processing_type='realtime_reply', trigger_reason='mention')
                 self.db.execute("INSERT INTO ai_runs VALUES(?,?,?,?,?,?)", (run["run_id"], aid, cid, request_id, run["status"], pack(run)))
                 event = self._ai_touch(aid, cid, [])
             self.notify(event)
@@ -270,6 +286,7 @@ class AiExecutionStoreMixin:
                     return None
                 if self._ai_terminate_invalid(run): return None
                 if self._compatibility_blocked(aid): return None
+                if self._suspend_background(run): return None
                 resumed = self._ai_retry_snapshot(run)
                 if resumed is not None: return resumed
                 if self._compatibility_blocked(aid) or not self._group_run_allowed(run) or (run['trigger']=='auto' and not self._ai_auto_allowed(aid,cid)):
@@ -280,10 +297,16 @@ class AiExecutionStoreMixin:
                 self._validate_ai(prefs)
                 effective = self._effective(prefs)
                 profiles = self._routing_profiles(prefs)
-                if any(p['verification'].get('vision') == 'supported' for p in profiles) and self._route_requires_vision(aid, cid):
+                realtime = run.get('processing_type') == 'realtime_reply'
+                needs_vision = (any(json.loads(row['payload'])['type'] in ('image', 'sticker') for row in self._group_reply_rows(aid, cid))
+                                if realtime else self._route_requires_vision(aid, cid))
+                if any(p['verification'].get('vision') == 'supported' for p in profiles) and needs_vision:
                     profiles = [p for p in profiles if p['verification'].get('vision') == 'supported']
-                profile = profiles[0]
-                self._route_initialize(run, prefs, profiles)
+                if run.pop('resume_background', False) and run.get('route_candidates'):
+                    profile = self._profile(run['profile_id'])
+                else:
+                    profile = profiles[0]
+                    self._route_initialize(run, prefs, profiles)
                 settings = dict(self.db.execute("SELECT instructions,revision FROM ai_settings").fetchone())
                 card = self._card(effective["role_card_code"])
                 session = self._ai_session(aid, cid)
@@ -303,8 +326,16 @@ class AiExecutionStoreMixin:
                     selected.append((value, fingerprint, digest, row["ai_ordinal"]))
                     images += int(is_image)
                 if group:
-                    selected, more = self._group_batch(group)
-                    self._group_run_fields(run,group,not more)
+                    if realtime:
+                        selected, targets, context_only = self._group_reply_batch(aid, cid, profile['verification'].get('vision') == 'supported')
+                        self._group_run_fields(run, group, False)
+                        run.update(processing_type='realtime_reply', trigger_reason='mention', reply_trigger_ids=targets,
+                                   context_only_ids=context_only, trigger_messages=[{**v, 'content': {k: val for k, val in v['content'].items() if not k.startswith('_')}}
+                                       for v, _, _, _ in selected if v['message_id'] in targets])
+                        more = True
+                    else:
+                        selected, more = self._group_batch(group)
+                        self._group_run_fields(run,group,not more)
                 self.db.execute("UPDATE ai_sessions SET auto_pending=? WHERE account_id=? AND conversation_id=?", (int(more), aid,cid))
                 run.update(status="running" if selected else "empty", snapshot_taken=bool(selected), message_count=len(selected), memory_revision=prefs["memory_revision"],
                            epoch=session["epoch"], historical=bool(selected and all(s[3] <= session["initial_seq"] for s in selected)),
@@ -314,15 +345,17 @@ class AiExecutionStoreMixin:
                     run["completed_at"] = stamp()
                     self.db.execute("UPDATE ai_sessions SET auto_pending=0 WHERE account_id=? AND conversation_id=?", (aid, cid))
                 reply_ids = self._reply_ids(aid,cid,{s[0]['message_id'] for s in selected})
-                run['reply_trigger_ids'] = reply_ids
-                if group:
-                    run['reply_trigger_ids'] = group['reply_trigger_ids']
+                if not group:
+                    run['reply_trigger_ids'] = reply_ids
+                else:
                     run['historical'] = False
                 if reply_ids:
                     run['historical'] = False
                 self._ai_write_run(run)
                 for value, fingerprint, digest, _ in selected:
                     mid = value["message_id"]
+                    if mid in run.get('context_only_ids', []):
+                        continue
                     self.db.execute("INSERT OR REPLACE INTO ai_message_state VALUES(?,?,?,'processing',?,NULL,NULL)", (mid, fingerprint, digest, rid))
                     self.db.execute("INSERT INTO ai_run_messages VALUES(?,?,?)", (rid, mid, fingerprint))
                 event = self._ai_touch(aid, cid, [s[0]["message_id"] for s in selected])
@@ -335,6 +368,15 @@ class AiExecutionStoreMixin:
         return self.call(write)
 
     def _ai_reply_envelope(self, run):
+        kind = run.get('processing_type')
+        if kind == 'realtime_reply':
+            return dict(processing_type=kind, reply_allowed=True, reply_required=True,
+                        reply_target_ids=run['reply_trigger_ids'], trigger_reason='mention',
+                        trigger_messages=run['trigger_messages'], context_only_ids=run.get('context_only_ids', []))
+        group = self._group_round(run['account_id'], run['conversation_id']) if run.get('round_id') else None
+        if kind == 'memory_backfill' or (group and group.get('memory_only')):
+            return dict(processing_type='memory_backfill', reply_allowed=False, reply_required=False,
+                        reply_target_ids=[], trigger_messages=[], trigger_reason=run.get('trigger_reason'))
         if run.get('round_id'):
             return dict(reply_allowed=run['round_final'], reply_target_ids=run['reply_trigger_ids'],
                         reply_required=bool(run['round_final'] and run['trigger_reason'] == 'mention' and run['reply_trigger_ids']),
@@ -358,7 +400,11 @@ class AiExecutionStoreMixin:
                 if removed:
                     self.db.execute("UPDATE ai_sessions SET auto_pending=1 WHERE account_id=? AND conversation_id=?", (aid,cid))
                 run["message_count"] = len(keep)
-                if run.get('round_id'):
+                if run.get('processing_type') == 'realtime_reply':
+                    run['reply_trigger_ids'] = [mid for mid in run['reply_trigger_ids'] if mid in keep]
+                    run['trigger_messages'] = [m for m in run['trigger_messages'] if m['message_id'] in keep]
+                    run['context_only_ids'] = [mid for mid in run.get('context_only_ids', []) if mid in keep]
+                elif run.get('round_id'):
                     remaining = self.db.execute('SELECT count(*) FROM group_round_messages WHERE round_id=? AND done=0',(run['round_id'],)).fetchone()[0]
                     run['round_final'] = remaining == len(keep)
                 else:
@@ -381,6 +427,14 @@ class AiExecutionStoreMixin:
                     self._ai_write_run(run)
                     return False
                 run.update(attempt_count=run.get('attempt_count',0)+1, next_retry_at=None, error=None, message=None)
+                run['request_started_at'] = stamp()
+                run.setdefault('timings_ms', {}).pop('model_request', None)
+                if run.get('processing_type') == 'realtime_reply' and run.get('reply_trigger_ids'):
+                    placeholders = ','.join('?' for _ in run['reply_trigger_ids'])
+                    observed = self.db.execute('SELECT min(observed_at) FROM group_message_eligibility WHERE message_id IN ('+placeholders+')', run['reply_trigger_ids']).fetchone()[0]
+                    if observed is not None:
+                        run['received_at'] = datetime.fromtimestamp(observed, timezone.utc).isoformat()
+                        run.setdefault('timings_ms', {})['received_to_request'] = max(0, round((time.time()-observed)*1000, 3))
                 if 'route_candidates' in run:
                     if run['profile_id'] in run['route_tried']:
                         run['retry_count'] += 1
@@ -393,7 +447,7 @@ class AiExecutionStoreMixin:
             return True
         return self.call(write)
 
-    def finish_ai_run(self, aid, cid, rid, result=None, error=None):
+    def finish_ai_run(self, aid, cid, rid, result=None, error=None, model_duration_ms=None):
         def write():
             nonlocal error
             with self.db:
@@ -403,6 +457,8 @@ class AiExecutionStoreMixin:
                 run = json.loads(row[0])
                 if run["status"] not in ("queued", "running"):
                     return run
+                if model_duration_ms is not None:
+                    run.setdefault('timings_ms', {})['model_request'] = model_duration_ms
                 prefs = self._preferences(aid, cid)
                 if error is None and result is not None and not result['reply'].strip() and self._ai_reply_envelope(run)['reply_required']:
                     error = ConversationError('ai_empty_reply', '本轮需要回复，但没有可发送的内容。', 502)
@@ -421,7 +477,8 @@ class AiExecutionStoreMixin:
                         return run
                     run.update(status="failed", error=error.code, message=error.message)
                 else:
-                    parts = self._prepare_reply(run,result['reply'])
+                    memory_only = self._ai_reply_envelope(run).get('processing_type') == 'memory_backfill'
+                    parts = self._prepare_reply(run, '' if memory_only else result['reply'])
                     if not parts and self._ai_reply_envelope(run)['reply_required']:
                         raise ConversationError('ai_empty_reply', '本轮需要回复，但没有可发送的内容。', 502)
                     run['reply_parts'] = parts
@@ -434,6 +491,7 @@ class AiExecutionStoreMixin:
                     self._group_finish_batch(run)
                     from .reply_media import summarize_memory
                     self.db.execute("UPDATE conversation_preferences SET memory=?,memory_revision=memory_revision+1 WHERE account_id=? AND conversation_id=?", (summarize_memory(result["memory"]), aid, cid))
+                    self._advance_suspended_memory(aid, cid, prefs['memory_revision'], prefs['memory_revision'] + 1)
                 run["completed_at"] = stamp()
                 run['next_retry_at'] = None
                 self.db.execute('DELETE FROM ai_request_snapshots WHERE run_id=?',(rid,))
