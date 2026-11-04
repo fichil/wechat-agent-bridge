@@ -579,6 +579,7 @@ onBeforeUnmount(() => {
         <AiProcessingDetails
           :processing-type="item.processing_type"
           :timings="item.timings_ms"
+          :role-card-change="item.role_card_change"
         />
         <p v-if="item.round_id" class="settings-note">
           {{ item.trigger_reason === "mention" ? "@ 触发" : "累计条数触发" }} ·

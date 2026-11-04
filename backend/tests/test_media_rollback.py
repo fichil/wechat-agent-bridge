@@ -6,6 +6,7 @@ from unittest.mock import patch
 from test_roles import RoleTestCase
 import test_delivery as delivery
 from backend.app.storage import Store
+from migration_helpers import remove_v12
 
 
 class MediaRollbackTests(RoleTestCase):
@@ -24,6 +25,7 @@ class MediaRollbackTests(RoleTestCase):
                 value = json.loads(self.store.db.execute('SELECT payload FROM ai_runs WHERE run_id=?', (rid,)).fetchone()[0])
                 value['reply_format_version'] = 2
                 self.store.db.execute('UPDATE ai_runs SET payload=? WHERE run_id=?', (json.dumps(value), rid))
+                remove_v12(self.store.db)
                 self.store.db.execute('PRAGMA user_version=11')
         self.store.call(future)
         with patch('backend.app.delivery_storage.REPLY_FORMAT_VERSION', 1):
@@ -33,7 +35,7 @@ class MediaRollbackTests(RoleTestCase):
         self.store.close()
         reopened = Store(self.path)
         try:
-            self.assertEqual(reopened.call(lambda: reopened.db.execute('PRAGMA user_version').fetchone()[0]), 11)
+            self.assertEqual(reopened.call(lambda: reopened.db.execute('PRAGMA user_version').fetchone()[0]), 12)
             self.assertEqual(reopened.ai_run(self.ids[0], self.cids[0], rid)['delivery'], before)
         finally:
             reopened.close()

@@ -93,7 +93,7 @@ class MigrationTests(unittest.TestCase):
         export_data(self.source, self.archive)
         import_data(self.archive, self.target)
         with closing(sqlite3.connect(self.target/'bridge.sqlite3')) as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 11)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 12)
             self.assertEqual(db.execute('SELECT count(*) FROM ai_request_snapshots').fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT count(*) FROM metadata WHERE key GLOB 'ai_agent_route:*'").fetchone()[0], 0)
             settings = json.loads(db.execute('SELECT payload FROM notification_settings').fetchone()[0])

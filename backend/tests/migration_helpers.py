@@ -46,6 +46,7 @@ def remove_v10(db):
 
 
 def remove_v11(db):
+    remove_v12(db)
     columns = {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}
     for name in ('native_evidence','media_id','kind'):
         if name in columns: db.execute('ALTER TABLE deliveries DROP COLUMN '+name)
@@ -53,3 +54,8 @@ def remove_v11(db):
         db.execute('DROP TABLE IF EXISTS '+table)
     db.execute("DELETE FROM metadata WHERE key='builtin_stickers_v1'")
     db.execute('DELETE FROM schema_migrations WHERE version=11')
+
+
+def remove_v12(db):
+    db.execute('DROP TABLE IF EXISTS role_card_derivations')
+    db.execute('DELETE FROM schema_migrations WHERE version=12')

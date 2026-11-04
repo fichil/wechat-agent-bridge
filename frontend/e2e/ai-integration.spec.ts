@@ -112,6 +112,96 @@ test("sticker library uploads, previews, protects revisions and retains mixed re
   });
 });
 let requestHeaders: Record<string, string>;
+
+test("AI role edits create and reuse a local card while preserving open drafts", async ({
+  page,
+  context,
+}) => {
+  const card = blankCard();
+  card.data.name = "小鲸鱼";
+  const source = await post(page, "role-cards/create", { card });
+  await page.goto(`/workspace/${ids[0]!.account_id}/agents`);
+  await addApi(page, "角色演进连接");
+  await post(page, "conversation-preferences/update", {
+    ...ids[0]!,
+    expected_revision: 0,
+    ai_enabled: true,
+  });
+  const preferencesPage = await context.newPage();
+  await preferencesPage.goto(`/workspace/${ids[0]!.account_id}/conversations`);
+  await preferencesPage
+    .getByRole("button", { name: "会话设置：合成联系人", exact: true })
+    .click();
+  const draftPage = await context.newPage();
+  await draftPage.goto(`/workspace/${ids[0]!.account_id}/conversations`);
+  await draftPage
+    .getByRole("button", { name: "会话设置：合成联系人", exact: true })
+    .click();
+  await draftPage.getByLabel(/记忆 可随时编辑/).fill("保留人工草稿");
+  await fixturePost(page, service + "/test/reply", {
+    data: {
+      reply: "本轮正常回复",
+      role_card_update: JSON.stringify({ personality: "熟悉后的温和语气" }),
+    },
+  });
+  await fixturePost(page, service + "/test/message", { data: { index: 1 } });
+  await page.goto(`/workspace/${ids[0]!.account_id}/logs`);
+  await page
+    .getByLabel("会话", { exact: true })
+    .selectOption(ids[0]!.conversation_id);
+  await page
+    .getByRole("button", { name: "处理未处理消息", exact: true })
+    .click();
+  await expect(page.getByLabel("角色卡修改结果").first()).toContainText(
+    "已创建并绑定角色卡",
+  );
+  await expect(page.getByLabel("角色卡修改结果").first()).toContainText(
+    "小鲸鱼 - 合成联系人",
+  );
+  const first = await post(page, "conversation-preferences/query", ids[0]!);
+  expect(first.role_card_code).not.toBe(source.card_code);
+  await expect(preferencesPage.locator(".role-select").first()).toContainText(
+    "小鲸鱼 - 合成联系人",
+  );
+  await expect(draftPage.getByLabel(/记忆 可随时编辑/)).toHaveValue(
+    "保留人工草稿",
+  );
+  await expect(draftPage.getByText(/设置已在其他位置变更/)).toBeVisible();
+  await expect
+    .poll(
+      async () =>
+        (await post(page, "ai-runs/list", ids[0]!)).items[0].delivery.status,
+    )
+    .toBe("sent");
+  await fixturePost(page, service + "/test/reply", {
+    data: {
+      reply: "后续回复",
+      role_card_update: JSON.stringify({ personality: "更自然的亲近语气" }),
+    },
+  });
+  await fixturePost(page, service + "/test/message", { data: { index: 2 } });
+  await page
+    .getByRole("button", { name: "处理未处理消息", exact: true })
+    .click();
+  await expect(page.getByLabel("角色卡修改结果").first()).toContainText(
+    "已更新角色卡",
+  );
+  const saved = await post(page, "role-cards/get", {
+    card_code: first.role_card_code,
+  });
+  expect(saved.revision).toBe(2);
+  expect((await post(page, "role-cards/query")).items).toHaveLength(2);
+  expect(
+    (await post(page, "role-cards/get", { card_code: source.card_code })).card,
+  ).toEqual(card);
+  expect(
+    (await post(page, "conversation-preferences/query", ids[1]!))
+      .role_card_code,
+  ).toBeNull();
+  await draftPage.close();
+  await preferencesPage.close();
+});
+
 async function fixturePost(page: Page, url: string, options: { data: object }) {
   return page.request.post(url, { ...options, headers: requestHeaders });
 }

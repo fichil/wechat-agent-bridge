@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import type { AiRun } from "../api";
 defineProps<{
   processingType?: string | null;
   timings?: Record<string, number>;
+  roleCardChange?: AiRun["role_card_change"];
 }>();
 const names: Record<string, string> = {
   realtime_reply: "实时回复",
@@ -14,6 +16,13 @@ function seconds(value?: number) {
 </script>
 
 <template>
+  <p v-if="roleCardChange" class="settings-note" aria-label="角色卡修改结果">
+    {{
+      roleCardChange.action === "created"
+        ? "已创建并绑定角色卡"
+        : "已更新角色卡"
+    }}： {{ roleCardChange.name }} · 版本 {{ roleCardChange.revision }}
+  </p>
   <p v-if="processingType" class="settings-note">
     {{ names[processingType] || processingType }}
   </p>

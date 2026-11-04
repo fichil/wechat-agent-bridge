@@ -24,6 +24,47 @@ def conflict():
 
 
 class RoleStoreMixin:
+    def _apply_ai_role_patch(self, run, raw):
+        """Called inside finish_ai_run's transaction, after snapshot checks."""
+        from .role_evolution import merge_role_patch, derived_name, validate_role_size
+        aid, cid = run['account_id'], run['conversation_id']
+        original = self._card(run['role_card_code'])
+        card, fields = merge_role_patch(original['card'], raw, self._ai_role_edit_allowed(run))
+        if not fields:
+            return None
+        lineage = self.db.execute('SELECT * FROM role_card_derivations WHERE card_code=?',
+                                  (original['card_code'],)).fetchone()
+        owned = bool(lineage and lineage['account_id'] == aid and lineage['conversation_id'] == cid and lineage['active'])
+        reusable = owned and not original['is_default'] and original['usage_count'] == 1
+        timestamp = datetime.now(timezone.utc).isoformat()
+        if reusable:
+            code, revision, action = original['card_code'], original['revision'] + 1, 'updated'
+            self.db.execute('UPDATE role_cards SET card=?,revision=?,updated_at=? WHERE card_code=?',
+                            (json.dumps(card, ensure_ascii=False, allow_nan=False), revision, timestamp, code))
+        else:
+            code, revision, action = 'RC_' + uuid4().hex, 1, 'created'
+            initial = lineage['initial_name'] if lineage else original['name']
+            conversation = json.loads(self._conversation(aid, cid)['payload'])['name']
+            card['data']['name'] = derived_name(initial, conversation)
+            validate_role_size(card)
+            self.db.execute('INSERT INTO role_cards(card_code,name,card,revision,created_at,updated_at) VALUES(?,?,?,?,?,?)',
+                            (code, card['data']['name'], json.dumps(card, ensure_ascii=False, allow_nan=False), revision, timestamp, timestamp))
+            self.db.execute('UPDATE role_card_derivations SET active=0 WHERE account_id=? AND conversation_id=?', (aid, cid))
+            self.db.execute('INSERT INTO role_card_derivations VALUES(?,?,?,?,?,1)',
+                            (code, aid, cid, original['card_code'], initial))
+            self.db.execute('UPDATE conversation_preferences SET role_card_code=?,revision=revision+1 WHERE account_id=? AND conversation_id=?',
+                            (code, aid, cid))
+        # Only rebase suspended work that still shares our exact prior snapshot.
+        # Manual edits and unrelated configuration changes retain conflict fences.
+        for row in self.db.execute("SELECT payload FROM ai_runs WHERE account_id=? AND conversation_id=? AND status='suspended'", (aid, cid)).fetchall():
+            suspended = json.loads(row[0])
+            if (suspended.get('role_card_code') == original['card_code']
+                    and suspended.get('role_revision') == original['revision']
+                    and suspended.get('memory_revision') == run['memory_revision']):
+                suspended.update(role_card_code=code, role_revision=revision)
+                self._ai_write_run(suspended)
+        return dict(action=action, card_code=code, name=card['data']['name'], revision=revision, changed_fields=fields)
+
     def _card(self, code, detail=True):
         row = self.db.execute("SELECT r.*, (SELECT count(*) FROM conversation_preferences p "
                               "WHERE p.role_card_code=r.card_code) AS usage_count FROM role_cards r WHERE card_code=?",
@@ -127,6 +168,8 @@ class RoleStoreMixin:
                         current[field] != previous[field] for field in ("role_card_code", "api_profile_id"))):
                     self._validate_ai(current)
                 if current != previous:
+                    if current['role_card_code'] != previous['role_card_code']:
+                        self.db.execute('UPDATE role_card_derivations SET active=0 WHERE account_id=? AND conversation_id=?', (aid, cid))
                     current["revision"] += 1
                     current["memory_revision"] += int(current["memory"] != previous["memory"])
                     self.db.execute("INSERT INTO conversation_preferences(account_id,conversation_id,ai_enabled,role_card_code,memory,revision,api_profile_id,memory_revision,scan_interval_seconds,group_proactive_message_threshold) VALUES(?,?,?,?,?,?,?,?,?,?) "

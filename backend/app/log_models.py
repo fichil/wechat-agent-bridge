@@ -3,6 +3,7 @@ from typing import Any, Literal
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator, model_validator
 from .role_models import JsonRequest, PreferencesQuery
+from .ai_execution_models import RoleCardChange
 
 class LogAccount(JsonRequest):
     account_id: str = Field(min_length=1, max_length=128)
@@ -40,6 +41,7 @@ class LogClear(LogAccount):
     scope: Literal["account", "global"]
 
 class LogSummary(BaseModel):
+    role_card_change: RoleCardChange | None = None
     processing_type: Literal['realtime_reply', 'memory_backfill', 'group_threshold'] | None = None
     timings_ms: dict[str, float] = Field(default_factory=dict)
     attempt_count: int | None = None

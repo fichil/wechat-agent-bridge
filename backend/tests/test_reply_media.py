@@ -242,5 +242,5 @@ class ReplyMediaStoreTests(RoleTestCase):
         reopened=Store(self.path)
         try:
             self.assertEqual(len(reopened.stickers()['items']),27)
-            self.assertEqual(reopened.call(lambda:reopened.db.execute('PRAGMA user_version').fetchone()[0]),11)
+            self.assertEqual(reopened.call(lambda:reopened.db.execute('PRAGMA user_version').fetchone()[0]),12)
         finally: reopened.close()

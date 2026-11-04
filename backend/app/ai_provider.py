@@ -12,12 +12,21 @@ from .conversations import ConversationError
 from .diagnostics import Capture, CONTEXT, log_context
 from .ai_timeouts import CONNECT_SECONDS, DEFAULT_RESPONSE_SECONDS, response_seconds
 from .reply_media import REPLY_INSTRUCTIONS, MAX_RESPONSE, DATA_URI, parse_reply
+from .role_evolution import read_role_patch, merge_role_patch
 
 TEXT_LIMIT = 64 * 1024
 BODY_LIMIT = 20 * 1024 * 1024
-SCHEMA = {"type": "object", "properties": {"memory": {"type": "string"}, "reply": {"type": "string"}},
-          "required": ["memory", "reply"], "additionalProperties": False}
-CONTRACT = ('The mandatory output contract is exactly one JSON object with two string fields: memory and reply. '
+SCHEMA = {"type": "object", "properties": {key: {"type": "string"} for key in ('memory', 'reply', 'role_card_update')},
+          "required": ["memory", "reply", "role_card_update"], "additionalProperties": False}
+CONTRACT = ('The mandatory output contract is exactly one JSON object with three string fields: memory, reply, role_card_update. '
+            'This contract takes precedence over older two-field output instructions anywhere in this request. '
+            'role_card_update is an empty string for no edit, otherwise a JSON-encoded object patch of character_card.data. '
+            'Only description, personality, scenario, first_mes, mes_example, system_prompt, post_history_instructions, '
+            'alternate_greetings, character_book and tags may be replaced. Preserve untouched fields and world-book extensions. '
+            'Never edit name, creator, creator_notes, character_version, extensions or unknown metadata. '
+            'Edits are allowed only when role_card_edit_allowed is explicitly true; otherwise return an empty role_card_update. '
+            'Adapt durable character traits/relationships from new conversation; store transient facts in memory. '
+            'The host persists and binds a conversation-specific copy; new settings apply to the next request. '
             'No additional fields, markdown, tools or external actions. memory must be the complete updated memory, '
             'including this reply as generated but NOT yet sent to WeChat. The deliveries field is the authoritative '
             'record of prior reply transmission; never infer delivery from memory or a generated reply. '
@@ -169,8 +178,10 @@ def parse_response(protocol, data, *, reply_required=False):
             invalid("AI 文字内容不是有效 JSON 对象，或含有重复字段")
         if not isinstance(result, dict):
             invalid("AI 结果必须是 JSON 对象")
-        if set(result) != {"memory", "reply"} or any(not isinstance(v, str) for v in result.values()) or not result["memory"].strip():
-            invalid("AI 结果需要且仅允许 memory、reply 两个字符串字段，memory 不得为空")
+        if (set(result) not in ({"memory", "reply"}, {"memory", "reply", "role_card_update"})
+                or any(not isinstance(v, str) for v in result.values()) or not result["memory"].strip()):
+            invalid("AI 结果需要 memory、reply 字符串，可包含 role_card_update 字符串，memory 不得为空")
+        read_role_patch(result.get('role_card_update', ''))
         # Media has a separate bounded budget; text and memory retain the original limit.
         compact = dict(result, reply=DATA_URI.sub('[image_base64]',result['reply']))
         if len(encode(compact).encode()) > TEXT_LIMIT:
@@ -191,6 +202,9 @@ class Provider:
         capture = Capture(profile, key, envelope, mode, url, body)
         try:
             result = self._request(profile, url, headers, body, capture, reply_required=envelope.get('reply_required', False))
+            if read_role_patch(result.get('role_card_update', '')):
+                merge_role_patch(envelope['character_card'], result['role_card_update'],
+                                 envelope.get('role_card_edit_allowed') is True)
             capture.finish(result=result)
             return result
         except ConversationError as exc:
@@ -268,7 +282,7 @@ class Provider:
     def test(self, profile, key, instructions):
         from datetime import datetime, timezone
         token = uuid4().hex
-        envelope = dict(request_id=token, instructions=instructions, character_card={"spec": "chara_card_v2", "spec_version": "2.0", "data": {
+        envelope = dict(request_id=token, instructions=instructions, role_card_edit_allowed=False, character_card={"spec": "chara_card_v2", "spec_version": "2.0", "data": {
                         "name": "合成测试角色", "description": "用于 API 可用性测试", "personality": "", "scenario": "", "first_mes": "", "mes_example": ""}},
                         memory="合成测试记忆", messages=[dict(message_id="test", sent_at=datetime.now(timezone.utc).isoformat(),
                         sender={"nickname": "合成测试"}, is_self=False, type="text", content={"text": "这是 API 合成测试，请将此标识纳入 memory："+token})])

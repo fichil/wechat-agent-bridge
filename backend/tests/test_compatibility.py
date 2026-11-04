@@ -441,7 +441,7 @@ class CompatibilityTests(RoleTestCase):
             self.assertFalse(db.execute("SELECT name FROM sqlite_master WHERE name='compatibility_state'").fetchone())
         with closing(Store(path)) as store:
             self.assertEqual(len(store.accounts()),2)
-            self.assertEqual(store.call(lambda:store.db.execute('PRAGMA user_version').fetchone()[0]),11)
+            self.assertEqual(store.call(lambda:store.db.execute('PRAGMA user_version').fetchone()[0]),12)
 
 
 class ProfileTests(unittest.TestCase):

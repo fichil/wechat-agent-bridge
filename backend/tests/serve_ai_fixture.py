@@ -21,10 +21,11 @@ from backend.app.diagnostics import record_source
 class BrowserProvider(FakeProvider):
     fail_next = False
     reply_override = None
+    role_update_override = ''
 
     def generate(self,*args):
         if self.reply_override is not None:
-            return dict(memory='合成媒体记忆',reply=self.reply_override)
+            return dict(memory='合成媒体记忆',reply=self.reply_override,role_card_update=self.role_update_override)
         return super().generate(*args)
 
     def respond(self, request):
@@ -71,6 +72,7 @@ def reset():
     assert store.path == ":memory:"
     provider.fail_next = False
     provider.reply_override = None
+    provider.role_update_override = ''
     sender.result = 'sent'
     def clear():
         with store.db:
@@ -124,6 +126,7 @@ def send_result(body: dict):
 def reply(body:dict):
     assert app.state.store.path == ':memory:'
     provider.reply_override=body['reply']
+    provider.role_update_override=body.get('role_card_update', '')
     return {'ok':True}
 
 

@@ -100,7 +100,8 @@ onBeforeUnmount(() => {
         />
       </label>
       <p class="settings-note">
-        程序会固定要求返回 memory 与 reply 两个 JSON 字段。恢复默认后需保存。
+        程序固定使用 memory、reply 和 role_card_update 三个字符串字段。 AI
+        可在新对话中调整角色设定，首次修改会创建并绑定当前会话的角色卡副本。恢复默认后需保存。
       </p>
       <div class="editor-actions">
         <ElButton type="primary" native-type="submit" :loading="saving"

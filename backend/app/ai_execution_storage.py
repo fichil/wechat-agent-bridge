@@ -362,6 +362,7 @@ class AiExecutionStoreMixin:
                 raw = self.db.execute("SELECT secret FROM api_profiles WHERE profile_id=?", (profile["profile_id"],)).fetchone()[0]
                 result = dict(profile=profile, encrypted_key=bytes(raw), envelope=dict(request_id=rid, instructions=settings["instructions"],
                     character_card=card["card"], memory=prefs["memory"], messages=[s[0] for s in selected],
+                    role_card_edit_allowed=self._ai_role_edit_allowed(run),
                     **self._ai_reply_envelope(run), deliveries=self._delivery_context(aid,cid))) if selected else None
             self.notify(event)
             return result
@@ -385,9 +386,14 @@ class AiExecutionStoreMixin:
         return dict(reply_allowed=bool(run.get('reply_trigger_ids')), reply_target_ids=run.get('reply_trigger_ids',[]),
                     reply_required=bool(run.get('reply_trigger_ids')))
 
+    def _ai_role_edit_allowed(self, run):
+        envelope = self._ai_reply_envelope(run)
+        return bool(not run.get('historical', True) and envelope['reply_allowed']
+                    and envelope.get('processing_type') != 'memory_backfill')
+
     def ai_reply_envelope(self, aid, cid, rid):
         run = self.ai_run(aid, cid, rid)
-        return self.call(self._ai_reply_envelope, run)
+        return self.call(lambda: {**self._ai_reply_envelope(run), 'role_card_edit_allowed': self._ai_role_edit_allowed(run)})
 
     def trim_ai_run(self, aid, cid, rid, keep):
         def write():
@@ -481,6 +487,7 @@ class AiExecutionStoreMixin:
                     parts = self._prepare_reply(run, '' if memory_only else result['reply'])
                     if not parts and self._ai_reply_envelope(run)['reply_required']:
                         raise ConversationError('ai_empty_reply', '本轮需要回复，但没有可发送的内容。', 502)
+                    run['role_card_change'] = self._apply_ai_role_patch(run, result.get('role_card_update', ''))
                     run['reply_parts'] = parts
                     run['reply_format_version'] = 2
                     display = '\n'.join(p['text'] if p['kind']=='text' else '['+('表情' if p['kind']=='sticker' else '图片')+'：'+p['name']+']' for p in parts)
@@ -506,6 +513,8 @@ class AiExecutionStoreMixin:
                 mids = [r[0] for r in self.db.execute("SELECT message_id FROM ai_run_messages WHERE run_id=?", (rid,))]
                 event = self._ai_touch(aid, cid, mids)
             self.notify(event)
+            if run.get('role_card_change') and run['status'] == 'completed':
+                self.notify(dict(type='changed', resources=['role_cards']))
             return run
         return self.call(write)
 

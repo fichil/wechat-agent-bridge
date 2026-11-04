@@ -125,7 +125,7 @@ def drain(data, release, task_id, timeout=2010):
     raise ValueError('等待在途 AI 或发送任务结束超时，已取消升级。')
 
 
-def check_data(data, schemas=(9, 10, 11)):
+def check_data(data, schemas=(9, 10, 11, 12)):
     d.database_check(data, schemas, allow_missing=True)
 
 

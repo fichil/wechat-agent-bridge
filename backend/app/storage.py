@@ -24,6 +24,7 @@ from .account_lifecycle import AccountLifecycleMixin
 from .notification_storage import NotificationStoreMixin
 from .reliability_schema import upgrade_v10
 from .media_schema import upgrade_v11
+from .role_evolution_schema import upgrade_v12
 from .media_storage import MediaStoreMixin
 from .ai_retry_storage import AiRetryStoreMixin
 
@@ -179,13 +180,13 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
         self.db.execute("PRAGMA temp_store=MEMORY")
         self.db.execute("PRAGMA cache_size=-16384")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
+        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12):
             self.db.close()
             raise ConversationError("storage_version_unsupported", "数据库版本高于当前程序，请使用匹配版本。", 503)
-        if 0 < version < 11 and str(self.path) != ':memory:':
+        if 0 < version < 12 and str(self.path) != ':memory:':
             backup_dir = self.path.parent / 'migration-backups'
             backup_dir.mkdir(exist_ok=True)
-            backup_path = backup_dir / ('before-v11-' + uuid4().hex + '.sqlite3')
+            backup_path = backup_dir / ('before-v12-' + uuid4().hex + '.sqlite3')
             with closing(sqlite3.connect(backup_path)) as backup:
                 self.db.backup(backup)
                 if backup.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
@@ -258,6 +259,7 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
         upgrade_v9(self.db)
         upgrade_v10(self.db)
         upgrade_v11(self.db)
+        upgrade_v12(self.db)
         self._log_indexes()
         self._seed_stickers()
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
