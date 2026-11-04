@@ -47,9 +47,9 @@ def verify():
                     return dict(remaining=count,elapsed_ms=round((time.perf_counter()-start)*1000,3))
                 batches.append(store.call(prune))
             assert [b['remaining'] for b in batches]==[12800,12600,12550],batches
-            assert store.call(lambda:store.db.execute('PRAGMA user_version').fetchone()[0])==11
+            assert store.call(lambda:store.db.execute('PRAGMA user_version').fetchone()[0])==12
             return dict(rows=rows,detail_bytes=rows*size,query_plan=plans,
-                        capacity_ms=dict(min=round(min(timings),3),max=round(max(timings),3)),cleanup_batches=batches,schema_version=11)
+                        capacity_ms=dict(min=round(min(timings),3),max=round(max(timings),3)),cleanup_batches=batches,schema_version=12)
         finally: store.close()
 
 
