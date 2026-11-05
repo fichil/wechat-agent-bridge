@@ -14,7 +14,8 @@ from .ai_timeouts import CONNECT_SECONDS, DEFAULT_RESPONSE_SECONDS, response_sec
 from .reply_media import REPLY_INSTRUCTIONS, MAX_RESPONSE, DATA_URI, parse_reply
 from .role_evolution import read_role_patch, merge_role_patch
 
-TEXT_LIMIT = 64 * 1024
+INPUT_TEXT_LIMIT = 256 * 1024
+OUTPUT_TEXT_LIMIT = 64 * 1024
 BODY_LIMIT = 20 * 1024 * 1024
 SCHEMA = {"type": "object", "properties": {key: {"type": "string"} for key in ('memory', 'reply', 'role_card_update')},
           "required": ["memory", "reply", "role_card_update"], "additionalProperties": False}
@@ -64,6 +65,13 @@ def normalize_image(data, mime):
     except Exception:
         raise failure("ai_image_invalid", "图片无法解码或超过尺寸限制。") from None
 
+def system_instructions(envelope):
+    system = CONTRACT + "\n" + envelope["instructions"]
+    if 'reply_media' in envelope:
+        system += '\n' + REPLY_INSTRUCTIONS
+    return system
+
+
 def split_input(envelope):
     document = deepcopy(envelope)
     images = []
@@ -74,8 +82,18 @@ def split_input(envelope):
             message["content"]["image_reference"] = message["message_id"]
             message["content"]["first_frame"] = media.get("first_frame", False)
     text = encode(document)
-    if len(text.encode()) > TEXT_LIMIT:
-        raise failure("ai_input_too_large", "单条消息、角色卡、提示词或记忆超过输入上限，请缩短后重试。")
+    system_bytes = len(system_instructions(envelope).encode('utf-8'))
+    text_bytes = len(text.encode('utf-8'))
+    if text_bytes + system_bytes > INPUT_TEXT_LIMIT:
+        labels = {'character_card': '角色卡', 'memory': '记忆', 'instructions': '提示词',
+                  'messages': '消息', 'trigger_messages': '触发消息', 'deliveries': '发送记录',
+                  'reply_media': '素材清单'}
+        sizes = {key: len(encode(document[key]).encode('utf-8')) for key in labels if key in document}
+        parts = [f'{labels[key]} {size}' for key, size in sizes.items()]
+        parts += [f'系统提示 {system_bytes}', f'封装及其他字段 {text_bytes - sum(sizes.values())}']
+        raise failure('ai_input_too_large',
+                      f'本地文本输入 {text_bytes + system_bytes} 字节，超过 {INPUT_TEXT_LIMIT} 字节上限'
+                      f'（{"；".join(parts)}）。尚未调用模型；请缩短超限内容后重试。')
     return text, images
 
 def build_request(profile, key, envelope, mode):
@@ -84,8 +102,7 @@ def build_request(profile, key, envelope, mode):
     base = profile["base_url"].rstrip("/")
     headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
     schema = dict(name="conversation_memory", strict=True, schema=SCHEMA)
-    system = CONTRACT + "\n" + envelope["instructions"]
-    if 'reply_media' in envelope: system += '\n' + REPLY_INSTRUCTIONS
+    system = system_instructions(envelope)
     if protocol == "openai_responses":
         content = [{"type": "input_text", "text": text}]
         for mid, media in images:
@@ -133,7 +150,7 @@ def build_request(profile, key, envelope, mode):
         path = "/models/" + quote(profile["model"].removeprefix("models/"), safe="") + ":generateContent"
     data = encode(body).encode()
     if len(data) > BODY_LIMIT:
-        raise failure("ai_input_too_large", "本批图片超过请求大小上限，请减小图片后重试。")
+        raise failure('ai_input_too_large', f'本地请求体 {len(data)} 字节，超过 {BODY_LIMIT} 字节上限；尚未调用模型，请减小本批图片后重试。')
     return base+path, headers, data
 
 def parse_response(protocol, data, *, reply_required=False):
@@ -184,7 +201,7 @@ def parse_response(protocol, data, *, reply_required=False):
         read_role_patch(result.get('role_card_update', ''))
         # Media has a separate bounded budget; text and memory retain the original limit.
         compact = dict(result, reply=DATA_URI.sub('[image_base64]',result['reply']))
-        if len(encode(compact).encode()) > TEXT_LIMIT:
+        if len(encode(compact).encode()) > OUTPUT_TEXT_LIMIT:
             invalid("AI 解析结果超过大小上限")
         parts = parse_reply(result['reply'])
         if reply_required and not parts:

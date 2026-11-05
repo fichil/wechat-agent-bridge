@@ -166,7 +166,7 @@ class ReplyPriorityTests(RoleTestCase):
         self.group()
         for index in range(1, 20): self.delta(index, content={'text': 'x'*10000})
         self.mention(20, content={'text': '必须回应的问题'})
-        with patch.object(self.provider, 'generate', return_value=dict(memory='压缩记忆', reply='当前回答')) as provider:
+        with patch('backend.app.ai_provider.INPUT_TEXT_LIMIT', 65536), patch.object(self.provider, 'generate', return_value=dict(memory='压缩记忆', reply='当前回答')) as provider:
             first = self.start()
         envelope = provider.call_args.args[2]
         self.assertEqual(first['delivery']['status'], 'queued')

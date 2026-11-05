@@ -395,6 +395,26 @@ class AiExecutionStoreMixin:
         run = self.ai_run(aid, cid, rid)
         return self.call(lambda: {**self._ai_reply_envelope(run), 'role_card_edit_allowed': self._ai_role_edit_allowed(run)})
 
+    def _trimmed_ai_run(self, run, keep):
+        run = dict(run, message_count=len(keep))
+        if run.get('processing_type') == 'realtime_reply':
+            run['reply_trigger_ids'] = [mid for mid in run['reply_trigger_ids'] if mid in keep]
+            run['trigger_messages'] = [m for m in run['trigger_messages'] if m['message_id'] in keep]
+            run['context_only_ids'] = [mid for mid in run.get('context_only_ids', []) if mid in keep]
+        elif run.get('round_id'):
+            remaining = self.db.execute('SELECT count(*) FROM group_round_messages WHERE round_id=? AND done=0', (run['round_id'],)).fetchone()[0]
+            run['round_final'] = remaining == len(keep)
+        else:
+            run['reply_trigger_ids'] = self._reply_ids(run['account_id'], run['conversation_id'], keep)
+        return run
+
+    def preview_ai_reply_envelope(self, aid, cid, rid, keep):
+        def query():
+            row = self.db.execute('SELECT payload FROM ai_runs WHERE run_id=? AND account_id=? AND conversation_id=?', (rid, aid, cid)).fetchone()
+            run = self._trimmed_ai_run(json.loads(row[0]), keep)
+            return {**self._ai_reply_envelope(run), 'role_card_edit_allowed': self._ai_role_edit_allowed(run)}
+        return self.call(query)
+
     def trim_ai_run(self, aid, cid, rid, keep):
         def write():
             with self.db:
@@ -405,16 +425,7 @@ class AiExecutionStoreMixin:
                     self.db.execute("UPDATE ai_message_state SET status='pending' WHERE message_id=? AND run_id=?", (mid, rid))
                 if removed:
                     self.db.execute("UPDATE ai_sessions SET auto_pending=1 WHERE account_id=? AND conversation_id=?", (aid,cid))
-                run["message_count"] = len(keep)
-                if run.get('processing_type') == 'realtime_reply':
-                    run['reply_trigger_ids'] = [mid for mid in run['reply_trigger_ids'] if mid in keep]
-                    run['trigger_messages'] = [m for m in run['trigger_messages'] if m['message_id'] in keep]
-                    run['context_only_ids'] = [mid for mid in run.get('context_only_ids', []) if mid in keep]
-                elif run.get('round_id'):
-                    remaining = self.db.execute('SELECT count(*) FROM group_round_messages WHERE round_id=? AND done=0',(run['round_id'],)).fetchone()[0]
-                    run['round_final'] = remaining == len(keep)
-                else:
-                    run['reply_trigger_ids'] = self._reply_ids(aid,cid,keep)
+                run = self._trimmed_ai_run(run, keep)
                 self._ai_write_run(run)
                 event = self._ai_touch(aid, cid, removed)
             self.notify(event)

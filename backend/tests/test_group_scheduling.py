@@ -287,13 +287,16 @@ class GroupSchedulingTests(RoleTestCase):
         def summarize(*args):
             result = original(*args)
             return {**result, 'memory': '压缩记忆'}
-        with patch.object(self.provider, 'generate', side_effect=summarize):
+        with patch('backend.app.ai_provider.INPUT_TEXT_LIMIT', 65536), patch.object(self.provider, 'generate', side_effect=summarize):
             first = self.start()
             self.assertFalse(first['round_final'])
             self.assertLess(first['message_count'], 7)
             self.assertEqual(first['delivery']['status'], 'not_required')
+            self.assertFalse(self.envelope()['role_card_edit_allowed'])
+            self.assertFalse(self.envelope()['reply_allowed'])
             second = self.start()
         self.assertTrue(second['round_final'])
+        self.assertTrue(self.envelope()['role_card_edit_allowed'])
         self.assertEqual(second['round_completed_count'], 7)
         self.assertEqual(second['delivery']['status'], 'queued')
 
