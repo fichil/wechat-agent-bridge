@@ -149,7 +149,7 @@ class ExecutionTests(RoleTestCase):
         self.assertEqual(first["message_count"], 50)
         self.assertEqual(self.store.ai_runs(self.ids[0],self.cids[0])["pending_count"], 3)
         self.assertEqual(self.wait_run(self.start())["message_count"], 3)
-        self.ingest(54, content={"text": "超"*30000})
+        self.ingest(54, content={"text": "超"*100000})
         count = len(self.provider.requests)
         failed = self.wait_run(self.start())
         self.assertEqual(failed["error"], "ai_input_too_large")

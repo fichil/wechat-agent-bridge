@@ -146,6 +146,9 @@ class AiExecution:
                 envelope['reply_media'] = self.store.prepare_reply_candidates(aid,cid,rid,caps)
             while True:
                 try:
+                    if not snapshot.get('resumed'):
+                        envelope.update(self.store.preview_ai_reply_envelope(
+                            aid, cid, rid, {m['message_id'] for m in envelope['messages']}))
                     # Request sizing does not need credentials; persist the input before decrypting.
                     build_request(profile, "", envelope, mode)
                     break
@@ -157,8 +160,6 @@ class AiExecution:
                         optional = next((m for m in envelope['messages'] if m['message_id'] not in targets), None)
                         removed = optional or envelope['messages'][-1]
                         envelope['messages'].remove(removed)
-                        envelope['reply_target_ids'] = [mid for mid in envelope['reply_target_ids'] if mid != removed['message_id']]
-                        envelope['trigger_messages'] = [m for m in envelope['trigger_messages'] if m['message_id'] != removed['message_id']]
                     else:
                         envelope["messages"].pop()
             if not snapshot.get('resumed'):
@@ -166,6 +167,8 @@ class AiExecution:
             reply_ids = self.store.ai_run(aid,cid,rid).get('reply_trigger_ids',[])
             if not snapshot.get('resumed'):
                 envelope.update(self.store.ai_reply_envelope(aid,cid,rid))
+            # Validate the final permissions/targets, not an earlier batch projection.
+            build_request(profile, "", envelope, mode)
             if not self.store.save_ai_snapshot(aid,cid,rid,profile,envelope): return
             # Closing AI while preparing must not launch a new remote request.
             self.bridge.compatibility.guard(aid)
