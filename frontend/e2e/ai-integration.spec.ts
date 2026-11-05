@@ -607,6 +607,8 @@ test("log details are lazy, failures can retry, and refresh preserves open JSON"
     has: page.locator("summary strong", { hasText: "会话调用 · 完成" }),
   });
   await complete.locator(":scope > summary").click();
+  await expect(complete.getByText(/Token：输入 未知/)).toBeVisible();
+  await expect(complete.getByText(/本批 1 条 · 原图 0 张/)).toBeVisible();
   const request = complete
     .locator(".log-json")
     .filter({ has: page.locator("summary", { hasText: "实际请求 JSON" }) });

@@ -172,6 +172,9 @@ def parse_content(row, sender=None):
                 title = (app.findtext("title") or "").strip()[:4096]
                 summary = quote_summary(app)
                 result.update(text=f"{title}\n〔{summary}〕".lstrip(), description="引用消息")
+                reference = app.findtext('refermsg/svrid')
+                if reference and reference.isdecimal() and len(reference) <= 20:
+                    result['quoted_server_id'] = reference
                 return "text", result, issues
             title = root.findtext(".//appmsg/title")
             extension = root.findtext(".//appattach/fileext")

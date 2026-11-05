@@ -26,6 +26,57 @@ def packed(value):
 
 
 class GroupRoundStoreMixin:
+    def _group_live_rows(self, aid, cid):
+        return self.db.execute(
+            'SELECT m.* FROM group_message_eligibility e JOIN messages m USING(message_id) '
+            'WHERE e.account_id=? AND e.conversation_id=? AND e.epoch=? AND e.consumed_run_id IS NULL '
+            'ORDER BY m.sort_key,m.message_id', (aid, cid, self._ai_session(aid, cid)['epoch'])).fetchall()
+
+    def _group_media_ids(self, aid, cid, rows):
+        """Local relevance only: quoted media, mention attachments, nearby images.
+
+        Never call a model to select images. Placeholders remain in the batch.
+        """
+        targets = {r['message_id'] for r in self._group_reply_rows(aid, cid)}
+        candidates = []
+        for index, row in enumerate(rows):
+            message = json.loads(row['payload'])
+            reference = message['content'].get('quoted_server_id')
+            if reference:
+                quoted = self.db.execute(
+                    'SELECT * FROM messages WHERE account_id=? AND conversation_id=? AND server_id=?',
+                    (aid, cid, reference)).fetchone()
+                if quoted and json.loads(quoted['payload'])['type'] in ('image', 'sticker'):
+                    candidates.append((0, index, quoted['message_id']))
+            if row['message_id'] in targets:
+                if message['type'] in ('image', 'sticker'):
+                    candidates.append((1, index, row['message_id']))
+                for previous in rows[max(0, index-3):index]:
+                    item = json.loads(previous['payload'])
+                    if item['type'] == 'image' and item.get('sender') == message.get('sender'):
+                        candidates.append((2, index, previous['message_id']))
+        return list(dict.fromkeys(mid for _, _, mid in sorted(candidates)))[:4]
+
+    def _group_attach_media(self, aid, cid, selected, rows, vision):
+        chosen = self._group_media_ids(aid, cid, rows) if vision else []
+        context_only = []
+        existing = {item[0]['message_id'] for item in selected}
+        for mid in chosen:
+            if mid not in existing:
+                row = self.db.execute('SELECT * FROM messages WHERE message_id=? AND account_id=? AND conversation_id=?',
+                                      (mid, aid, cid)).fetchone()
+                value, fingerprint, digest, _ = self._ai_item(row, vision)
+                selected.append((value, fingerprint, digest, 0))
+                context_only.append(mid)
+        for value, _, _, _ in selected:
+            if value['message_id'] in chosen:
+                media = self.db.execute('SELECT data,mime_type FROM media_cache WHERE cache_key=?',
+                                        ('image:' + value['message_id'],)).fetchone()
+                if media:
+                    value['content'].update(_image_bytes=bytes(media['data']), _image_mime=media['mime_type'])
+                    value['content']['visual_content'] = 'attached'
+        return selected, context_only
+
     def _group_reply_rows(self, aid, cid):
         """Ready, unconsumed mentions, including ones held by a queued memory retry."""
         vision = self._ai_vision(aid, cid)
@@ -43,41 +94,18 @@ class GroupRoundStoreMixin:
             self.db.execute('UPDATE group_rounds SET payload=? WHERE round_id=?', (packed(payload), group['round_id']))
 
     def _group_reply_batch(self, aid, cid, vision):
-        targets, selected, context_only, images = [], [], [], 0
-        rows = self._group_reply_rows(aid, cid)
-        all_targets = {r['message_id'] for r in rows}
+        rows = self._group_live_rows(aid, cid)
+        targets = {r['message_id']: r for r in self._group_reply_rows(aid, cid)}
+        by_id = {r['message_id']: r for r in rows}
+        by_id.update(targets)
+        rows = sorted(by_id.values(), key=lambda r: (r['sort_key'], r['message_id']))
+        selected = []
         for row in rows:
-            value, fingerprint, digest, state = self._ai_item(row, vision, True)
-            is_image = value['type'] in ('image', 'sticker')
-            if is_image and (not vision or '_image_bytes' not in value['content']):
-                continue
-            if len(selected) >= 50 or (is_image and images >= 4):
-                break
-            selected.append((value, fingerprint, digest, 0))
-            targets.append(row['message_id'])
-            images += int(is_image)
-        if not targets:
-            return [], [], []
-        # Only the latest twenty neighbouring messages are optional context. Old
-        # pictures never force us to summarize the entire archive before replying.
-        context = self.db.execute('SELECT * FROM messages WHERE account_id=? AND conversation_id=? '
-                                  'ORDER BY sort_key DESC,message_id DESC LIMIT 20', (aid, cid)).fetchall()
-        for row in context:
-            if row['message_id'] in all_targets or len(selected) >= 50:
-                continue
-            value, fingerprint, digest, state = self._ai_item(row, vision, True)
-            if state['status'] in ('waiting_image', 'waiting_transcript', 'unsupported'):
-                continue
-            is_image = value['type'] in ('image', 'sticker')
-            if is_image and (images >= 4 or not vision or '_image_bytes' not in value['content']):
-                continue
-            selected.append((value, fingerprint, digest, 0))
-            images += int(is_image)
-            if state['status'] == 'memorized':
-                context_only.append(row['message_id'])
-        order = {r['message_id']: (r['sort_key'], r['message_id']) for r in [*rows, *context]}
-        selected.sort(key=lambda item: order[item[0]['message_id']])
-        return selected, targets, context_only
+            value, fingerprint, digest, state = self._ai_item(row, vision)
+            if state['status'] not in ('waiting_transcript', 'unsupported'):
+                selected.append((value, fingerprint, digest, 0))
+        selected, context_only = self._group_attach_media(aid, cid, selected, rows, vision)
+        return selected, [m[0]['message_id'] for m in selected if m[0]['message_id'] in targets], context_only
 
     def _group_memory_ready(self, group):
         vision = self._ai_vision(group['account_id'], group['conversation_id'])
@@ -104,7 +132,7 @@ class GroupRoundStoreMixin:
     def _group_ready(self, aid, cid):
         vision = self._ai_vision(aid, cid)
         ready = []
-        for row in self.db.execute("SELECT m.* FROM group_message_eligibility e JOIN messages m USING(message_id) WHERE e.account_id=? AND e.conversation_id=? AND e.epoch=? AND e.consumed_run_id IS NULL ORDER BY m.sort_key,m.message_id", (aid, cid, self._ai_session(aid, cid)["epoch"])):
+        for row in self._group_live_rows(aid, cid):
             if self._ai_item(row, vision)[3]["status"] in ("pending", "failed"):
                 ready.append(row["message_id"])
         return ready
@@ -151,16 +179,18 @@ class GroupRoundStoreMixin:
             return None
         vision = self._ai_vision(aid, cid)
         selected = []
-        for row in self.db.execute("SELECT * FROM messages WHERE account_id=? AND conversation_id=? ORDER BY sort_key,message_id", (aid, cid)):
+        for row in self._group_live_rows(aid, cid):
             value, fingerprint, digest, state = self._ai_item(row, vision)
             if state["status"] in ("pending", "failed") or (reason == 'mention' and state['status'] in ('waiting_image', 'waiting_transcript')):
                 selected.append((value, fingerprint, digest))
+        if reason == 'group_threshold':
+            selected = selected[:self._preferences(aid, cid)['group_proactive_message_threshold']]
         if not selected:
             return None
         rid = uuid4().hex
         targets = self._reply_ids(aid, cid, {item[0]["message_id"] for item in selected})
         payload = dict(reply_trigger_ids=targets, trigger_messages=[v for v, _, _ in selected if v["message_id"] in targets],
-                       message_count=len(selected), batch_count=0, memory_only=reason == 'mention')
+                       message_count=len(selected), batch_count=0, memory_only=reason == 'mention', batching_version=2)
         self.db.execute("INSERT INTO group_rounds VALUES(?,?,?,?,?,'active',?)", (rid, aid, cid, self._ai_session(aid, cid)["epoch"], reason, packed(payload)))
         self.db.executemany("INSERT INTO group_round_messages VALUES(?,?,?,?,?,?,0)",
             ((rid, value["message_id"], index, fingerprint, digest, packed(value)) for index, (value, fingerprint, digest) in enumerate(selected)))
@@ -186,13 +216,6 @@ class GroupRoundStoreMixin:
                 if state['status'] == 'memorized':
                     continue
             is_image = value["type"] in ("image", "sticker")
-            if len(selected) >= 50 or (is_image and images >= 4):
-                break
-            if is_image and include_media:
-                media = self.db.execute("SELECT data,mime_type FROM media_cache WHERE cache_key=? AND digest=?", ("image:" + row["message_id"], row["media_digest"])).fetchone()
-                if not media:
-                    raise ConversationError("ai_snapshot_media_unavailable", "本轮图片缓存已变化，请恢复图片后重试，已有进度保留。", 409)
-                value["content"].update(_image_bytes=bytes(media["data"]), _image_mime=media["mime_type"])
             selected.append((value, row["fingerprint"], row["media_digest"], row["ordinal"]))
             images += int(is_image)
         remaining = self.db.execute('SELECT count(*) FROM group_round_messages WHERE round_id=? AND done=0', (group['round_id'],)).fetchone()[0]

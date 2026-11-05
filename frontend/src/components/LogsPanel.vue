@@ -64,6 +64,7 @@ const stateNames: Record<string, string> = {
   empty: "没有可处理消息",
 };
 const operationNames: Record<string, string> = {
+  memory_compaction: "记忆压缩",
   conversation: "会话调用",
   test_text: "合成文本／JSON 测试",
   test_image: "合成图片测试",
@@ -560,6 +561,21 @@ onBeforeUnmount(() => {
             item.source === "cache" ? "本机缓存" : "微信本地读取"
           }}
           · {{ item.item_count ?? 0 }} 条
+        </p>
+        <p v-if="item.category === 'ai'" class="settings-note">
+          Token：输入 {{ item.input_tokens ?? "未知" }} · 输出
+          {{ item.output_tokens ?? "未知" }} · 缓存
+          {{ item.cached_tokens ?? "未知" }} · 合计
+          {{ item.total_tokens ?? "未知" }}
+        </p>
+        <p v-if="item.category === 'ai'" class="settings-note">
+          本批 {{ item.item_count ?? "未知" }} 条 · 原图
+          {{ item.image_count ?? "未知" }} 张 · 媒体占位
+          {{ item.placeholder_count ?? "未知" }} 条 · 本任务实际调用
+          {{ item.http_attempt_count ?? "未知" }} 次
+          <span v-if="item.split_reason === 'input_budget'">
+            · 超出输入预算拆批</span
+          >
         </p>
         <p v-if="item.application_status">
           本地应用：{{

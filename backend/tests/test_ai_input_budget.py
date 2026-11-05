@@ -16,7 +16,7 @@ class InputBudgetTests(unittest.TestCase):
 
     def test_utf8_exact_boundary_includes_system_and_serialization(self):
         envelope = self.envelope()
-        size = len(encode(envelope).encode()) + len(system_instructions(envelope).encode())
+        size = len(encode({k:v for k,v in envelope.items() if k != 'instructions'}).encode()) + len(system_instructions(envelope).encode())
         envelope['memory'] += 'x' * (INPUT_TEXT_LIMIT - size)
         split_input(envelope)
         original = deepcopy(envelope)
@@ -49,7 +49,7 @@ class InputBudgetTests(unittest.TestCase):
             else:
                 system, text = value['systemInstruction']['parts'][0]['text'], value['contents'][0]['parts'][0]['text']
             self.assertEqual(system, system_instructions(envelope))
-            self.assertEqual(json.loads(text), envelope)
+            self.assertEqual(json.loads(text), {k:v for k,v in envelope.items() if k != 'instructions'})
 
     def test_output_limit_is_unchanged(self):
         result = dict(memory='记忆🙂', reply='')
@@ -61,7 +61,7 @@ class InputBudgetTests(unittest.TestCase):
         result['memory'] += 'x'
         with self.assertRaises(ConversationError) as caught:
             parse_response('openai_chat_completions', response())
-        self.assertEqual(caught.exception.code, 'ai_response_invalid')
+        self.assertEqual(caught.exception.code, 'ai_output_capacity')
 
     def test_generation_budget_supports_complete_memory_without_changing_unknown_models(self):
         for provider, model, expected in (('grok', 'grok-4.7', 32768), ('deepseek', 'deepseek-flash', 32768),

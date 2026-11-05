@@ -244,7 +244,9 @@ class GroupEvolutionTests(roles.RoleTestCase):
         self.assertTrue(silent['chose_silence'])
         self.assertEqual(silent['role_card_change']['action'], 'created')
         self.assertEqual(silent['delivery']['total_parts'], 0)
-        for index in range(2, 82): self.delta(index)
+        self.update(self.preferences()['revision'], group_proactive_message_threshold=80)
+        self.enterContext(patch('backend.app.ai_provider.INPUT_TEXT_LIMIT', 60000))
+        for index in range(2, 82): self.delta(index, content={'text': 'x'*1000})
         background = self.queued()
         with patch.object(self.provider, 'generate', side_effect=ConversationError('ai_network_error', 'synthetic')):
             self.perform(background)
@@ -265,8 +267,9 @@ class GroupEvolutionTests(roles.RoleTestCase):
         self.assertEqual(self.envelope()['character_card']['data']['personality'], '更熟悉的关系')
 
     def test_first_derivation_rebases_suspended_role_identity(self):
-        self.group(1)
-        for index in range(1, 81): self.delta(index)
+        self.group(80)
+        self.enterContext(patch('backend.app.ai_provider.INPUT_TEXT_LIMIT', 60000))
+        for index in range(1, 81): self.delta(index, content={'text': 'x'*1000})
         background = self.queued()
         with patch.object(self.provider, 'generate', side_effect=ConversationError('ai_network_error', 'synthetic')):
             self.perform(background)

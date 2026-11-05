@@ -2215,6 +2215,22 @@ export interface components {
         };
         /** LogDetail */
         LogDetail: {
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Cached Tokens */
+            cached_tokens?: number | null;
+            /** Total Tokens */
+            total_tokens?: number | null;
+            /** Image Count */
+            image_count?: number | null;
+            /** Placeholder Count */
+            placeholder_count?: number | null;
+            /** Http Attempt Count */
+            http_attempt_count?: number | null;
+            /** Split Reason */
+            split_reason?: string | null;
             role_card_change?: components["schemas"]["RoleCardChange"] | null;
             /** Processing Type */
             processing_type?: ("realtime_reply" | "memory_backfill" | "group_threshold") | null;
@@ -2375,6 +2391,22 @@ export interface components {
         };
         /** LogSummary */
         LogSummary: {
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Cached Tokens */
+            cached_tokens?: number | null;
+            /** Total Tokens */
+            total_tokens?: number | null;
+            /** Image Count */
+            image_count?: number | null;
+            /** Placeholder Count */
+            placeholder_count?: number | null;
+            /** Http Attempt Count */
+            http_attempt_count?: number | null;
+            /** Split Reason */
+            split_reason?: string | null;
             role_card_change?: components["schemas"]["RoleCardChange"] | null;
             /** Processing Type */
             processing_type?: ("realtime_reply" | "memory_backfill" | "group_threshold") | null;
@@ -2556,6 +2588,8 @@ export interface components {
         };
         /** MessageContent */
         MessageContent: {
+            /** Quoted Server Id */
+            quoted_server_id?: string | null;
             /** Text */
             text?: string | null;
             /** Filename */

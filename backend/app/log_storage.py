@@ -126,7 +126,7 @@ class LogStoreMixin:
                 if task.get('account_id') and not self.db.execute('SELECT 1 FROM accounts WHERE account_id=?', (task['account_id'],)).fetchone(): return
                 with self.db:
                     rows = self.db.execute("SELECT payload FROM diagnostic_logs WHERE task_id=?", (task_id,)).fetchall()
-                    progress = {k:task.get(k) for k in ('role_card_change','processing_type','round_id','trigger_reason','batch_index','round_message_count','round_completed_count','round_final','chose_silence','max_retries','next_retry_at') if k in task}
+                    progress = {k:task.get(k) for k in ('role_card_change','processing_type','round_id','trigger_reason','batch_index','round_message_count','round_completed_count','round_final','chose_silence','max_retries','next_retry_at','http_attempt_count','split_reason') if k in task}
                     if not rows:
                         value = {k:task.get(k) for k in ("account_id", "conversation_id", "trigger", "started_at", "profile_id")}
                         value.update(category=category, operation=task.get("operation", "conversation"), task_id=task_id,

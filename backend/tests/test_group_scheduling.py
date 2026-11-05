@@ -179,35 +179,34 @@ class GroupSchedulingTests(RoleTestCase):
             return original(*args)
         with patch.object(self.provider, 'generate', side_effect=generate):
             first = self.start()
-        self.assertEqual(first['message_count'], 21)
-        self.assertFalse(first['round_final'])
+        self.assertEqual(first['message_count'], 55)
+        self.assertTrue(first['round_final'])
         self.assertTrue(self.envelope()['reply_allowed'])
         self.assertTrue(self.envelope()['reply_required'])
         self.assertEqual(first['delivery']['status'], 'queued')
         self.assertEqual(self.envelope()['trigger_messages'][0]['content']['text'], '请总结以上讨论')
         self.finish(first)
-        second = self.start()
-        self.assertEqual(second['round_id'], first['round_id'])
-        self.assertEqual(second['message_count'], 34)
-        self.assertEqual(second['round_completed_count'], 55)
-        self.assertFalse(self.envelope()['reply_allowed'])
-        self.assertFalse(self.envelope()['reply_required'])
-        self.assertEqual(second['delivery']['status'], 'not_required')
         self.assertEqual(len(self.ready()), 1)
         self.assertEqual(self.store.ai_candidates(), [])
 
-    def test_threshold_round_multiple_batches_has_only_one_delivery(self):
-        self.group(20)
+    def test_threshold_hundred_has_one_delivery_and_overflow_waits(self):
+        self.group(100)
         for index in range(1, 104): self.delta(index)
-        first, second, third = self.start(), self.start(), self.start()
-        self.assertEqual([r['message_count'] for r in (first, second, third)], [50, 50, 3])
-        self.assertEqual(len({r['round_id'] for r in (first, second, third)}), 1)
-        self.assertEqual([r['delivery']['status'] for r in (first, second, third)], ['not_required', 'not_required', 'queued'])
-        self.assertEqual(self.ready(), [])
+        first = self.start()
+        self.assertEqual(first['message_count'], 100)
+        self.assertTrue(first['round_final'])
+        self.assertEqual(first['delivery']['status'], 'queued')
+        self.finish(first)
+        self.assertEqual(len(self.ready()), 3)
+        self.assertEqual(self.store.ai_candidates(), [])
+
+    def bounded_round(self):
+        self.group(55)
+        self.enterContext(patch('backend.app.ai_provider.INPUT_TEXT_LIMIT', 60000))
+        for index in range(1, 56): self.delta(index, content={'text': 'x'*1000})
 
     def test_failure_retry_preserves_completed_batch(self):
-        self.group(20)
-        for index in range(1, 56): self.delta(index)
+        self.bounded_round()
         first = self.start()
         memory = self.preferences()['memory']
         self.update(self.preferences()['revision'], ai_max_retries=0)
@@ -215,23 +214,22 @@ class GroupSchedulingTests(RoleTestCase):
             failed = self.start()
         self.assertEqual(failed['status'], 'failed')
         self.assertEqual(self.preferences()['memory'], memory)
-        self.assertEqual(len(self.ready()), 5)
+        self.assertEqual(len(self.ready()), 55-first['message_count'])
         self.assertEqual(self.store.ai_candidates(), [])
         retry = self.app.state.ai.retry(self.ids[0], self.cids[0], failed['run_id'], uuid4().hex)
         final = self.wait_run(retry)
-        self.assertEqual(final['message_count'], 5)
+        self.assertEqual(final['message_count'], 55-first['message_count'])
         self.assertEqual(final['round_id'], first['round_id'])
         self.assertEqual(final['round_completed_count'], 55)
 
     def test_automatic_retry_keeps_completed_batches_and_same_final_run(self):
-        self.group(20)
-        for index in range(1,56):self.delta(index)
+        self.bounded_round()
         first=self.start();memory=self.preferences()['memory'];self.settle()
         run=self.store.start_ai_run(self.ids[0],self.cids[0],uuid4().hex,'auto')
         with patch.object(self.provider,'generate',side_effect=ConversationError('ai_network_error','synthetic')):
             self.app.state.ai.perform(self.ids[0],self.cids[0],run['run_id'])
         failed=self.store.ai_run(self.ids[0],self.cids[0],run['run_id'])
-        self.assertEqual((failed['status'],failed['message_count']),('queued',5))
+        self.assertEqual((failed['status'],failed['message_count']),('queued',55-first['message_count']))
         self.assertEqual(self.preferences()['memory'],memory)
         self.app.state.ai.perform(self.ids[0],self.cids[0],run['run_id'])
         final=self.store.ai_run(self.ids[0],self.cids[0],run['run_id'])
@@ -244,7 +242,7 @@ class GroupSchedulingTests(RoleTestCase):
         self.update(self.preferences()['revision'], group_proactive_message_threshold=0)
         self.assertEqual(self.store.ai_candidates(), [])
         self.assertIsNone(self.store.call(lambda: self.store._group_round(self.ids[0], self.cids[0])))
-        self.assertEqual(len(self.ready()), 5)
+        self.assertEqual(len(self.ready()), 35)
         self.update(self.preferences()['revision'], group_proactive_message_threshold=1)
         final = self.start()
         self.assertNotEqual(first['round_id'], final['round_id'])
@@ -267,21 +265,20 @@ class GroupSchedulingTests(RoleTestCase):
         self.assertEqual(len(self.ready()), 1)
 
     def test_restart_preserves_round_snapshot_and_completed_progress(self):
-        self.group(20)
-        for index in range(1, 56): self.delta(index)
+        self.bounded_round()
         first = self.start()
         self.store.close()
         with closing(Store(self.path)) as store:
             aid, cid = self.ids[0], self.cids[0]
             run = store.start_ai_run(aid, cid, uuid4().hex, 'auto')
             snapshot = store.claim_ai_run(aid, cid, run['run_id'])
-            self.assertEqual(len(snapshot['envelope']['messages']), 5)
+            self.assertEqual(len(snapshot['envelope']['messages']), 55-first['message_count'])
             self.assertEqual(snapshot['envelope']['round_id'], first['round_id'])
             store.finish_ai_run(aid, cid, run['run_id'], result=dict(memory='最终记忆', reply='完成'))
             self.assertEqual(store.ai_run(aid,cid,run['run_id'])['round_completed_count'], 55)
 
     def test_input_trimming_creates_memory_batches_without_early_reply(self):
-        self.group(1)
+        self.group(7)
         for index in range(1, 8): self.delta(index, content={'text': 'x'*10000})
         original = self.provider.generate
         def summarize(*args):

@@ -138,6 +138,9 @@ class AiExecution:
                 if "_image_bytes" in content:
                     content["image"] = normalize_image(content.pop("_image_bytes"), content.pop("_image_mime"))
             mode = profile["verification"]["output_mode"]
+            if envelope.get('memory_max_chars'):
+                from .ai_memory import compact_for_run
+                envelope['memory'] = compact_for_run(self, aid, cid, rid, profile, encrypted_key, mode, 'before', envelope['memory'])
             if not snapshot.get('resumed'):
                 caps = dict(image=True, sticker=True)  # Isolated adapters never operate real WeChat.
                 if self.bridge.compatibility.enabled:
@@ -157,7 +160,7 @@ class AiExecution:
                         raise
                     if envelope.get('processing_type') == 'realtime_reply':
                         targets = set(envelope['reply_target_ids'])
-                        optional = next((m for m in envelope['messages'] if m['message_id'] not in targets), None)
+                        optional = next((m for m in reversed(envelope['messages']) if m['message_id'] not in targets), None)
                         removed = optional or envelope['messages'][-1]
                         envelope['messages'].remove(removed)
                     else:
@@ -182,10 +185,13 @@ class AiExecution:
             with log_context(self.store, timings_ms=timings, account_id=aid, conversation_id=cid, task_id=rid,
                 processing_type=run.get('processing_type'),
                 attempt_count=run.get('attempt_count'), max_retries=run.get('max_retries'),
+                http_attempt_count=run.get('http_attempt_count'), split_reason=run.get('split_reason'),
                 profile_id=profile['profile_id'], profile_revision=profile['revision'],
                 operation="conversation", trigger=run["trigger"], memory_revision=run["memory_revision"],
                 role_revision=run["role_revision"], settings_revision=run["settings_revision"]):
                 result = self.provider.generate(profile, key, envelope, mode)
+            if envelope.get('memory_max_chars'):
+                result['memory'] = compact_for_run(self, aid, cid, rid, profile, encrypted_key, mode, 'after', result['memory'])
             self.store.finish_ai_run(aid, cid, rid, result=result, model_duration_ms=round((time.monotonic()-request_started)*1000, 3))
         except ConversationError as exc:
             if exc.code != 'compatibility_paused':
