@@ -63,6 +63,22 @@ class InputBudgetTests(unittest.TestCase):
             parse_response('openai_chat_completions', response())
         self.assertEqual(caught.exception.code, 'ai_response_invalid')
 
+    def test_generation_budget_supports_complete_memory_without_changing_unknown_models(self):
+        for provider, model, expected in (('grok', 'grok-4.7', 32768), ('deepseek', 'deepseek-flash', 32768),
+                                          ('grok', 'legacy-model', 8192), ('deepseek', 'deepseek-chat', 8192),
+                                          ('custom', 'grok-4.7', 8192), ('openai', 'synthetic-model', 8192)):
+            for protocol in ('openai_responses', 'openai_chat_completions', 'anthropic_messages', 'gemini_generate_content'):
+                with self.subTest(provider=provider, model=model, protocol=protocol):
+                    profile = dict(provider=provider, model=model, protocol=protocol, base_url='https://example.test/v1', anthropic_version='2023-06-01')
+                    envelope = self.envelope()
+                    original = deepcopy(envelope)
+                    _, _, body = build_request(profile, '', envelope, 'schema')
+                    value = json.loads(body)
+                    actual = value.get('max_output_tokens', value.get('max_completion_tokens', value.get('max_tokens', value.get('generationConfig', {}).get('maxOutputTokens'))))
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(envelope, original)
+                    self.assertEqual(OUTPUT_TEXT_LIMIT, 65536)
+
     def test_images_still_have_separate_body_limit(self):
         envelope = self.envelope()
         envelope['messages'] = [dict(message_id='img', content={'image': {'mime_type': 'image/jpeg', 'data_base64': 'A' * BODY_LIMIT}})]

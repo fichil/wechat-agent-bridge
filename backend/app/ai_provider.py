@@ -17,6 +17,9 @@ from .role_evolution import read_role_patch, merge_role_patch
 INPUT_TEXT_LIMIT = 256 * 1024
 OUTPUT_TEXT_LIMIT = 64 * 1024
 BODY_LIMIT = 20 * 1024 * 1024
+# These current models support a larger generation budget. Keep unknown/legacy
+# models at the tested 8192-token setting; the parsed output is still <=64 KiB.
+LONG_OUTPUT_MODELS = {('grok', 'grok-4.7'), ('deepseek', 'deepseek-flash')}
 SCHEMA = {"type": "object", "properties": {key: {"type": "string"} for key in ('memory', 'reply', 'role_card_update')},
           "required": ["memory", "reply", "role_card_update"], "additionalProperties": False}
 CONTRACT = ('The mandatory output contract is exactly one JSON object with three string fields: memory, reply, role_card_update. '
@@ -103,13 +106,14 @@ def build_request(profile, key, envelope, mode):
     headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
     schema = dict(name="conversation_memory", strict=True, schema=SCHEMA)
     system = system_instructions(envelope)
+    output_tokens = 32768 if (profile.get('provider'), profile['model']) in LONG_OUTPUT_MODELS else 8192
     if protocol == "openai_responses":
         content = [{"type": "input_text", "text": text}]
         for mid, media in images:
             content += [{"type": "input_text", "text": "Image message_id: " + mid},
                         {"type": "input_image", "image_url": "data:"+media["mime_type"]+";base64,"+media["data_base64"]}]
         body = dict(model=profile["model"], instructions=system, input=[dict(role="user", content=content)],
-                    max_output_tokens=8192, store=False)
+                    max_output_tokens=output_tokens, store=False)
         if mode != "prompt":
             body["text"] = {"format": {"type": "json_schema", **schema} if mode == "schema" else {"type": "json_object"}}
         path = "/responses"
@@ -119,7 +123,7 @@ def build_request(profile, key, envelope, mode):
             content += [{"type": "text", "text": "Image message_id: " + mid},
                         {"type": "image_url", "image_url": {"url": "data:"+media["mime_type"]+";base64,"+media["data_base64"]}}]
         body = dict(model=profile["model"], messages=[dict(role="system", content=system), dict(role="user", content=content)])
-        body["max_completion_tokens" if profile["provider"] == "openai" else "max_tokens"] = 8192
+        body["max_completion_tokens" if profile["provider"] == "openai" else "max_tokens"] = output_tokens
         if mode != "prompt":
             body["response_format"] = {"type": "json_schema", "json_schema": schema} if mode == "schema" else {"type": "json_object"}
         path = "/chat/completions"
@@ -131,7 +135,7 @@ def build_request(profile, key, envelope, mode):
         for mid, media in images:
             content += [{"type": "text", "text": "Image message_id: " + mid}, {"type": "image", "source": {
                 "type": "base64", "media_type": media["mime_type"], "data": media["data_base64"]}}]
-        body = dict(model=profile["model"], system=system, messages=[dict(role="user", content=content)], max_tokens=8192)
+        body = dict(model=profile["model"], system=system, messages=[dict(role="user", content=content)], max_tokens=output_tokens)
         if mode == "schema":
             body["output_config"] = {"format": {"type": "json_schema", "schema": SCHEMA}}
         path = "/messages"
@@ -141,7 +145,7 @@ def build_request(profile, key, envelope, mode):
         parts = [{"text": text}]
         for mid, media in images:
             parts += [{"text": "Image message_id: " + mid}, {"inlineData": {"mimeType": media["mime_type"], "data": media["data_base64"]}}]
-        config = {"maxOutputTokens": 8192}
+        config = {"maxOutputTokens": output_tokens}
         if mode != "prompt":
             config["responseMimeType"] = "application/json"
         if mode == "schema":

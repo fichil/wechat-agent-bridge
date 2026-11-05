@@ -4,6 +4,10 @@
 
 批次过大时仅减少本次纳入的消息，并同步重算回复目标、触发消息、最终批次及改卡权限；剩余消息后续处理。固定资料或单条消息仍超限时，工作台显示实际大小、上限及各部分占用，并说明尚未调用模型。已保存的重试快照保持原样。
 
+生成 token 预算与结果字节限制分别控制。生产恢复中确认 `grok-4.7` 返回 `incomplete_details.reason=max_output_tokens`，`deepseek-flash` 返回 `finish_reason=length`：原 8192-token 预算不足以返回完整记忆。因此仅这两个已确认模型使用 32768-token 生成预算，未知或旧模型仍保持 8192；结果仍必须通过 64 KiB 校验，不接受截断 JSON。服务商和模型名同时匹配，不改变保存的 API 配置或重试输入快照。
+
+依据：[Grok 输出长度说明](https://docs.x.ai/developers/model-capabilities/text/best-practices)、[DeepSeek Chat Completions 参数](https://api-docs.deepseek.com/api/create-chat-completion/)。
+
 ## 群聊恢复命令
 
 只恢复最新任务确为 `ai_input_too_large`、仍开启 AI 且处于暂停状态的指定群聊；拒绝在途或挂起任务、未解决的发送记录以及配置缺失。默认预览使用只读连接，不初始化 Store、不迁移数据库、不启动同步或模型请求。
