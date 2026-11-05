@@ -29,6 +29,8 @@ def main():
     sys.path.insert(0,str(root)); sys.path.insert(0,str(root/'scripts'))
     from bridge_portable import control
     from bridge_portable.local_api import LocalApi
+    from backend.compact_group_memory import compact_disabled_group
+    assert callable(compact_disabled_group)
     import httpx
     password=secrets.token_urlsafe(32)
     def rpc(**value):
