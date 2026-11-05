@@ -162,6 +162,9 @@ class LogTests(RoleTestCase):
             Provider(httpx.MockTransport(lambda _:httpx.Response(200,json=output))).generate(profile,"synthetic-key",dict(request_id="usage",instructions="json",character_card={},memory="",messages=[]),"schema")
         row=next(r for r in self.query()["items"] if r.get("task_id")=="usage")
         self.assertEqual(row["provider_request_id"],"provider-response-id")
+        self.assertEqual(row['input_tokens'], 12)
+        self.assertIsNone(row['output_tokens'])
+        self.assertIsNone(row['total_tokens'])
         self.assertEqual(self.log(row["log_id"]).json()["details"]["usage"],{"input_tokens":12})
 
     def test_retention_capacity_and_active_protection(self):

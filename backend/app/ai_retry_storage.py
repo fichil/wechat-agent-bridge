@@ -6,6 +6,36 @@ from .ai_execution_storage import pack, stamp
 
 
 class AiRetryStoreMixin:
+    def begin_memory_compaction(self, aid, cid, rid, phase, memory):
+        def write():
+            with self.db:
+                run = json.loads(self.db.execute('SELECT payload FROM ai_runs WHERE run_id=? AND account_id=? AND conversation_id=?', (rid, aid, cid)).fetchone()[0])
+                if run['status'] != 'running' or self._ai_terminate_invalid(run):
+                    raise ConversationError('ai_cancelled', '本轮已停止，不能压缩记忆。', 409)
+                previous = run.get('memory_compactions', {}).get(phase)
+                if previous:
+                    if previous.get('result') is not None:
+                        return previous['result']
+                    raise ConversationError('ai_memory_compaction_interrupted', '压缩结果未知，已暂停以避免重复消耗。', 409)
+                self.db.execute('INSERT OR IGNORE INTO metadata VALUES(?,?)',
+                                ('memory-backup:' + aid + ':' + rid + ':' + phase, pack(dict(account_id=aid, conversation_id=cid,
+                                    memory_revision=run['memory_revision'], memory=memory, created_at=stamp()))))
+                run.setdefault('memory_compactions', {})[phase] = dict(started_at=stamp())
+                run['http_attempt_count'] = run.get('http_attempt_count', 0) + 1
+                self._ai_write_run(run)
+                return None
+        return self.call(write)
+
+    def complete_memory_compaction(self, aid, cid, rid, phase, memory):
+        def write():
+            with self.db:
+                run = json.loads(self.db.execute('SELECT payload FROM ai_runs WHERE run_id=? AND account_id=? AND conversation_id=?', (rid, aid, cid)).fetchone()[0])
+                if run['status'] != 'running' or self._ai_terminate_invalid(run):
+                    raise ConversationError('ai_cancelled', '本轮已停止，压缩结果不应用。', 409)
+                run['memory_compactions'][phase].update(result=memory, completed_at=stamp())
+                self._ai_write_run(run)
+        self.call(write)
+
     def _suspend_background(self, run):
         aid, cid = run['account_id'], run['conversation_id']
         if (run['status'] != 'queued' or not run.get('round_id')

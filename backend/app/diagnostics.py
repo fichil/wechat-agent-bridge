@@ -26,6 +26,24 @@ def image_summary(data, mime=None):
     except Exception:
         return dict(omitted="binary_data", mime_type=mime)
 
+
+def token_usage(usage):
+    """Normalize reported usage; an absent counter is unknown, never zero."""
+    usage = usage if isinstance(usage, dict) else {}
+    def number(*values):
+        return next((v for v in values if type(v) is int and v >= 0), None)
+    inputs = number(usage.get('input_tokens'), usage.get('prompt_tokens'), usage.get('promptTokenCount'))
+    outputs = number(usage.get('output_tokens'), usage.get('completion_tokens'), usage.get('candidatesTokenCount'))
+    if 'candidatesTokenCount' in usage and type(usage.get('thoughtsTokenCount')) is int and outputs is not None:
+        outputs += max(0, usage['thoughtsTokenCount'])
+    cached = number((usage.get('input_tokens_details') or {}).get('cached_tokens'),
+                    (usage.get('prompt_tokens_details') or {}).get('cached_tokens'),
+                    usage.get('prompt_cache_hit_tokens'), usage.get('cachedContentTokenCount'))
+    total = number(usage.get('total_tokens'), usage.get('totalTokenCount'))
+    if total is None and inputs is not None and outputs is not None:
+        total = inputs + outputs
+    return dict(input_tokens=inputs, output_tokens=outputs, cached_tokens=cached, total_tokens=total)
+
 def sanitize(value, secrets=()):
     if isinstance(value, dict):
         mime = value.get("mime_type") or value.get("mimeType") or value.get("media_type")
@@ -145,6 +163,9 @@ class Capture:
                 profile_name=profile["name"], provider=profile["provider"], model=profile["model"], protocol=profile["protocol"],
                 profile_revision=profile.get("revision") or metadata.get("profile_revision"), output_mode=mode,
                 status="running", application_status="running", item_count=len(envelope["messages"]))
+            media = [m for m in envelope['messages'] if m.get('type') in ('image', 'sticker')]
+            summary.update(image_count=sum(bool(m.get('content', {}).get('image')) for m in media),
+                           placeholder_count=sum(not m.get('content', {}).get('image') for m in media))
             self.log_id = self.store.log_write(sanitize(summary, (key,)), self.details)
 
     def safe_response(self, value):
@@ -172,6 +193,7 @@ class Capture:
         self.details["usage"] = (data.get("usage") or data.get("usageMetadata")) if isinstance(data, dict) else None
         self.details["response_truncated"] = truncated
         self.store.log_write(dict(log_id=self.log_id, http_status=response.status_code,
+            **token_usage(self.details['usage']),
             provider_request_id=sanitize(response.headers.get("x-request-id") or response.headers.get("request-id") or
                 ((data.get("request_id") or data.get("responseId") or data.get("id")) if isinstance(data, dict) else None), (self.key,))), self.details)
 

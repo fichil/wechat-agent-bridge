@@ -10,6 +10,7 @@ FAILOVER_ERRORS = {
     'ai_network_error', 'ai_provider_error', 'ai_response_invalid', 'ai_empty_reply', 'reply_invalid',
     'ai_format_unsupported', 'ai_vision_unsupported', 'ai_input_too_large',
     'api_key_unreadable', 'api_profile_unavailable',
+    'ai_output_capacity',
 }
 
 
@@ -64,6 +65,12 @@ class AiRoutingStoreMixin:
         row = self.db.execute('SELECT payload FROM ai_request_snapshots WHERE run_id=?', (run['run_id'],)).fetchone()
         if error.code not in FAILOVER_ERRORS or not row:
             return False
+        if run.get('capacity_fallback_used'):
+            return False
+        if error.code == 'ai_output_capacity':
+            run['capacity_failures'] = run.get('capacity_failures', 0) + 1
+        if run.get('capacity_failures', 0) >= 2:
+            return False
         snapshot = json.loads(row[0])
         vision = any(m['content'].get('image') for m in snapshot['envelope']['messages'])
         pid = run['profile_id']
@@ -79,6 +86,8 @@ class AiRoutingStoreMixin:
         chosen = next((p for p in available if p['profile_id'] not in run['route_tried']), None)
         delay = 0
         if chosen is None:
+            if run.get('capacity_failures'):
+                return False
             if run['retry_count'] >= run['max_retries']:
                 return False
             retryable_profiles = [p for p in available if run['route_errors'].get(p['profile_id'], {}).get('retryable')]
@@ -88,6 +97,8 @@ class AiRoutingStoreMixin:
             chosen = min(retryable_profiles, key=lambda p: run['route_errors'][p['profile_id']]['retry_at'])
             delay = max(min(30, 2 ** min(run['retry_count'] + 1, 5)),
                         run['route_errors'][chosen['profile_id']]['retry_at'] - time.time())
+        if run.get('capacity_failures'):
+            run['capacity_fallback_used'] = True
         snapshot['profile'] = chosen
         self.db.execute('UPDATE ai_request_snapshots SET payload=? WHERE run_id=?', (pack(snapshot), run['run_id']))
         run.update(status='queued', profile_id=chosen['profile_id'], profile_revision=chosen['revision'],

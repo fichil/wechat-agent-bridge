@@ -70,6 +70,9 @@ def normalize_image(data, mime):
 
 def system_instructions(envelope):
     system = CONTRACT + "\n" + envelope["instructions"]
+    if envelope.get('memory_max_chars'):
+        from .ai_memory import MEMORY_INSTRUCTIONS
+        system = CONTRACT + '\n' + MEMORY_INSTRUCTIONS + '\n' + envelope['instructions']
     if 'reply_media' in envelope:
         system += '\n' + REPLY_INSTRUCTIONS
     return system
@@ -77,6 +80,7 @@ def system_instructions(envelope):
 
 def split_input(envelope):
     document = deepcopy(envelope)
+    document.pop('instructions', None)  # Already present in the system message.
     images = []
     for message in document["messages"]:
         media = message.get("content", {}).pop("image", None)
@@ -163,6 +167,8 @@ def parse_response(protocol, data, *, reply_required=False):
     try:
         if protocol == "openai_responses":
             if data.get("status") != "completed":
+                if (data.get('incomplete_details') or {}).get('reason') == 'max_output_tokens':
+                    raise failure('ai_output_capacity', 'AI 输出达到容量上限；不会重复请求同一配置。')
                 invalid("AI 响应未完成或被截断")
             contents = [c for item in data.get("output", []) if item.get("type") == "message" for c in item.get("content", [])]
             if any(c.get("type") == "refusal" for c in contents):
@@ -173,15 +179,21 @@ def parse_response(protocol, data, *, reply_required=False):
             if item["message"].get("refusal"):
                 invalid("AI 拒绝了本次请求")
             if item["finish_reason"] != "stop":
+                if item['finish_reason'] == 'length':
+                    raise failure('ai_output_capacity', 'AI 输出达到容量上限；不会重复请求同一配置。')
                 invalid("AI 响应未正常结束，可能被截断或过滤")
             raw = item["message"]["content"]
         elif protocol == "anthropic_messages":
             if data.get("stop_reason") != "end_turn":
+                if data.get('stop_reason') == 'max_tokens':
+                    raise failure('ai_output_capacity', 'AI 输出达到容量上限；不会重复请求同一配置。')
                 invalid("AI 响应未正常结束，可能被拒绝或截断")
             raw = "".join(c["text"] for c in data["content"] if c.get("type") == "text")
         else:
             item = data["candidates"][0]
             if item.get("finishReason") != "STOP":
+                if item.get('finishReason') == 'MAX_TOKENS':
+                    raise failure('ai_output_capacity', 'AI 输出达到容量上限；不会重复请求同一配置。')
                 invalid("AI 响应未正常结束，可能被截断或过滤")
             raw = "".join(c["text"] for c in item["content"]["parts"] if "text" in c and not c.get("thought"))
         def unique(pairs):
@@ -206,7 +218,7 @@ def parse_response(protocol, data, *, reply_required=False):
         # Media has a separate bounded budget; text and memory retain the original limit.
         compact = dict(result, reply=DATA_URI.sub('[image_base64]',result['reply']))
         if len(encode(compact).encode()) > OUTPUT_TEXT_LIMIT:
-            invalid("AI 解析结果超过大小上限")
+            raise failure('ai_output_capacity', 'AI 解析结果超过大小上限；不会重复请求同一配置。')
         parts = parse_reply(result['reply'])
         if reply_required and not parts:
             raise failure('ai_empty_reply', '本轮需要回复，但没有可发送的内容。')

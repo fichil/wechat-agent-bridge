@@ -31,6 +31,7 @@ class Sender(BaseModel):
 
 
 class MessageContent(BaseModel):
+    quoted_server_id: str | None = None
     text: str | None = None
     filename: str | None = None
     format: str | None = None

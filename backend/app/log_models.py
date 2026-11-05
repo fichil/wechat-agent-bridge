@@ -41,6 +41,14 @@ class LogClear(LogAccount):
     scope: Literal["account", "global"]
 
 class LogSummary(BaseModel):
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_tokens: int | None = None
+    total_tokens: int | None = None
+    image_count: int | None = None
+    placeholder_count: int | None = None
+    http_attempt_count: int | None = None
+    split_reason: str | None = None
     role_card_change: RoleCardChange | None = None
     processing_type: Literal['realtime_reply', 'memory_backfill', 'group_threshold'] | None = None
     timings_ms: dict[str, float] = Field(default_factory=dict)

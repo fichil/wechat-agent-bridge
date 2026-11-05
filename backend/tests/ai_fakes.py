@@ -27,6 +27,8 @@ class FakeProvider(Provider):
         if envelope.get('reply_allowed') is False:
             reply = ''
         memory = envelope["memory"] + "\n" + "\n".join(m["content"].get("text") or "图片" for m in envelope["messages"]) + "\n"+reply
+        if envelope.get('memory_max_chars'):
+            memory = memory[-3000:]
         output = json.dumps(dict(memory=memory, reply=reply), ensure_ascii=False)
         if protocol == "responses":
             result = dict(status="completed", output=[dict(type="message", content=[dict(type="output_text", text=output)])])

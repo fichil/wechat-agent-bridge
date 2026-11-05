@@ -44,7 +44,7 @@ class ReplyPriorityTests(RoleTestCase):
         self.app.state.ai.perform(self.ids[0], self.cids[0], run['run_id'])
         return self.store.ai_run(self.ids[0], self.cids[0], run['run_id'])
 
-    def test_111_messages_20_images_reply_on_first_call_then_memorize_everything(self):
+    def test_111_messages_20_images_are_processed_with_first_reply(self):
         self.group(100)
         for index in range(1, 111):
             media = index % 5 == 0 and index <= 100
@@ -58,17 +58,11 @@ class ReplyPriorityTests(RoleTestCase):
         self.assertEqual(first['processing_type'], 'realtime_reply')
         self.assertEqual(len(self.provider.requests), before + 1)
         self.assertEqual(first['delivery']['total_parts'], 1)
-        self.assertLessEqual(first['message_count'], 21)
-        self.assertFalse(first['round_final'])
+        self.assertEqual(first['message_count'], 111)
+        self.assertTrue(first['round_final'])
         self.assertIn('received_to_request', first['timings_ms'])
         self.finish(first)
-        for _ in range(10):
-            if not self.store.ai_candidates():
-                break
-            run = self.start()
-            self.assertEqual(run['processing_type'], 'memory_backfill')
-            self.assertEqual(run['delivery']['total_parts'], 0)
-            self.assertFalse(self.envelope()['reply_allowed'])
+        self.assertEqual(self.store.ai_candidates(), [])
         self.assertEqual(self.ready(), [])
         self.assertEqual(self.store.call(lambda: self.store.db.execute("SELECT count(*) FROM group_round_messages WHERE done=0").fetchone()[0]), 0)
         self.assertEqual(self.store.call(lambda: self.store.db.execute('SELECT count(*) FROM deliveries').fetchone()[0]), 1)
@@ -87,13 +81,12 @@ class ReplyPriorityTests(RoleTestCase):
         self.assertEqual(second['processing_type'], 'realtime_reply')
         self.assertEqual(second['delivery']['status'], 'queued')
         self.finish(second)
-        last = self.start()
-        self.assertEqual(last['processing_type'], 'memory_backfill')
-        self.assertEqual(last['delivery']['status'], 'not_required')
+        self.assertEqual(self.store.ai_candidates(), [])
 
     def test_queued_retry_suspends_preserving_budget_and_rebases_memory(self):
-        self.group(1)
-        for index in range(1, 81): self.delta(index)
+        self.group(80)
+        self.enterContext(patch('backend.app.ai_provider.INPUT_TEXT_LIMIT', 60000))
+        for index in range(1, 81): self.delta(index, content={'text': 'x'*1000})
         background = self.queued()
         with patch.object(self.provider, 'generate', side_effect=ConversationError('ai_network_error', 'synthetic')):
             failed = self.perform(background)
@@ -116,8 +109,9 @@ class ReplyPriorityTests(RoleTestCase):
         self.assertEqual(resumed['delivery']['status'], 'not_required')
 
     def test_retry_suspension_survives_restart(self):
-        self.group(1)
-        for index in range(1, 81): self.delta(index)
+        self.group(80)
+        self.enterContext(patch('backend.app.ai_provider.INPUT_TEXT_LIMIT', 60000))
+        for index in range(1, 81): self.delta(index, content={'text': 'x'*1000})
         background = self.queued()
         with patch.object(self.provider, 'generate', side_effect=ConversationError('ai_network_error', 'synthetic')):
             self.perform(background)
@@ -136,30 +130,24 @@ class ReplyPriorityTests(RoleTestCase):
             self.assertIn(reply['reply'], snapshot['envelope']['memory'])
             self.assertFalse(snapshot['envelope']['reply_allowed'])
 
-    def test_waiting_media_does_not_block_reply_and_is_memorized_when_ready(self):
+    def test_waiting_media_placeholder_is_not_reprocessed_when_ready(self):
         self.group()
         self.delta(1, type='image', content={})
         self.mention(2)
         first = self.start()
-        self.assertEqual(first['delivery']['status'], 'queued')
+        self.assertEqual(first['message_count'], 2)
         self.finish(first)
-        self.assertEqual(self.store.ai_candidates(), [])
         self.cache_image(1)
-        last = self.start()
-        self.assertEqual(last['processing_type'], 'memory_backfill')
-        self.assertEqual(last['message_count'], 1)
-        self.assertTrue(last['round_final'])
+        self.assertEqual(self.store.ai_candidates(), [])
+        self.assertEqual(self.ready(), [])
 
-    def test_many_mentions_are_partitioned_without_consuming_unanswered_targets(self):
+    def test_many_mentions_share_one_request_without_duplicate_targets(self):
         self.group()
         for index in range(1, 56): self.mention(index)
         first = self.start()
-        self.assertEqual(len(first['reply_trigger_ids']), 50)
+        self.assertEqual(len(first['reply_trigger_ids']), 55)
         self.finish(first)
-        second = self.start()
-        self.assertEqual(len(second['reply_trigger_ids']), 5)
-        self.assertFalse(set(first['reply_trigger_ids']) & set(second['reply_trigger_ids']))
-        self.finish(second)
+        self.assertEqual(self.store.ai_candidates(), [])
         self.assertEqual(self.store.call(lambda: self.store.db.execute('SELECT count(*) FROM reply_triggers WHERE consumed_run_id IS NULL').fetchone()[0]), 0)
 
     def test_input_trimming_keeps_question_and_defers_omitted_context(self):
@@ -235,8 +223,9 @@ class ReplyPriorityTests(RoleTestCase):
         self.assertEqual(self.store.call(lambda: self.store.db.execute('SELECT count(*) FROM deliveries').fetchone()[0]), 1)
 
     def test_disable_cancels_suspended_retry(self):
-        self.group(1)
-        for index in range(1, 81): self.delta(index)
+        self.group(80)
+        self.enterContext(patch('backend.app.ai_provider.INPUT_TEXT_LIMIT', 60000))
+        for index in range(1, 81): self.delta(index, content={'text': 'x'*1000})
         background = self.queued()
         with patch.object(self.provider, 'generate', side_effect=ConversationError('ai_network_error', 'synthetic')):
             self.perform(background)
@@ -248,8 +237,9 @@ class ReplyPriorityTests(RoleTestCase):
         self.assertEqual(self.store.ai_retry_candidates(), [])
 
     def test_manual_memory_edit_does_not_rebase_suspended_retry(self):
-        self.group(1)
-        for index in range(1, 81): self.delta(index)
+        self.group(80)
+        self.enterContext(patch('backend.app.ai_provider.INPUT_TEXT_LIMIT', 60000))
+        for index in range(1, 81): self.delta(index, content={'text': 'x'*1000})
         background = self.queued()
         with patch.object(self.provider, 'generate', side_effect=ConversationError('ai_network_error', 'synthetic')):
             self.perform(background)
@@ -262,8 +252,9 @@ class ReplyPriorityTests(RoleTestCase):
         self.assertEqual(self.preferences()['memory'], '用户手工记忆')
 
     def test_unclaimed_background_can_yield_and_resume_without_snapshot(self):
-        self.group(1)
-        for index in range(1, 81): self.delta(index)
+        self.group(80)
+        self.enterContext(patch('backend.app.ai_provider.INPUT_TEXT_LIMIT', 60000))
+        for index in range(1, 81): self.delta(index, content={'text': 'x'*1000})
         background = self.queued()
         self.mention(81)
         self.store.ai_retry_candidates()

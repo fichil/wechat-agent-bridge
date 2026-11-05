@@ -144,15 +144,25 @@ class AiExecutionStoreMixin:
         if kind == "voice" and not content.get("transcript"):
             status, reason = "waiting_transcript", "等待微信语音转写"
         elif kind in ("image", "sticker"):
-            media = self.db.execute("SELECT digest,mime_type,data FROM media_cache WHERE cache_key=? AND account_id=?", ("image:"+mid, row["account_id"])).fetchone()
+            media = self.db.execute('SELECT digest,mime_type' + (',data' if include_media else '') +
+                                    ' FROM media_cache WHERE cache_key=? AND account_id=?', ("image:"+mid, row["account_id"])).fetchone()
             digest = media["digest"] if media else state.get("media_digest")
             value["content"] = {"media_digest": digest}
             if not vision:
                 status, reason = "waiting_image", "所选 API 图片能力未通过测试"
             elif media is None:
                 status, reason = "waiting_image", "等待图片读取"
+            if self._is_group(row['account_id'], row['conversation_id']):
+                # Processing a placeholder covers this message, independently of
+                # when its image cache becomes available or is evicted.
+                digest = None
+                value['content'] = {k: content[k] for k in ('description', 'filename', 'text') if content.get(k)}
+                value['content']['visual_content'] = 'not_inspected'
+                status, reason = 'pending', None
         elif kind not in ("text", "system", "voice"):
             status, reason = "unsupported", "暂不支持此类消息"
+        if content.get('quoted_server_id'):
+            value['content']['quoted_server_id'] = content['quoted_server_id']
         fingerprint = hashlib.sha256(pack(value).encode()).hexdigest()
         if state.get("fingerprint") == fingerprint and (state.get("status") in ("memorized", "processing") or (state.get("status") == "failed" and status == "pending")):
             status = state["status"]
@@ -298,8 +308,8 @@ class AiExecutionStoreMixin:
                 effective = self._effective(prefs)
                 profiles = self._routing_profiles(prefs)
                 realtime = run.get('processing_type') == 'realtime_reply'
-                needs_vision = (any(json.loads(row['payload'])['type'] in ('image', 'sticker') for row in self._group_reply_rows(aid, cid))
-                                if realtime else self._route_requires_vision(aid, cid))
+                needs_vision = (bool(self._group_media_ids(aid, cid, self._group_live_rows(aid, cid)))
+                                if self._is_group(aid, cid) else self._route_requires_vision(aid, cid))
                 if any(p['verification'].get('vision') == 'supported' for p in profiles) and needs_vision:
                     profiles = [p for p in profiles if p['verification'].get('vision') == 'supported']
                 if run.pop('resume_background', False) and run.get('route_candidates'):
@@ -336,6 +346,9 @@ class AiExecutionStoreMixin:
                     else:
                         selected, more = self._group_batch(group)
                         self._group_run_fields(run,group,not more)
+                        rows = [self.db.execute('SELECT * FROM messages WHERE message_id=?', (item[0]['message_id'],)).fetchone() for item in selected]
+                        selected, context_only = self._group_attach_media(aid, cid, selected, rows, profile['verification'].get('vision') == 'supported')
+                        run['context_only_ids'] = context_only
                 self.db.execute("UPDATE ai_sessions SET auto_pending=? WHERE account_id=? AND conversation_id=?", (int(more), aid,cid))
                 run.update(status="running" if selected else "empty", snapshot_taken=bool(selected), message_count=len(selected), memory_revision=prefs["memory_revision"],
                            epoch=session["epoch"], historical=bool(selected and all(s[3] <= session["initial_seq"] for s in selected)),
@@ -364,6 +377,8 @@ class AiExecutionStoreMixin:
                     character_card=card["card"], memory=prefs["memory"], messages=[s[0] for s in selected],
                     role_card_edit_allowed=self._ai_role_edit_allowed(run),
                     **self._ai_reply_envelope(run), deliveries=self._delivery_context(aid,cid))) if selected else None
+                if result and self._is_group(aid, cid):
+                    result['envelope']['memory_max_chars'] = 4000
             self.notify(event)
             return result
         return self.call(write)
@@ -382,7 +397,8 @@ class AiExecutionStoreMixin:
             return dict(reply_allowed=run['round_final'], reply_target_ids=run['reply_trigger_ids'],
                         reply_required=bool(run['round_final'] and run['trigger_reason'] == 'mention' and run['reply_trigger_ids']),
                         trigger_reason=run['trigger_reason'], trigger_messages=run['trigger_messages'],
-                        round_id=run['round_id'], round_final=run['round_final'], batch_index=run['batch_index'])
+                        round_id=run['round_id'], round_final=run['round_final'], batch_index=run['batch_index'],
+                        context_only_ids=run.get('context_only_ids', []))
         return dict(reply_allowed=bool(run.get('reply_trigger_ids')), reply_target_ids=run.get('reply_trigger_ids',[]),
                     reply_required=bool(run.get('reply_trigger_ids')))
 
@@ -403,7 +419,8 @@ class AiExecutionStoreMixin:
             run['context_only_ids'] = [mid for mid in run.get('context_only_ids', []) if mid in keep]
         elif run.get('round_id'):
             remaining = self.db.execute('SELECT count(*) FROM group_round_messages WHERE round_id=? AND done=0', (run['round_id'],)).fetchone()[0]
-            run['round_final'] = remaining == len(keep)
+            run['context_only_ids'] = [mid for mid in run.get('context_only_ids', []) if mid in keep]
+            run['round_final'] = remaining == len(keep - set(run.get('context_only_ids', [])))
         else:
             run['reply_trigger_ids'] = self._reply_ids(run['account_id'], run['conversation_id'], keep)
         return run
@@ -425,6 +442,7 @@ class AiExecutionStoreMixin:
                     self.db.execute("UPDATE ai_message_state SET status='pending' WHERE message_id=? AND run_id=?", (mid, rid))
                 if removed:
                     self.db.execute("UPDATE ai_sessions SET auto_pending=1 WHERE account_id=? AND conversation_id=?", (aid,cid))
+                    run['split_reason'] = 'input_budget'
                 run = self._trimmed_ai_run(run, keep)
                 self._ai_write_run(run)
                 event = self._ai_touch(aid, cid, removed)
@@ -444,6 +462,7 @@ class AiExecutionStoreMixin:
                     self._ai_write_run(run)
                     return False
                 run.update(attempt_count=run.get('attempt_count',0)+1, next_retry_at=None, error=None, message=None)
+                run['http_attempt_count'] = run.get('http_attempt_count', 0) + 1
                 run['request_started_at'] = stamp()
                 run.setdefault('timings_ms', {}).pop('model_request', None)
                 if run.get('processing_type') == 'realtime_reply' and run.get('reply_trigger_ids'):
@@ -533,6 +552,10 @@ class AiExecutionStoreMixin:
         def query():
             if not self._ai_vision(aid, cid):
                 return []
+            if self._is_group(aid, cid):
+                chosen = self._group_media_ids(aid, cid, self._group_live_rows(aid, cid))
+                return [mid for mid in chosen if mid not in exclude and not self.db.execute(
+                    'SELECT 1 FROM media_cache WHERE cache_key=?', ('image:' + mid,)).fetchone()]
             exclusion = " AND m.message_id NOT IN ("+",".join("?" for _ in exclude)+")" if exclude else ""
             return [r[0] for r in self.db.execute("SELECT m.message_id FROM messages m LEFT JOIN media_cache c ON c.cache_key='image:'||m.message_id WHERE m.account_id=? AND m.conversation_id=? AND json_extract(m.payload,'$.type') IN ('image','sticker') AND c.cache_key IS NULL AND NOT EXISTS(SELECT 1 FROM ai_message_state s WHERE s.message_id=m.message_id AND s.status='memorized') "+exclusion+" ORDER BY m.sort_key LIMIT 4", (aid, cid, *exclude))]
         return self.call(query)
