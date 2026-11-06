@@ -95,6 +95,8 @@ CREATE TABLE cursors(token TEXT PRIMARY KEY, account_id TEXT NOT NULL, conversat
 class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, AiRoutingStoreMixin, CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
     def __init__(self, path=DEFAULT_PATH, settings=None, image_limit=IMAGE_LIMIT):
         self.path, self.image_limit = Path(path) if str(path) != ":memory:" else path, image_limit
+        from .performance import PerformanceLog
+        self.performance = PerformanceLog(self.path)
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="archive-db")
         self.notify = lambda event: None
         self.source_reads = {}
@@ -113,23 +115,28 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
                     self.file_lock.close()
             self.executor.submit(cleanup).result()
             self.executor.shutdown()
+            self.performance.close()
             raise
 
     def call(self, method, *args, timings=None):
+        measured_times = timings if timings is not None else {}
+        queued = time.monotonic()
+        def measured():
+            started = time.monotonic()
+            measured_times['queue_wait'] = round((started-queued)*1000, 3)
+            try:
+                return method(*args)
+            finally:
+                measured_times['execution'] = round((time.monotonic()-started)*1000, 3)
         try:
-            if timings is None:
-                return self.executor.submit(method, *args).result()
-            queued = time.monotonic()
-            def measured():
-                started = time.monotonic()
-                timings['queue_wait'] = round((started-queued)*1000,3)
-                try:
-                    return method(*args)
-                finally:
-                    timings['execution'] = round((time.monotonic()-started)*1000,3)
             return self.executor.submit(measured).result()
         except sqlite3.Error:
             raise ConversationError("storage_unavailable", "本地数据库暂不可用，已有数据未被清空。", 503) from None
+        finally:
+            # Write on the caller, after releasing the single SQL owner thread.
+            self.performance.record('database', getattr(method, '__qualname__', 'operation'),
+                                    queue_ms=measured_times.get('queue_wait', 0),
+                                    execution_ms=measured_times.get('execution', 0))
 
     @contextmanager
     def source_snapshot(self, aid):
@@ -261,6 +268,10 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
         upgrade_v11(self.db)
         upgrade_v12(self.db)
         self._log_indexes()
+        # Additive indexes keep schema 12 and old releases compatible. Explicitly
+        # select these covering indexes: SQLite otherwise prefers the unique key.
+        self.db.execute('CREATE INDEX IF NOT EXISTS media_cache_metadata ON media_cache(cache_key,account_id,digest,mime_type)')
+        self.db.execute('CREATE INDEX IF NOT EXISTS media_cache_capacity ON media_cache(kind,used_at,cache_key,size)')
         self._seed_stickers()
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             self.db.close()
@@ -302,6 +313,7 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
             self.call(finish)
         finally:
             self.executor.shutdown()
+            self.performance.close()
 
     def _changed(self, account_id, resources, conversations=None):
         self.db.execute("UPDATE accounts SET revision=revision+1 WHERE account_id=?", (account_id,))
@@ -712,8 +724,8 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
                     if len(data) > 8*1024*1024:
                         raise ConversationError("image_size_limit", "图片超过缓存上限。", 422)
                     self.db.execute("INSERT OR REPLACE INTO media_cache VALUES(?,?,?,?,?,?,?,?,?)", (key, aid, "image", value["mime_type"], data, len(data), hashlib.sha256(data).hexdigest(), value.get("quality"), time.time()))
-                    total = self.db.execute("SELECT COALESCE(SUM(size),0) FROM media_cache WHERE kind='image'").fetchone()[0]
-                    for old in self.db.execute("SELECT cache_key,size FROM media_cache WHERE kind='image' ORDER BY used_at").fetchall():
+                    total = self.db.execute("SELECT COALESCE(SUM(size),0) FROM media_cache INDEXED BY media_cache_capacity WHERE kind='image'").fetchone()[0]
+                    for old in self.db.execute("SELECT cache_key,size FROM media_cache INDEXED BY media_cache_capacity WHERE kind='image' ORDER BY used_at").fetchall():
                         if total <= self.image_limit:
                             break
                         self.db.execute("DELETE FROM media_cache WHERE cache_key=?", (old[0],))

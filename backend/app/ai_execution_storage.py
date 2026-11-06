@@ -10,6 +10,8 @@ from .conversations import ConversationError
 from .role_storage import conflict
 from . import secret_protection
 
+_UNLOADED = object()
+
 def stamp():
     return datetime.now(timezone.utc).isoformat()
 
@@ -129,36 +131,41 @@ class AiExecutionStoreMixin:
     def _ai_vision(self, aid, cid):
         return bool(self._routing_profiles(self._preferences(aid, cid), vision=True))
 
-    def _ai_item(self, row, vision, include_media=False):
+    def _ai_item(self, row, vision, include_media=False, *, state=_UNLOADED, media=_UNLOADED, group=None):
         message = json.loads(row["payload"])
         mid = message["message_id"]
-        state_row = self.db.execute("SELECT * FROM ai_message_state WHERE message_id=?", (mid,)).fetchone()
-        state = dict(state_row) if state_row else {}
+        if state is _UNLOADED:
+            state_row = self.db.execute("SELECT * FROM ai_message_state WHERE message_id=?", (mid,)).fetchone()
+            state = dict(state_row) if state_row else {}
         content = message["content"]
         kind = message["type"]
         value = {k: message.get(k) for k in ("message_id", "sent_at", "sender", "is_self", "type")}
         value["time_status"] = "known" if value["sent_at"] else "unknown"
         value["content"] = {"text": content.get("transcript") if kind == "voice" else content.get("text")}
         status, reason, digest = "pending", None, None
-        media = None
         if kind == "voice" and not content.get("transcript"):
             status, reason = "waiting_transcript", "等待微信语音转写"
         elif kind in ("image", "sticker"):
-            media = self.db.execute('SELECT digest,mime_type' + (',data' if include_media else '') +
-                                    ' FROM media_cache WHERE cache_key=? AND account_id=?', ("image:"+mid, row["account_id"])).fetchone()
-            digest = media["digest"] if media else state.get("media_digest")
-            value["content"] = {"media_digest": digest}
-            if not vision:
-                status, reason = "waiting_image", "所选 API 图片能力未通过测试"
-            elif media is None:
-                status, reason = "waiting_image", "等待图片读取"
-            if self._is_group(row['account_id'], row['conversation_id']):
+            if group is None:
+                group = self._is_group(row['account_id'], row['conversation_id'])
+            if media is _UNLOADED and (not group or include_media):
+                media = self.db.execute('SELECT digest,mime_type' + (',data' if include_media else '') +
+                    ' FROM media_cache' + ('' if include_media else ' INDEXED BY media_cache_metadata') +
+                    ' WHERE cache_key=? AND account_id=?', ("image:"+mid, row["account_id"])).fetchone()
+            if group:
                 # Processing a placeholder covers this message, independently of
                 # when its image cache becomes available or is evicted.
                 digest = None
                 value['content'] = {k: content[k] for k in ('description', 'filename', 'text') if content.get(k)}
                 value['content']['visual_content'] = 'not_inspected'
                 status, reason = 'pending', None
+            else:
+                digest = media["digest"] if media else state.get("media_digest")
+                value["content"] = {"media_digest": digest}
+                if not vision:
+                    status, reason = "waiting_image", "所选 API 图片能力未通过测试"
+                elif media is None:
+                    status, reason = "waiting_image", "等待图片读取"
         elif kind not in ("text", "system", "voice"):
             status, reason = "unsupported", "暂不支持此类消息"
         if content.get('quoted_server_id'):
@@ -169,7 +176,7 @@ class AiExecutionStoreMixin:
             reason = None
         covered = state if state.get("fingerprint") == fingerprint else {}
         public = dict(status=status, run_id=covered.get("run_id"), attempted_at=covered.get("attempted_at"), memorized_at=covered.get("memorized_at"), reason=reason)
-        if include_media and media is not None:
+        if include_media and media is not _UNLOADED and media is not None:
             value["content"]["_image_bytes"] = bytes(media["data"])
             value["content"]["_image_mime"] = media["mime_type"]
         return value, fingerprint, digest, public
@@ -180,9 +187,20 @@ class AiExecutionStoreMixin:
 
     def _ai_counts(self, aid, cid):
         vision = self._ai_vision(aid, cid)
+        group = self._is_group(aid, cid)
         counts = dict(pending_count=0, waiting_count=0)
-        for row in self.db.execute("SELECT * FROM messages WHERE account_id=? AND conversation_id=?", (aid, cid)):
-            status = self._ai_item(row, vision)[3]["status"]
+        fields = ('fingerprint', 'media_digest', 'status', 'run_id', 'attempted_at', 'memorized_at')
+        projection = ','.join('s.'+name+' AS state_'+name for name in fields)
+        media_projection = 'NULL AS cached_digest,NULL AS cached_mime' if group else 'c.digest AS cached_digest,c.mime_type AS cached_mime'
+        media_join = '' if group else (" LEFT JOIN media_cache c INDEXED BY media_cache_metadata"
+            " ON c.cache_key='image:'||m.message_id AND c.account_id=m.account_id AND json_extract(m.payload,'$.type') IN ('image','sticker')")
+        rows = self.db.execute('SELECT m.payload,m.account_id,m.conversation_id,'+projection+','+media_projection+
+            ' FROM messages m LEFT JOIN ai_message_state s ON s.message_id=m.message_id'+media_join+
+            ' WHERE m.account_id=? AND m.conversation_id=?', (aid, cid))
+        for row in rows:
+            state = {name: row['state_'+name] for name in fields}
+            media = dict(digest=row['cached_digest'], mime_type=row['cached_mime']) if row['cached_digest'] is not None else None
+            status = self._ai_item(row, vision, state=state, media=media, group=group)[3]["status"]
             counts["pending_count" if status in ("pending", "failed", "processing") else "waiting_count"] += int(status != "memorized")
         return counts
 

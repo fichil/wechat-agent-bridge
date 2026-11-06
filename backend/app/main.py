@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 import os
 import hmac
 import asyncio
+import time
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
@@ -119,6 +120,21 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
                   openapi_url='/openapi.json' if development else None)
     failures = {code: {"model": ApiError} for code in (400, 401, 403, 404, 409, 415, 422, 429, 500, 503)}
 
+    async def slow_requests(request: Request, call_next):
+        started = time.monotonic()
+        status = 500
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            return response
+        finally:
+            elapsed = (time.monotonic()-started)*1000
+            if elapsed > 1000:
+                route = request.scope.get('route')
+                operation = getattr(route, 'path', 'unmatched')
+                await asyncio.to_thread(request.app.state.store.performance.record, 'http', operation,
+                                        execution_ms=elapsed, status=status)
+
     @app.middleware("http")
     async def local_boundary(request: Request, call_next):
         config = request.app.state.auth_config
@@ -153,6 +169,9 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['Referrer-Policy'] = 'no-referrer'
         return response
+
+    # Register last so authentication and request validation are timed as well.
+    app.middleware('http')(slow_requests)
 
     @app.exception_handler(AuthError)
     async def auth_error(_request, exc):

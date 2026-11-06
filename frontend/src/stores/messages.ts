@@ -9,14 +9,25 @@ import {
   type MessageImage,
   type MessageReadTask,
 } from "../api";
-import { isAccountLost } from "../conversation-options";
+import { conversationErrorText, isAccountLost } from "../conversation-options";
+import { ConnectionFailure } from "../connection";
+import { useCacheRecovery } from "../cache-recovery";
 
 export function messageError(cause: unknown): string {
+  if (cause instanceof ConnectionFailure) return cause.message;
   const code = cause instanceof ApiFailure ? cause.code : "";
   if (code === "cursor_expired" || code === "message_task_expired")
     return "历史读取已过期，请刷新聊天记录。";
   if (isAccountLost(cause)) return "账号已退出或切换，请重新识别。";
   if (code === "conversation_not_found") return "会话已失效，请刷新左侧列表。";
+  if (
+    [
+      "source_offline",
+      "account_changed_during_read",
+      "process_exited",
+    ].includes(code)
+  )
+    return conversationErrorText(cause);
   return "聊天记录暂未更新，请稍后重试。";
 }
 
@@ -42,6 +53,7 @@ export const useMessagesStore = defineStore("messages", () => {
   let dirty = false;
   let imageQueue: Promise<void> = Promise.resolve();
   const pauses = new Set<() => void>();
+  const recovery = useCacheRecovery(() => void refresh(false, true), stop);
 
   function valid(ticket: number) {
     return enabled && ticket === generation;
@@ -50,6 +62,7 @@ export const useMessagesStore = defineStore("messages", () => {
     enabled = false;
     generation++;
     clearTimeout(timer);
+    recovery.cancel();
     for (const wake of pauses) wake();
     pauses.clear();
     pending = null;
@@ -69,6 +82,7 @@ export const useMessagesStore = defineStore("messages", () => {
     });
   }
   function fail(cause: unknown) {
+    recovery.failed(cause);
     error.value = messageError(cause);
     if (isAccountLost(cause)) {
       stop();
@@ -107,14 +121,27 @@ export const useMessagesStore = defineStore("messages", () => {
     }
     return null;
   }
-  async function read(cursor: string | null, ticket: number, force = false) {
-    const cached = await api.messages(
-      accountId.value!,
-      conversationId.value!,
-      cursor,
-    );
+  async function read(
+    cursor: string | null,
+    ticket: number,
+    force = false,
+    cacheOnly = false,
+    signal?: AbortSignal,
+  ) {
+    const cached = cacheOnly
+      ? await api.messages(
+          accountId.value!,
+          conversationId.value!,
+          cursor,
+          signal,
+        )
+      : await api.messages(accountId.value!, conversationId.value!, cursor);
     if (!valid(ticket)) return null;
-    if ((!cached.needs_sync && !force) || cached.source_state !== "online")
+    if (
+      cacheOnly ||
+      (!cached.needs_sync && !force) ||
+      cached.source_state !== "online"
+    )
       return cached;
     if (!cursor) merge(cached);
     const task = await api.readMessages(
@@ -150,11 +177,16 @@ export const useMessagesStore = defineStore("messages", () => {
       );
     page.value = result;
   }
-  function schedule() {
+  function schedule(cacheOnly = false) {
     // Updates are driven by committed database notifications, not source polling.
-    if (enabled && dirty) timer = setTimeout(() => void refresh(), 150);
+    if (enabled && recovery.recovering.value) recovery.schedule();
+    else if (enabled && dirty)
+      timer = setTimeout(() => void refresh(false, cacheOnly), 150);
   }
-  function refresh(force = false): Promise<void> {
+  function refresh(
+    force = false,
+    cacheOnly = !force && recovery.recovering.value,
+  ): Promise<void> {
     if (pending) return pending;
     if (!enabled || !conversationId.value || loadingMore.value)
       return Promise.resolve();
@@ -162,23 +194,31 @@ export const useMessagesStore = defineStore("messages", () => {
     dirty = false;
     const ticket = generation;
     loading.value = true;
+    const signal = cacheOnly ? recovery.begin() : undefined;
     pending = (async () => {
       try {
         if (newerCursor && !force) {
           let more = true;
           while (more && valid(ticket)) {
-            const delta = await api.messages(
-              accountId.value!,
-              conversationId.value!,
-              newerCursor,
-            );
+            const delta: MessagePage = cacheOnly
+              ? await api.messages(
+                  accountId.value!,
+                  conversationId.value!,
+                  newerCursor,
+                  signal,
+                )
+              : await api.messages(
+                  accountId.value!,
+                  conversationId.value!,
+                  newerCursor,
+                );
             if (!valid(ticket)) return;
             merge(delta);
             newerCursor = delta.newer_cursor;
             more = delta.has_more;
           }
         }
-        const latest = await read(null, ticket, force);
+        const latest = await read(null, ticket, force, cacheOnly, signal);
         if (!latest || !valid(ticket)) return;
         if (replaceOnRefresh) {
           items.value = [];
@@ -193,6 +233,7 @@ export const useMessagesStore = defineStore("messages", () => {
           olderCursor.value = latest.older_cursor;
         if (!newerCursor) newerCursor = latest.newer_cursor;
         error.value = "";
+        recovery.success();
       } catch (cause) {
         if (!valid(ticket)) return;
         if (cause instanceof ApiFailure && cause.code === "cursor_expired") {
@@ -204,7 +245,7 @@ export const useMessagesStore = defineStore("messages", () => {
         if (generation === ticket) {
           loading.value = false;
           pending = null;
-          schedule();
+          schedule(cacheOnly);
         }
       }
     })();
@@ -221,6 +262,7 @@ export const useMessagesStore = defineStore("messages", () => {
     accountId.value = account;
     conversationId.value = conversation;
     if (changed) {
+      recovery.reset();
       replaceOnRefresh = false;
       items.value = [];
       page.value = null;
@@ -354,6 +396,10 @@ export const useMessagesStore = defineStore("messages", () => {
         event.resources?.includes("messages")
       ) {
         dirty = true;
+        if (recovery.recovering.value) {
+          recovery.schedule();
+          return;
+        }
         clearTimeout(timer);
         timer = setTimeout(() => void refresh(), 150);
       }
@@ -370,6 +416,8 @@ export const useMessagesStore = defineStore("messages", () => {
     loading,
     loadingMore,
     error,
+    recovering: recovery.recovering,
+    lastCheckedAt: recovery.lastCheckedAt,
     accountLost,
     arrivalCount,
     olderCursor,

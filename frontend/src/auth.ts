@@ -1,4 +1,5 @@
 import { reactive } from "vue";
+import { ConnectionFailure } from "./connection";
 import type { components } from "./api/schema";
 
 type Session = components["schemas"]["AuthSession"];
@@ -213,9 +214,9 @@ export async function authenticatedFetch(request: Request): Promise<Response> {
       headers: response.headers,
     });
   } catch (error) {
-    if (timedOut) throw new Error("连接中断：后台响应超时，请稍后重试。");
+    if (timedOut) throw new ConnectionFailure("backend_timeout");
     if (error instanceof TypeError)
-      throw new Error("连接中断：无法连接后台，请检查服务或网络。");
+      throw new ConnectionFailure("network_unavailable");
     throw error;
   } finally {
     clearTimeout(timeout);

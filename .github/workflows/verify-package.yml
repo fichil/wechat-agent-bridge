@@ -38,6 +38,8 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           .venv-backend/Scripts/python.exe -B -X utf8 scripts/verify_log_performance.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .venv-backend/Scripts/python.exe -B -X utf8 scripts/verify_connection_performance.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Frontend contracts, unit tests and build
         working-directory: frontend
         shell: pwsh

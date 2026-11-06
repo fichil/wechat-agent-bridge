@@ -3,6 +3,7 @@ import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import type { Conversation } from "../api";
 import { useMessagesStore } from "../stores/messages";
 import MessageImage from "./MessageImage.vue";
+import { formatTime } from "../reasons";
 const props = defineProps<{ accountId: string; conversation?: Conversation }>();
 const store = useMessagesStore();
 const viewport = ref<HTMLElement>();
@@ -118,6 +119,12 @@ onBeforeUnmount(() => {
         >
       </header>
       <div v-if="store.error" role="alert" class="message-alert">
+        <span v-if="store.lastCheckedAt"
+          >最后成功检查：{{
+            formatTime(store.lastCheckedAt)
+          }}；当前显示上次读取结果。</span
+        >
+        <span v-if="store.recovering">正在自动重试。</span>
         {{ store.error
         }}<RouterLink v-if="store.accountLost" to="/accounts"
           >重新选择账号</RouterLink

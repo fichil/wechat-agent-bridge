@@ -23,6 +23,8 @@ async function mockConversations(page: Page) {
     historyFail: false,
     stickers: false,
     mediaReads: 0,
+    connection: "ready" as "ready" | "timeout" | "offline",
+    cacheNeedsSync: false,
   };
   const messageTasks = new Map();
   const second = {
@@ -51,6 +53,13 @@ async function mockConversations(page: Page) {
   await page.route("**/api/v1/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (await mockAuthenticatedSession(route, path)) return;
+    if (
+      path.endsWith("/conversations/query") ||
+      path.endsWith("/messages/query")
+    ) {
+      if (state.connection === "timeout") return;
+      if (state.connection === "offline") return route.abort();
+    }
     const body =
       route.request().method() === "POST" ? route.request().postDataJSON() : {};
     const id = body?.account_id;
@@ -148,6 +157,7 @@ async function mockConversations(page: Page) {
       if (body.cursor === "older") task.page!.older_cursor = null;
       messageTasks.set(task.task_id, task);
       if (path.endsWith("/messages/query")) {
+        task.page!.needs_sync = state.cacheNeedsSync;
         if (body.cursor === "newer") {
           task.page!.items = state.extraMessage ? [message(6)] : [];
           task.page!.has_more = false;
@@ -265,7 +275,7 @@ async function mockConversations(page: Page) {
           account_id: id,
           source_state: "online",
           coverage: "complete",
-          needs_sync: false,
+          needs_sync: state.cacheNeedsSync,
           revision: 0,
           snapshot_id: "snapshot",
           observed_at: "2026-10-28T05:00:00Z",
@@ -284,6 +294,54 @@ async function mockConversations(page: Page) {
     throw new Error(`Unexpected request ${path}`);
   });
   return { state, settings, notify: (event: object) => notify(event) };
+}
+
+for (const failure of ["timeout", "offline"] as const) {
+  test(`conversation and history recover from ${failure} without another notification or source job`, async ({
+    page,
+  }) => {
+    const { state, notify } = await mockConversations(page);
+    await page.clock.install();
+    await page.goto(`/workspace/${syntheticAccount.account_id}/conversations`);
+    await page.getByRole("button", { name: /合成会话 0 / }).click();
+    const history = page.getByRole("region", { name: "聊天历史" });
+    await expect(history).toContainText("合成消息 1");
+    await expect(page.getByRole("button", { name: "刷新会话" })).toBeEnabled();
+    const original = {
+      refreshes: state.refreshes,
+      historyReads: state.historyReads,
+    };
+    state.connection = failure;
+    const queried = page.waitForRequest((request) =>
+      request.url().endsWith("/conversations/query"),
+    );
+    notify({
+      type: "changed",
+      account_id: syntheticAccount.account_id,
+      resources: ["conversations", "messages"],
+    });
+    await page.clock.fastForward(151);
+    await queried;
+    if (failure === "timeout") await page.clock.fastForward(15001);
+    const reason = failure === "timeout" ? "后台响应超时" : "无法连接后台";
+    await expect(
+      page.locator(".conversation-alert").filter({ hasText: reason }),
+    ).toContainText("最后成功检查");
+    await expect(history.getByRole("alert")).toContainText(reason);
+    await expect(history).toContainText("合成消息 1");
+    state.connection = "ready";
+    state.cacheNeedsSync = true;
+    state.extraMessage = true;
+    // No ready/changed/resync event follows the outage.
+    await page.clock.fastForward(2001);
+    await expect(
+      page.locator(".conversation-alert").filter({ hasText: reason }),
+    ).toHaveCount(0);
+    await expect(history.getByRole("alert")).toHaveCount(0);
+    await expect(history).toContainText("合成消息 6");
+    expect(state.refreshes).toBe(original.refreshes);
+    expect(state.historyReads).toBe(original.historyReads);
+  });
 }
 
 test("filter settings persist per account; history renders and preserves the scroll anchor", async ({
@@ -480,9 +538,9 @@ test("cache query contract, pagination, manual refresh, and mobile empty states"
   // A reconnect refresh can begin between Playwright's enabled check and click.
   // Retry the user action until the requested page arrives; never rely on timing.
   await expect(async () => {
-    if (await page.locator('.conversation-row').count() === 50)
+    if ((await page.locator(".conversation-row").count()) === 50)
       await page.getByRole("button", { name: "加载更多" }).click();
-    await expect(page.locator('.conversation-row')).toHaveCount(61);
+    await expect(page.locator(".conversation-row")).toHaveCount(61);
   }).toPass({ timeout: 10000 });
   const nextResponse = await nextQuery;
   expect(nextResponse.status()).toBe(200);

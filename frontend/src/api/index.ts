@@ -345,9 +345,11 @@ export const api = {
     accountId: string,
     conversationId: string,
     cursor: string | null = null,
+    signal?: AbortSignal,
   ): Promise<MessagePage> {
     return value(
       await client.POST("/api/v1/messages/query", {
+        signal,
         body: {
           account_id: accountId,
           conversation_id: conversationId,
@@ -436,9 +438,11 @@ export const api = {
   async conversations(
     accountId: string,
     cursor: string | null = null,
+    signal?: AbortSignal,
   ): Promise<ConversationPage> {
     return value(
       await client.POST("/api/v1/conversations/query", {
+        signal,
         body: {
           account_id: accountId,
           cursor,

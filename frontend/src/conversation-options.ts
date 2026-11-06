@@ -1,4 +1,5 @@
 import { ApiFailure, type Exclusions } from "./api";
+import { ConnectionFailure } from "./connection";
 
 export const exclusionOptions: {
   key: keyof Exclusions;
@@ -61,6 +62,7 @@ export function isAccountLost(cause: unknown) {
 }
 
 export function conversationErrorText(cause: unknown): string {
+  if (cause instanceof ConnectionFailure) return cause.message;
   if (isAccountLost(cause)) return "微信账号已退出或切换，请重新识别。";
   if (!(cause instanceof ApiFailure))
     return "无法连接本地服务，请检查服务后重试。";

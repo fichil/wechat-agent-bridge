@@ -8,6 +8,7 @@ import {
   type ConversationPage,
 } from "../api";
 import { conversationErrorText, isAccountLost } from "../conversation-options";
+import { useCacheRecovery } from "../cache-recovery";
 
 export const useConversationsStore = defineStore("conversations", () => {
   const accountId = ref<string | null>(null);
@@ -24,11 +25,13 @@ export const useConversationsStore = defineStore("conversations", () => {
   let pending: Promise<void> | null = null;
   let dirty = false;
   let wakePoll: (() => void) | null = null;
+  const recovery = useCacheRecovery(() => void refresh(false, true), stop);
 
   function stop() {
     enabled = false;
     generation++;
     clearTimeout(timer);
+    recovery.cancel();
     wakePoll?.();
     wakePoll = null;
     pending = null;
@@ -54,6 +57,7 @@ export const useConversationsStore = defineStore("conversations", () => {
   }
 
   function fail(cause: unknown) {
+    recovery.failed(cause);
     error.value = conversationErrorText(cause);
     if (isAccountLost(cause)) {
       accountLost.value = true;
@@ -64,7 +68,10 @@ export const useConversationsStore = defineStore("conversations", () => {
     }
   }
 
-  function refresh(force = true): Promise<void> {
+  function refresh(
+    force = true,
+    cacheOnly = !force && recovery.recovering.value,
+  ): Promise<void> {
     if (pending) return pending;
     if (!enabled || !accountId.value || loadingMore.value)
       return Promise.resolve();
@@ -74,15 +81,26 @@ export const useConversationsStore = defineStore("conversations", () => {
     const ticket = generation;
     const previousCount = items.value.length;
     refreshing.value = true;
+    const signal = cacheOnly ? recovery.begin() : undefined;
+    const query = (cursor: string | null = null) =>
+      cacheOnly
+        ? api.conversations(id, cursor, signal)
+        : cursor
+          ? api.conversations(id, cursor)
+          : api.conversations(id);
     pending = (async () => {
       try {
-        let result = await api.conversations(id);
+        let result = await query();
         if (!valid(ticket, id)) return;
         if (!items.value.length) {
           items.value = [...result.items];
           page.value = result;
         }
-        if ((force || result.needs_sync) && result.source_state === "online") {
+        if (
+          !cacheOnly &&
+          (force || result.needs_sync) &&
+          result.source_state === "online"
+        ) {
           let task = await api.refreshConversations(id);
           if (!valid(ticket, id)) return;
           while (task.status === "queued" || task.status === "running") {
@@ -98,13 +116,14 @@ export const useConversationsStore = defineStore("conversations", () => {
         if (!valid(ticket, id)) return;
         let loaded = [...result.items];
         while (result.next_cursor && loaded.length < previousCount) {
-          result = await api.conversations(id, result.next_cursor);
+          result = await query(result.next_cursor);
           if (!valid(ticket, id)) return;
           loaded.push(...result.items);
         }
         items.value = loaded;
         page.value = result;
         error.value = "";
+        recovery.success();
         accountLost.value = false;
         if (
           selectedId.value &&
@@ -117,8 +136,9 @@ export const useConversationsStore = defineStore("conversations", () => {
         if (generation === ticket) {
           refreshing.value = false;
           pending = null;
-          if (enabled && dirty)
-            timer = setTimeout(() => void refresh(false), 150);
+          if (enabled && recovery.recovering.value) recovery.schedule();
+          else if (enabled && dirty)
+            timer = setTimeout(() => void refresh(false, cacheOnly), 150);
         }
       }
     })();
@@ -128,6 +148,7 @@ export const useConversationsStore = defineStore("conversations", () => {
   function activate(id: string, visible = true) {
     stop();
     if (accountId.value !== id) {
+      recovery.reset();
       items.value = [];
       page.value = null;
       selectedId.value = null;
@@ -168,7 +189,8 @@ export const useConversationsStore = defineStore("conversations", () => {
       if (generation === ticket) {
         loadingMore.value = false;
         if (enabled) {
-          if (expired) void refresh(false);
+          if (recovery.recovering.value) recovery.schedule();
+          else if (expired) void refresh(false);
           else if (dirty) timer = setTimeout(() => void refresh(false), 150);
         }
       }
@@ -199,6 +221,10 @@ export const useConversationsStore = defineStore("conversations", () => {
         event.resources?.includes("conversations")
       ) {
         dirty = true;
+        if (recovery.recovering.value) {
+          recovery.schedule();
+          return;
+        }
         clearTimeout(timer);
         timer = setTimeout(() => void refresh(false), 150);
       }
@@ -213,6 +239,8 @@ export const useConversationsStore = defineStore("conversations", () => {
     refreshing,
     loadingMore,
     error,
+    recovering: recovery.recovering,
+    lastCheckedAt: recovery.lastCheckedAt,
     accountLost,
     activate,
     stop,
