@@ -146,6 +146,10 @@ function messageTime(value: string | null) {
   </p>
   <div v-if="store.error" class="conversation-alert" role="alert">
     {{ store.error }}<span v-if="store.page"> 当前显示上次读取结果。</span>
+    <span v-if="store.lastCheckedAt"
+      >最后成功检查：{{ formatTime(store.lastCheckedAt) }}。</span
+    >
+    <span v-if="store.recovering">正在自动重试。</span>
     <RouterLink v-if="store.accountLost" to="/accounts"
       >重新选择账号</RouterLink
     >
