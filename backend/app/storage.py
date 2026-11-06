@@ -725,7 +725,7 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
                         raise ConversationError("image_size_limit", "图片超过缓存上限。", 422)
                     self.db.execute("INSERT OR REPLACE INTO media_cache VALUES(?,?,?,?,?,?,?,?,?)", (key, aid, "image", value["mime_type"], data, len(data), hashlib.sha256(data).hexdigest(), value.get("quality"), time.time()))
                     total = self.db.execute("SELECT COALESCE(SUM(size),0) FROM media_cache INDEXED BY media_cache_capacity WHERE kind='image'").fetchone()[0]
-                    for old in self.db.execute("SELECT cache_key,size FROM media_cache INDEXED BY media_cache_capacity WHERE kind='image' ORDER BY used_at").fetchall():
+                    for old in self.db.execute("SELECT cache_key,size FROM media_cache INDEXED BY media_cache_capacity WHERE kind='image' ORDER BY used_at,rowid").fetchall():
                         if total <= self.image_limit:
                             break
                         self.db.execute("DELETE FROM media_cache WHERE cache_key=?", (old[0],))

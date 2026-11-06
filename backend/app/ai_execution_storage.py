@@ -292,7 +292,7 @@ class AiExecutionStoreMixin:
                 run = dict(run_id=uuid4().hex, account_id=aid, conversation_id=cid, status="queued", trigger=trigger,
                            started_at=stamp(), message_count=0, memory_revision=prefs["memory_revision"], epoch=self._ai_session(aid, cid)["epoch"],
                            attempt_count=0, max_retries=prefs['ai_max_retries'], next_retry_at=None)
-                group = self._group_prepare_round(aid,cid) if self._is_group(aid,cid) else None
+                group = self._group_prepare_round(aid,cid,manual=trigger=='manual') if self._is_group(aid,cid) else None
                 if group:
                     self._group_run_fields(run,group,False)
                     if realtime:
@@ -365,7 +365,8 @@ class AiExecutionStoreMixin:
                         selected, more = self._group_batch(group)
                         self._group_run_fields(run,group,not more)
                         rows = [self.db.execute('SELECT * FROM messages WHERE message_id=?', (item[0]['message_id'],)).fetchone() for item in selected]
-                        selected, context_only = self._group_attach_media(aid, cid, selected, rows, profile['verification'].get('vision') == 'supported')
+                        selected, context_only = ((selected, []) if group['reason'] == 'manual' else
+                            self._group_attach_media(aid, cid, selected, rows, profile['verification'].get('vision') == 'supported'))
                         run['context_only_ids'] = context_only
                 self.db.execute("UPDATE ai_sessions SET auto_pending=? WHERE account_id=? AND conversation_id=?", (int(more), aid,cid))
                 run.update(status="running" if selected else "empty", snapshot_taken=bool(selected), message_count=len(selected), memory_revision=prefs["memory_revision"],

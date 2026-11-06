@@ -21,7 +21,7 @@ class MetadataPerformanceTests(unittest.TestCase):
         queries = [
             ("SELECT digest,mime_type FROM media_cache INDEXED BY media_cache_metadata WHERE cache_key=? AND account_id=?", ('image:synthetic', self.aid)),
             ("SELECT COALESCE(SUM(size),0) FROM media_cache INDEXED BY media_cache_capacity WHERE kind='image'", ()),
-            ("SELECT cache_key,size FROM media_cache INDEXED BY media_cache_capacity WHERE kind='image' ORDER BY used_at", ()),
+            ("SELECT cache_key,size FROM media_cache INDEXED BY media_cache_capacity WHERE kind='image' ORDER BY used_at,rowid", ()),
         ]
         for reopen in (False, True):
             if reopen:
