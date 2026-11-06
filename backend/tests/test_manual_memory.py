@@ -146,3 +146,15 @@ class ManualMemoryTests(RoleTestCase):
         self.assertEqual(counts['waiting_count'],2)
         self.assertEqual(counts['pending_count'],1)
         self.assertEqual(self.store.ai_candidates(),[])
+
+    def test_explicit_catchup_again_includes_corrected_completed_member(self):
+        self.group()
+        self.history(180)
+        first=self.manual()
+        self.ingest(1,content={'text':'历史消息已更正'})
+        resumed=self.manual()
+        self.assertEqual(resumed['round_id'],first['round_id'])
+        self.assertEqual(resumed['message_count'],81)
+        self.assertTrue(resumed['round_final'])
+        self.assertEqual(self.store.ai_runs(self.ids[0],self.cids[0])['pending_count'],0)
+        self.assertEqual(resumed['delivery']['status'],'not_required')

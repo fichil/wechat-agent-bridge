@@ -186,7 +186,8 @@ class GroupRoundStoreMixin:
             self.db.execute("INSERT INTO group_rounds VALUES(?,?,?,?,'manual','active',?)",
                             (rid, aid, cid, self._ai_session(aid, cid)['epoch'], packed(payload)))
         offset = self.db.execute('SELECT COALESCE(MAX(ordinal),-1)+1 FROM group_round_messages WHERE round_id=?', (rid,)).fetchone()[0]
-        self.db.executemany('INSERT OR IGNORE INTO group_round_messages VALUES(?,?,?,?,?,?,0)',
+        self.db.executemany('INSERT INTO group_round_messages VALUES(?,?,?,?,?,?,0) '
+            'ON CONFLICT(round_id,message_id) DO UPDATE SET fingerprint=excluded.fingerprint,media_digest=excluded.media_digest,payload=excluded.payload,done=0',
             ((rid, value['message_id'], offset+index, fingerprint, digest, packed(value)) for index, (value, fingerprint, digest) in enumerate(selected)))
         payload['message_count'] = self.db.execute('SELECT count(*) FROM group_round_messages WHERE round_id=?', (rid,)).fetchone()[0]
         self.db.execute("UPDATE group_rounds SET reason='manual',payload=? WHERE round_id=?", (packed(payload), rid))
