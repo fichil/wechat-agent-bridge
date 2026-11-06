@@ -168,7 +168,33 @@ class GroupRoundStoreMixin:
                     return row[1] > time.time() - 1
         return False
 
-    def _group_prepare_round(self, aid, cid):
+    def _group_prepare_memory_round(self, aid, cid):
+        """Freeze one explicit catch-up request; later arrivals keep their own triggers."""
+        active = self._group_round(aid, cid)
+        rid = active['round_id'] if active else uuid4().hex
+        vision = self._ai_vision(aid, cid)
+        selected = []
+        for row in self.db.execute('SELECT * FROM messages WHERE account_id=? AND conversation_id=? ORDER BY sort_key,message_id', (aid, cid)):
+            value, fingerprint, digest, state = self._ai_item(row, vision, group=True)
+            if state['status'] in ('pending', 'failed'):
+                selected.append((value, fingerprint, digest))
+        if not active and not selected:
+            return None
+        payload = json.loads(active['payload']) if active else dict(batch_count=0)
+        payload.update(reply_trigger_ids=[], trigger_messages=[], memory_only=True, batching_version=2)
+        if not active:
+            self.db.execute("INSERT INTO group_rounds VALUES(?,?,?,?,'manual','active',?)",
+                            (rid, aid, cid, self._ai_session(aid, cid)['epoch'], packed(payload)))
+        offset = self.db.execute('SELECT COALESCE(MAX(ordinal),-1)+1 FROM group_round_messages WHERE round_id=?', (rid,)).fetchone()[0]
+        self.db.executemany('INSERT OR IGNORE INTO group_round_messages VALUES(?,?,?,?,?,?,0)',
+            ((rid, value['message_id'], offset+index, fingerprint, digest, packed(value)) for index, (value, fingerprint, digest) in enumerate(selected)))
+        payload['message_count'] = self.db.execute('SELECT count(*) FROM group_round_messages WHERE round_id=?', (rid,)).fetchone()[0]
+        self.db.execute("UPDATE group_rounds SET reason='manual',payload=? WHERE round_id=?", (packed(payload), rid))
+        return self._group_round(aid, cid)
+
+    def _group_prepare_round(self, aid, cid, manual=False):
+        if manual:
+            return self._group_prepare_memory_round(aid, cid)
         active = self._group_round(aid, cid)
         if active:
             if self._group_reply_rows(aid, cid):
@@ -201,6 +227,8 @@ class GroupRoundStoreMixin:
         vision = self._ai_vision(group['account_id'], group['conversation_id'])
         rows = self.db.execute("SELECT * FROM group_round_messages WHERE round_id=? AND done=0 ORDER BY ordinal", (group["round_id"],)).fetchall()
         for row in rows:
+            if group['reason'] == 'manual' and len(selected) >= 100:
+                break
             value = json.loads(row["payload"])
             # A foreground reply can process a corrected version of a snapshot
             # member. Reconcile by fingerprint, never by message identity alone.

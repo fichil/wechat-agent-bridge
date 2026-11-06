@@ -205,9 +205,13 @@ onBeforeUnmount(() => {
         @click="start(true)"
         >重试并恢复自动处理</ElButton
       >
-      <span v-if="active" role="status">AI 自动回复处理中。</span>
+      <span v-if="active" role="status">AI 消息处理中。</span>
       <span v-else-if="!conversation.ai_enabled">开启会话 AI 后可处理。</span>
     </div>
+    <p class="settings-note">
+      待处理总数包含历史消息，不等于自动回复触发计数。群聊点击处理后每批最多 100
+      条，连续补记忆，新 @ 优先，不发送历史回复。
+    </p>
     <p
       v-if="conversation.ai_enabled && capability && !capability.ready"
       role="status"
@@ -227,8 +231,14 @@ onBeforeUnmount(() => {
       >
         <summary>
           {{ names[run.status] }} ·
-          {{ run.historical ? "历史初始化批次" : "增量批次" }} ·
-          {{ run.message_count }} 条 ·
+          {{
+            run.processing_type === "memory_backfill"
+              ? "记忆补齐批次"
+              : run.historical
+                ? "历史初始化批次"
+                : "增量批次"
+          }}
+          · {{ run.message_count }} 条 ·
           {{ new Date(run.started_at).toLocaleString("zh-CN") }}
         </summary>
         <p v-if="run.message">{{ run.message }}</p>
@@ -266,8 +276,14 @@ onBeforeUnmount(() => {
           :role-card-change="run.role_card_change"
         />
         <p v-if="run.round_id" class="settings-note">
-          {{ run.trigger_reason === "mention" ? "@ 触发" : "累计条数触发" }} ·
-          第 {{ run.batch_index }} 批 · 已处理
+          {{
+            run.trigger_reason === "manual"
+              ? "手动补记忆"
+              : run.trigger_reason === "mention"
+                ? "@ 触发"
+                : "累计条数触发"
+          }}
+          · 第 {{ run.batch_index }} 批 · 已处理
           {{ run.round_completed_count }}/{{ run.round_message_count }} 条 ·
           {{ run.round_final ? "本轮记忆已完成" : "本轮仍有待处理记忆" }}
           <span v-if="run.chose_silence"> · AI 选择不发言</span>
