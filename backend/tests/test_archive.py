@@ -222,8 +222,9 @@ class ArchiveTests(unittest.TestCase):
     def test_image_lru_is_bounded_and_text_survives(self):
         self.ingest([1,2]); self.store.image_limit=10
         mids=[m["message_id"] for m in self.store.messages(self.aid,self.cid)["items"]]
-        for mid in mids:
-            self.store.image(self.aid,self.cid,mid,dict(status="available",mime_type="image/png",data_base64=base64.b64encode(b"12345678").decode(),quality="thumbnail"))
+        with patch('backend.app.storage.time.time', return_value=1000):
+            for mid in mids:
+                self.store.image(self.aid,self.cid,mid,dict(status="available",mime_type="image/png",data_base64=base64.b64encode(b"12345678").decode(),quality="thumbnail"))
         self.assertTrue(self.store.image(self.aid,self.cid,mids[0])["needs_sync"])
         self.assertFalse(self.store.image(self.aid,self.cid,mids[1])["needs_sync"])
         self.assertEqual(len(self.store.messages(self.aid,self.cid)["items"]),2)
