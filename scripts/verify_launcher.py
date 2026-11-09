@@ -91,6 +91,8 @@ def main():
             startup.wShowWindow = 0
             process = subprocess.Popen([str(root / 'WeChatAgentBridge.exe'), '--background'], cwd=root, startupinfo=startup)
             window = wait_for(lambda: window_for(process.pid))
+            # The protocol property exists before addTray/ShowWindow finish.
+            wait_for(lambda: icon_exists(window) or user.IsWindowVisible(window), timeout=30)
             wait_for(lambda: user.IsWindowEnabled(user.GetDlgItem(window, 100)))
             tray_available = not bool(user.IsWindowVisible(window))
             results['tray_available'] = tray_available
