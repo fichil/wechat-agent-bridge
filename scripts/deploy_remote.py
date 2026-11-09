@@ -9,6 +9,44 @@ import re
 import subprocess
 import tempfile
 import time
+import zipfile
+
+
+def controller_source(archive, commit):
+    """Read only the controller authorized by this exact CI package's manifest."""
+    with zipfile.ZipFile(archive) as bundle:
+        names = [name for name in bundle.namelist() if name.endswith('/portable-manifest.json')]
+        if len(names) != 1: raise ValueError('Expected one package manifest')
+        manifest = json.loads(bundle.read(names[0]))
+        if manifest.get('development') or manifest.get('commit') != commit:
+            raise ValueError('Controller package commit mismatch')
+        source = bundle.read(names[0].rsplit('/', 1)[0] + '/bridge_portable/deploy.py')
+        if hashlib.sha256(source).hexdigest() != manifest['files']['bridge_portable/deploy.py']:
+            raise ValueError('Controller checksum mismatch')
+        compile(source, 'deploy.py', 'exec')
+        return source
+
+
+def controller_refresh_code(root, request_id, checksum):
+    # The existing controller's installation lock excludes an active deployment.
+    # Keep its source as a recovery copy; never touch the application or data here.
+    return f'''from pathlib import Path
+import hashlib,json,os,runpy,shutil
+root=Path({root!r})
+current=root/'controller/deploy.py'
+candidate=root/'inbox'/{(request_id + '.controller.py')!r}
+source=candidate.read_bytes()
+if hashlib.sha256(source).hexdigest()!={checksum!r}: raise ValueError('Controller checksum mismatch')
+compile(source,str(current),'exec')
+previous=runpy.run_path(str(current))
+with previous['lock'](root):
+    if current.read_bytes()!=source:
+        backup=current.with_name({('deploy.before-' + request_id + '.py')!r})
+        if not backup.exists(): shutil.copy2(current,backup)
+        os.replace(candidate,current)
+    else: candidate.unlink()
+print(json.dumps({{'stage':'controller_ready'}}))
+'''
 
 
 def main():
@@ -27,6 +65,7 @@ def main():
     if len(files) != 1: raise ValueError('Expected exactly one deployment ZIP')
     archive = files[0].resolve()
     with archive.open('rb') as stream: checksum = hashlib.file_digest(stream, 'sha256').hexdigest()
+    controller = controller_source(archive, args.commit)
     root = 'C:/Apps/WeChatAgentBridge'
     with tempfile.TemporaryDirectory(prefix='bridge-ssh-') as directory:
         key = Path(directory) / 'key'
@@ -39,22 +78,31 @@ def main():
                    '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=15']
         destination = user + '@' + host
 
-        def remote(action, extra=''):
-            # All interpolated values above are validated and contain no shell syntax.
-            script = ("$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; & '" + root +
-                      "/controller/runtime/python.exe' -B -X utf8 '" + root + "/controller/deploy.py' " +
-                      action + " --root '" + root + "' " + extra + "; exit $LASTEXITCODE")
+        def remote_script(script):
+            script = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; " + script
             encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
             result = subprocess.run(['ssh', *options, '-p', port, destination, 'powershell.exe', '-NoProfile',
                                      '-NonInteractive', '-EncodedCommand', encoded], capture_output=True, text=True, timeout=180)
             if result.returncode: raise RuntimeError('Remote command failed: ' + (result.stdout + result.stderr).strip())
             return json.loads(result.stdout.strip())
 
+        def remote(action, extra=''):
+            # All interpolated values above are validated and contain no shell syntax.
+            return remote_script("& '" + root + "/controller/runtime/python.exe' -B -X utf8 '" + root +
+                                 "/controller/deploy.py' " + action + " --root '" + root + "' " + extra + "; exit $LASTEXITCODE")
+
         remote('status')  # Fail before uploading if bootstrap is missing.
+        controller_path = Path(directory) / 'controller.py'
+        controller_path.write_bytes(controller)
         batch = Path(directory) / 'sftp.txt'
         # POSIX OpenSSH treats C:/ as relative; Windows SFTP exposes /C:/.
-        batch.write_text('put "' + archive.as_posix() + '" "/' + root + '/inbox/' + args.request_id + '.zip.part"\n', encoding='utf-8')
+        batch.write_text('put "' + archive.as_posix() + '" "/' + root + '/inbox/' + args.request_id + '.zip.part"\n' +
+                         'put "' + controller_path.as_posix() + '" "/' + root + '/inbox/' + args.request_id + '.controller.py"\n', encoding='utf-8')
         subprocess.run(['sftp', *options, '-P', port, '-b', str(batch), destination], check=True, timeout=900)
+        code = controller_refresh_code(root, args.request_id, hashlib.sha256(controller).hexdigest())
+        payload = base64.b64encode(code.encode('utf-8')).decode('ascii')
+        print(json.dumps(remote_script("& '" + root + "/controller/runtime/python.exe' -B -X utf8 -c " +
+              '\"import base64;exec(base64.b64decode(\'' + payload + '\'))\"; exit $LASTEXITCODE')), flush=True)
         result = remote('submit', '--request-id ' + args.request_id + ' --commit ' + args.commit + ' --sha256 ' + checksum)
         deadline = time.monotonic() + 3600
         previous = None

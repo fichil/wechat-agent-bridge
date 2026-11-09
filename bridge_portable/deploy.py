@@ -267,7 +267,7 @@ def start_task(name, root=None):
     powershell("$ErrorActionPreference='Stop'; Start-ScheduledTask -TaskName '" + name + "'")
 
 
-def wait_healthy(root, commit, *, active, timeout=240, release=None):
+def wait_healthy(root, commit, *, active, timeout=720, release=None):
     root = Path(root)
     release = release or root / 'releases' / commit
     managed_version = bool(read(release / 'portable-manifest.json').get('database_schema'))

@@ -22,6 +22,22 @@ from bridge_paths import DATA, FRONTEND
 RUNTIME = DATA / 'production'
 
 
+def wait_backend(child, timeout=600):
+    # Startup validates the existing archive before opening the HTTP listener.
+    # A large archive on a small server can exceed three minutes when cold.
+    opener = build_opener(ProxyHandler({}))
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            raise RuntimeError('Backend stopped during startup; see local log')
+        try:
+            with opener.open('http://127.0.0.1:8765/api/v1/health', timeout=1) as result:
+                if json.load(result).get('service') == 'wechat-agent-bridge': return
+        except (OSError, ValueError): pass
+        time.sleep(.25)
+    raise RuntimeError('Backend startup timed out')
+
+
 def render_config(origin, dist, mode='production'):
     config = AuthConfig(mode, origin)
     u = urlsplit(config.origin)
@@ -128,16 +144,7 @@ def main():
                 stdin=subprocess.PIPE,stdout=output,stderr=output,env=caddy_env if name=='caddy' else None,creationflags=subprocess.CREATE_NO_WINDOW)
             children.append(child); job.assign(child); child.stdin.write(b'start\n'); child.stdin.close()
             if name=='backend':
-                # A freshly copied production archive can be cold on disk.
-                opener=build_opener(ProxyHandler({})); deadline=time.monotonic()+180
-                while time.monotonic()<deadline:
-                    if child.poll() is not None: raise RuntimeError('Backend stopped during startup; see local log')
-                    try:
-                        with opener.open('http://127.0.0.1:8765/api/v1/health',timeout=1) as result:
-                            if json.load(result).get('service')=='wechat-agent-bridge': break
-                    except (OSError,ValueError): pass
-                    time.sleep(.25)
-                else: raise RuntimeError('Backend startup timed out')
+                wait_backend(child)
         print(('Started private loopback access at ' if mode == 'private' else 'Started. Verify HTTPS certificate and login at ')+origin,flush=True)
         from bridge_portable.updates import Updates
         updates = Updates()
