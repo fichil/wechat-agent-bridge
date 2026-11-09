@@ -318,6 +318,9 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int) {
     bool configured = std::filesystem::exists(installation/L"data"/L"portable-config.json") &&
                       std::filesystem::exists(installation/L"data"/L"auth.sqlite3");
     bool hasTray = addTray();
+    // Windows consumes STARTUPINFO.wShowWindow on the first call. Scheduled
+    // tasks start us hidden; explicitly apply the fallback on the second call.
+    ShowWindow(window,SW_HIDE);
     ShowWindow(window,background && configured && hasTray ? SW_HIDE : SW_SHOWNORMAL); UpdateWindow(window);
     MSG message{};
     while(GetMessageW(&message,nullptr,0,0)>0) { if(!IsDialogMessageW(window,&message)) { TranslateMessage(&message); DispatchMessageW(&message); } }

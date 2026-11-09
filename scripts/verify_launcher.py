@@ -79,7 +79,10 @@ def main():
         (data / 'auth.sqlite3').touch()  # Native startup checks presence only; no real credentials.
         results = {}
         try:
-            process = subprocess.Popen([str(root / 'WeChatAgentBridge.exe'), '--background'], cwd=root)
+            startup = subprocess.STARTUPINFO()
+            startup.dwFlags = subprocess.STARTF_USESHOWWINDOW
+            startup.wShowWindow = 0
+            process = subprocess.Popen([str(root / 'WeChatAgentBridge.exe'), '--background'], cwd=root, startupinfo=startup)
             window = wait_for(lambda: window_for(process.pid))
             wait_for(lambda: user.IsWindowEnabled(user.GetDlgItem(window, 100)))
             tray_available = not bool(user.IsWindowVisible(window))
@@ -118,7 +121,7 @@ def main():
             assert process.wait(10) == 0
             results['hidden_upgrade_exit'] = True
             (data / 'portable-config.json').unlink()
-            process = subprocess.Popen([str(root / 'WeChatAgentBridge.exe'), '--background'], cwd=root)
+            process = subprocess.Popen([str(root / 'WeChatAgentBridge.exe'), '--background'], cwd=root, startupinfo=startup)
             window = wait_for(lambda: window_for(process.pid))
             wait_for(lambda: user.IsWindowVisible(window))
             wait_for(lambda: user.IsWindowEnabled(user.GetDlgItem(window, 100)))
