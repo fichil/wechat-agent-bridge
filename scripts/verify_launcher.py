@@ -58,7 +58,9 @@ def main():
     def icon_exists(window):
         identifier = IconIdentifier(c.sizeof(IconIdentifier), window, 1)
         rectangle = w.RECT()
-        return shell.Shell_NotifyIconGetRect(c.byref(identifier), c.byref(rectangle)) == 0
+        result = shell.Shell_NotifyIconGetRect(c.byref(identifier), c.byref(rectangle))
+        # S_FALSE is a successful result for an icon in Explorer's overflow area.
+        return result >= 0 and rectangle.right > rectangle.left and rectangle.bottom > rectangle.top
 
     def window_for(pid):
         found = []
@@ -142,6 +144,10 @@ def main():
                     raise
                 assert process.poll() is None
                 results['real_explorer_restart_restores_icon'] = True
+                identifier = IconIdentifier(c.sizeof(IconIdentifier), window, 1)
+                rectangle = w.RECT()
+                result = shell.Shell_NotifyIconGetRect(c.byref(identifier), c.byref(rectangle))
+                results['restored_icon_geometry'] = {'hresult':result, 'rect':[rectangle.left,rectangle.top,rectangle.right,rectangle.bottom]}
             user.PostMessageW(window, user.RegisterWindowMessageW('WeChatAgentBridge.ShowConsole.v1'), 0, 0)
             wait_for(lambda: user.IsWindowVisible(window))
             user.PostMessageW(window, 0x111, 100, 0)  # Synthetic slow setup, no database write.
