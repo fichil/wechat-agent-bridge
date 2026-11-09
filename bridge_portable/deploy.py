@@ -400,9 +400,11 @@ class Deployment:
                     if json.load(response)['object']['sha'] != request['commit']:
                         return self.record(request, 'superseded')
             current = self.preflight(request)
-            write(root / 'transaction.json', {**request, 'previous': current['commit'], 'activated': False})
             self.record(request, 'stopping', previous=current['commit'])
             close_launcher(root / 'releases' / current['commit'])
+            # The deployment lock already excludes console mutations. A busy
+            # window must not leave a transaction blocking future local recovery.
+            write(root / 'transaction.json', {**request, 'previous': current['commit'], 'activated': False})
             stop(data, root / 'releases' / current['commit'])
             stopped = True
             database_check(data)

@@ -321,6 +321,9 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int) {
     if (!window) { CloseHandle(mutex); return 1; }
     SetPropW(window,ProtocolProperty,(HANDLE)1);
     ChangeWindowMessageFilterEx(window,showConsole,MSGFLT_ALLOW,nullptr);
+    // The scheduled console may be elevated while Explorer is not.
+    ChangeWindowMessageFilterEx(window,taskbarCreated,MSGFLT_ALLOW,nullptr);
+    ChangeWindowMessageFilterEx(window,TrayMessage,MSGFLT_ALLOW,nullptr);
     bool configured = std::filesystem::exists(installation/L"data"/L"portable-config.json") &&
                       std::filesystem::exists(installation/L"data"/L"auth.sqlite3");
     bool hasTray = addTray();
