@@ -214,7 +214,7 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_TIMER:
-        if (wp==3) { if (!addTray()) reveal(); return 0; }
+        if (wp==3) { addTray(); return 0; } // Retry quietly after the visible fallback.
         if (!busy && wp==1) request(L"update-auto");
         if (!busy && wp==2 && updatePending) request(L"update-status");
         return 0;
