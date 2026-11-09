@@ -132,7 +132,14 @@ def main():
                 replacement = w.DWORD()
                 user.GetWindowThreadProcessId(user.GetShellWindow(), c.byref(replacement))
                 assert replacement.value != shell_pid.value
-                wait_for(lambda: icon_exists(window), timeout=30)
+                try:
+                    wait_for(lambda: icon_exists(window), timeout=30)
+                except AssertionError:
+                    user.FindWindowW.argtypes = [w.LPCWSTR, w.LPCWSTR]; user.FindWindowW.restype = w.HWND
+                    identifier = IconIdentifier(c.sizeof(IconIdentifier), window, 1)
+                    rectangle = w.RECT()
+                    print(json.dumps({'diagnostics': {'visible': bool(user.IsWindowVisible(window)), 'process_alive': process.poll() is None, 'shell': user.GetShellWindow(), 'taskbar': user.FindWindowW('Shell_TrayWnd', None), 'get_rect': shell.Shell_NotifyIconGetRect(c.byref(identifier), c.byref(rectangle)), 'properties': {name:user.GetPropW(window,name) for name in ['Tray.AddCount','Tray.AddResult','Tray.Broadcast','Tray.TimerCount','Tray.ModifyResult']}}}), flush=True)
+                    raise
                 assert process.poll() is None
                 results['real_explorer_restart_restores_icon'] = True
             user.PostMessageW(window, user.RegisterWindowMessageW('WeChatAgentBridge.ShowConsole.v1'), 0, 0)

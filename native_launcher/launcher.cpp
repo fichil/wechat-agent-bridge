@@ -36,12 +36,14 @@ static void reveal() {
     SetForegroundWindow(window);
 }
 static bool addTray() {
+    SetPropW(window,L"Tray.AddCount",(HANDLE)((UINT_PTR)GetPropW(window,L"Tray.AddCount")+1));
     tray = {}; tray.cbSize = sizeof(tray); tray.hWnd = window; tray.uID = 1;
     tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     tray.uCallbackMessage = TrayMessage;
     tray.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wcscpy_s(tray.szTip, L"微信 Agent Bridge · 双击打开控制台");
     trayPresent = Shell_NotifyIconW(NIM_ADD, &tray) != FALSE;
+    SetPropW(window,L"Tray.AddResult",(HANDLE)(UINT_PTR)(trayPresent?1:2));
     // Duplicate TaskbarCreated notifications must not remove a working icon.
     if (!trayPresent) trayPresent = Shell_NotifyIconW(NIM_MODIFY, &tray) != FALSE;
     if (trayPresent) {
@@ -160,7 +162,7 @@ static void request(const wchar_t* action, const std::wstring& path=L"") {
     }).detach();
 }
 static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
-    if (message == taskbarCreated) { trayPresent = false; if (!addTray()) reveal(); return 0; }
+    if (message == taskbarCreated) { SetPropW(h,L"Tray.Broadcast",(HANDLE)1); trayPresent = false; if (!addTray()) reveal(); return 0; }
     if (message == showConsole) { reveal(); return 0; }
     if (message == exitForUpdate) { if (mayExit()) DestroyWindow(h); return 0; }
     switch (message) {
@@ -217,7 +219,9 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
     }
     case WM_TIMER:
         if (wp==3) {
+            SetPropW(h,L"Tray.TimerCount",(HANDLE)((UINT_PTR)GetPropW(h,L"Tray.TimerCount")+1));
             trayPresent = Shell_NotifyIconW(NIM_MODIFY, &tray) != FALSE;
+            SetPropW(h,L"Tray.ModifyResult",(HANDLE)(UINT_PTR)(trayPresent?1:2));
             if (!trayPresent && !addTray() && !IsWindowVisible(h)) reveal();
             return 0;
         }

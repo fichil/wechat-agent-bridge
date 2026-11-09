@@ -1,52 +1,39 @@
-name: Test, package and deploy
-
+name: Isolated production tray acceptance
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       deploy:
-        description: Deploy the tested main commit (also used for initial acceptance)
         type: boolean
         default: false
-
 permissions:
   contents: read
-
+  actions: read
 jobs:
-  verify:
-    uses: ./.github/workflows/verify-package.yml
-
-  deploy:
-    needs: verify
-    if: github.ref == 'refs/heads/main' && ((github.event_name == 'push' && vars.AUTO_DEPLOY_ENABLED == 'true') || (github.event_name == 'workflow_dispatch' && inputs.deploy))
-    runs-on: ubuntu-24.04
-    timeout-minutes: 80
-    environment: production
-    concurrency:
-      group: production
-      cancel-in-progress: false
+  acceptance:
+    if: github.ref == 'refs/heads/fichil/tray-explorer-diagnostics'
+    runs-on: windows-2022
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: windows-production
           path: artifact
-      - name: Skip superseded main commits
-        id: head
-        env:
-          GH_TOKEN: ${{ github.token }}
+          run-id: 42561152362
+          github-token: ${{ github.token }}
+      - name: Verify exact main binary and restart only this disposable desktop shell
+        shell: pwsh
         run: |
-          latest=$(gh api repos/${{ github.repository }}/git/ref/heads/main --jq .object.sha)
-          if [ "$latest" = '${{ github.sha }}' ]; then echo 'current=true' >> "$GITHUB_OUTPUT"; else echo 'Superseded by a newer main commit' >> "$GITHUB_STEP_SUMMARY"; fi
-      - name: Upload, switch and verify production
-        if: steps.head.outputs.current == 'true'
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        run: python3 scripts/deploy_remote.py --artifact artifact --commit '${{ github.sha }}' --request-id '${{ github.run_id }}-${{ github.run_attempt }}'
+          $archive = (Get-ChildItem artifact/*.zip | Select-Object -First 1).FullName
+          Expand-Archive -LiteralPath $archive -DestinationPath package
+          $package = (Get-ChildItem package -Directory | Select-Object -First 1).FullName
+          $manifest = Get-Content -Raw -LiteralPath (Join-Path $package 'portable-manifest.json') | ConvertFrom-Json
+          if ($manifest.commit -ne '26b519649ca0d6b5b39fa5f4258b4faec3a7e480') { throw 'Unexpected production commit' }
+          if ((Get-FileHash -LiteralPath (Join-Path $package 'WeChatAgentBridge.exe') -Algorithm SHA256).Hash.ToLower() -ne $manifest.files.'WeChatAgentBridge.exe') { throw 'Native launcher checksum mismatch' }
+          $vc = 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat'
+          $build = "call `"$vc`"`r`ncl.exe /nologo /std:c++17 /EHsc /W4 /utf-8 /MT /O2 /DNDEBUG native_launcher\launcher.cpp /Fe:`"$package\WeChatAgentBridge.exe`" /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib comdlg32.lib shell32.lib"
+          Set-Content -LiteralPath build-native.cmd -Value $build -Encoding ascii
+          & cmd /c build-native.cmd
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & (Join-Path $package 'runtime/python.exe') -B -X utf8 scripts/verify_launcher.py --root $package --restart-explorer
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
