@@ -2,18 +2,21 @@
 
 Requires an interactive Windows desktop for tray assertions. A headless CI host
 still checks visible fallback, single instance, busy shutdown and clean exit.
-Never restarts Explorer or touches a real installation's data or processes.
+Explorer restart requires an explicit flag on a disposable GitHub Windows runner.
+Never touches a real installation's data or processes.
 """
 import argparse
 import ctypes as c
 from ctypes import wintypes as w
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import psutil
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -32,7 +35,10 @@ def wait_for(fn, timeout=20):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', required=True, type=Path)
+    parser.add_argument('--restart-explorer', action='store_true')
     args = parser.parse_args()
+    if args.restart_explorer and (os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_OS') != 'Windows'):
+        raise RuntimeError('Explorer restart is restricted to disposable GitHub Windows runners')
     user = c.WinDLL('user32', use_last_error=True)
     callback_type = c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
     user.EnumWindows.argtypes = [callback_type, w.LPARAM]
@@ -44,6 +50,7 @@ def main():
     user.PostMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
     user.ShowWindow.argtypes = [w.HWND, c.c_int]
     user.RegisterWindowMessageW.argtypes = [w.LPCWSTR]
+    user.GetShellWindow.restype = w.HWND
     class IconIdentifier(c.Structure):
         _fields_ = [('cbSize', w.DWORD), ('hWnd', w.HWND), ('uID', w.UINT), ('guid', c.c_byte * 16)]
     shell = c.WinDLL('shell32')
@@ -84,6 +91,8 @@ def main():
             startup.wShowWindow = 0
             process = subprocess.Popen([str(root / 'WeChatAgentBridge.exe'), '--background'], cwd=root, startupinfo=startup)
             window = wait_for(lambda: window_for(process.pid))
+            # The protocol property exists before addTray/ShowWindow finish.
+            wait_for(lambda: icon_exists(window) or user.IsWindowVisible(window), timeout=30)
             wait_for(lambda: user.IsWindowEnabled(user.GetDlgItem(window, 100)))
             tray_available = not bool(user.IsWindowVisible(window))
             results['tray_available'] = tray_available
@@ -107,6 +116,25 @@ def main():
                 wait_for(lambda: icon_exists(window) or user.IsWindowVisible(window))
                 results['explorer_notification_restores_icon'] = icon_exists(window)
                 results['explorer_notification_visible_fallback'] = bool(user.IsWindowVisible(window))
+            if args.restart_explorer:
+                shell_window = user.GetShellWindow()
+                shell_pid = w.DWORD()
+                assert shell_window, 'No desktop shell in disposable runner'
+                user.GetWindowThreadProcessId(shell_window, c.byref(shell_pid))
+                explorer = psutil.Process(shell_pid.value)
+                assert Path(explorer.exe()).resolve() == (Path(os.environ['WINDIR']) / 'explorer.exe').resolve()
+                explorer.terminate(); explorer.wait(10)
+                deadline = time.monotonic() + 10
+                while not user.GetShellWindow() and time.monotonic() < deadline: time.sleep(.1)
+                if not user.GetShellWindow():
+                    subprocess.Popen([str(Path(os.environ['WINDIR']) / 'explorer.exe')], startupinfo=startup)
+                wait_for(lambda: user.GetShellWindow(), timeout=30)
+                replacement = w.DWORD()
+                user.GetWindowThreadProcessId(user.GetShellWindow(), c.byref(replacement))
+                assert replacement.value != shell_pid.value
+                wait_for(lambda: icon_exists(window), timeout=30)
+                assert process.poll() is None
+                results['real_explorer_restart_restores_icon'] = True
             user.PostMessageW(window, user.RegisterWindowMessageW('WeChatAgentBridge.ShowConsole.v1'), 0, 0)
             wait_for(lambda: user.IsWindowVisible(window))
             user.PostMessageW(window, 0x111, 100, 0)  # Synthetic slow setup, no database write.

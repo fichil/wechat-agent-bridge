@@ -98,7 +98,7 @@ jobs:
         shell: pwsh
         run: |
           $package = Get-ChildItem .local/releases -Directory | Where-Object Name -NotLike '*-build' | Select-Object -First 1
-          .venv-backend/Scripts/python.exe -B -X utf8 scripts/verify_launcher.py --root $package.FullName
+          .venv-backend/Scripts/python.exe -B -X utf8 scripts/verify_launcher.py --root $package.FullName --restart-explorer
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Exercise real portable upgrades with isolated synthetic releases
         shell: pwsh

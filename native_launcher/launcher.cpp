@@ -46,8 +46,10 @@ static bool addTray() {
     if (!trayPresent) trayPresent = Shell_NotifyIconW(NIM_MODIFY, &tray) != FALSE;
     if (trayPresent) {
         tray.uVersion = NOTIFYICON_VERSION_4; Shell_NotifyIconW(NIM_SETVERSION, &tray);
-        KillTimer(window,3);
-    } else SetTimer(window,3,5000,nullptr); // Explorer may still be starting.
+    }
+    // Explorer can lose a broadcast during restart. Keep probing the icon even
+    // after a successful registration so a missing notification cannot strand it.
+    SetTimer(window,3,5000,nullptr);
     return trayPresent;
 }
 static void hideToTray() {
@@ -214,7 +216,11 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_TIMER:
-        if (wp==3) { addTray(); return 0; } // Retry quietly after the visible fallback.
+        if (wp==3) {
+            trayPresent = Shell_NotifyIconW(NIM_MODIFY, &tray) != FALSE;
+            if (!trayPresent && !addTray() && !IsWindowVisible(h)) reveal();
+            return 0;
+        }
         if (!busy && wp==1) request(L"update-auto");
         if (!busy && wp==2 && updatePending) request(L"update-status");
         return 0;
