@@ -42,7 +42,12 @@ static bool addTray() {
     tray.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wcscpy_s(tray.szTip, L"微信 Agent Bridge · 双击打开控制台");
     trayPresent = Shell_NotifyIconW(NIM_ADD, &tray) != FALSE;
-    if (trayPresent) { tray.uVersion = NOTIFYICON_VERSION_4; Shell_NotifyIconW(NIM_SETVERSION, &tray); }
+    // Duplicate TaskbarCreated notifications must not remove a working icon.
+    if (!trayPresent) trayPresent = Shell_NotifyIconW(NIM_MODIFY, &tray) != FALSE;
+    if (trayPresent) {
+        tray.uVersion = NOTIFYICON_VERSION_4; Shell_NotifyIconW(NIM_SETVERSION, &tray);
+        KillTimer(window,3);
+    } else SetTimer(window,3,5000,nullptr); // Explorer may still be starting.
     return trayPresent;
 }
 static void hideToTray() {
@@ -153,7 +158,7 @@ static void request(const wchar_t* action, const std::wstring& path=L"") {
     }).detach();
 }
 static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
-    if (message == taskbarCreated) { Shell_NotifyIconW(NIM_DELETE,&tray); trayPresent = false; if (!addTray()) reveal(); return 0; }
+    if (message == taskbarCreated) { trayPresent = false; if (!addTray()) reveal(); return 0; }
     if (message == showConsole) { reveal(); return 0; }
     if (message == exitForUpdate) { if (mayExit()) DestroyWindow(h); return 0; }
     switch (message) {
@@ -209,6 +214,7 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_TIMER:
+        if (wp==3) { if (!addTray()) reveal(); return 0; }
         if (!busy && wp==1) request(L"update-auto");
         if (!busy && wp==2 && updatePending) request(L"update-status");
         return 0;

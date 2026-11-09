@@ -104,8 +104,9 @@ def main():
             user.PostMessageW(window, user.RegisterWindowMessageW('TaskbarCreated'), 0, 0)
             time.sleep(.2)
             if tray_available:
-                wait_for(lambda: icon_exists(window))
-                results['explorer_notification_restores_icon'] = True
+                wait_for(lambda: icon_exists(window) or user.IsWindowVisible(window))
+                results['explorer_notification_restores_icon'] = icon_exists(window)
+                results['explorer_notification_visible_fallback'] = bool(user.IsWindowVisible(window))
             user.PostMessageW(window, user.RegisterWindowMessageW('WeChatAgentBridge.ShowConsole.v1'), 0, 0)
             wait_for(lambda: user.IsWindowVisible(window))
             user.PostMessageW(window, 0x111, 100, 0)  # Synthetic slow setup, no database write.
