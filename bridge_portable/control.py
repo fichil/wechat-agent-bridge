@@ -131,6 +131,17 @@ def start():
     if owner():
         return '后台已经运行。'
     check()
+    from .updates import Updates
+    updates = Updates()
+    if updates.mode == 'managed':
+        from .deploy import start_task, TASK_RUN
+        start_task(TASK_RUN, updates.root)
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            if owner() and status().get('backend'):
+                return '后台已通过运行任务启动，控制台会常驻托盘。'
+            time.sleep(.5)
+        raise ValueError('后台启动仍在进行，请刷新状态或查看日志。')
     env = environment()
     command = [sys.executable, '-B', '-X', 'utf8', str(ROOT/'scripts/production_server.py')]
     result = subprocess.run([*command, '--check'], env=env, cwd=ROOT, capture_output=True,

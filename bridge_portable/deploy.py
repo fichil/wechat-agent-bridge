@@ -26,6 +26,7 @@ import certifi
 
 TASK_RUN = 'WeChatBridge-Run'
 TASK_DEPLOY = 'WeChatBridge-Deploy'
+TASK_CONSOLE = 'WeChatBridge-Console'
 TERMINAL = {'succeeded', 'failed', 'rolled_back', 'superseded'}
 
 
@@ -190,11 +191,60 @@ def stop(data, release, timeout=2040):
     process.wait(timeout)
 
 
-def close_launcher(release):
-    expected = str(Path(release) / 'WeChatAgentBridge.exe').lower()
+def launch_console(release, *, background=True):
+    release = Path(release).resolve()
+    executable = release / 'WeChatAgentBridge.exe'
+    # Old launchers have no tray: always leave a visible recovery entry.
+    tray = read(release / 'portable-manifest.json', {}).get('launcher_protocol', 0) >= 1
+    startup = subprocess.STARTUPINFO() if os.name == 'nt' else None
+    if startup is not None:
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = 0 if background and tray else 1
+    return subprocess.Popen([str(executable), *(['--background'] if background and tray else [])],
+                            cwd=release, startupinfo=startup, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+
+
+def notify_launcher_exit(pid):
+    """Notify an owned process on this desktop, including invisible top-level windows."""
+    import ctypes as c
+    from ctypes import wintypes as w
+    user = c.WinDLL('user32', use_last_error=True)
+    callback_type = c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+    user.EnumWindows.argtypes = [callback_type, w.LPARAM]
+    user.GetWindowThreadProcessId.argtypes = [w.HWND, c.POINTER(w.DWORD)]
+    user.GetPropW.argtypes = [w.HWND, w.LPCWSTR]
+    user.GetPropW.restype = w.HANDLE
+    user.RegisterWindowMessageW.argtypes = [w.LPCWSTR]
+    user.PostMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
+    message = user.RegisterWindowMessageW('WeChatAgentBridge.ExitForUpdate.v1')
+    if not message: raise OSError('Cannot register launcher exit notification')
+    @callback_type
+    def visit(window, unused):
+        owner = w.DWORD()
+        user.GetWindowThreadProcessId(window, c.byref(owner))
+        if owner.value == pid:
+            modern = user.GetPropW(window, 'WeChatAgentBridge.LauncherProtocol')
+            # WM_CLOSE remains correct for launchers predating tray support.
+            user.PostMessageW(window, message if modern else 0x0010, 0, 0)
+        return True
+    user.EnumWindows(visit, 0)
+
+
+def close_launcher(release, timeout=15):
+    expected = str(Path(release).resolve() / 'WeChatAgentBridge.exe').lower()
     for process in psutil.process_iter(['pid', 'exe']):
         if (process.info['exe'] or '').lower() == expected:
-            powershell("$p=Get-Process -Id " + str(process.pid) + "; $null=$p.CloseMainWindow(); if (-not $p.WaitForExit(15000)) { throw 'Launcher has an operation in progress' }")
+            deadline = time.monotonic() + timeout
+            while process.is_running():
+                notify_launcher_exit(process.pid)
+                try:
+                    process.wait(timeout=min(.25, max(0, deadline - time.monotonic())))
+                    break
+                except psutil.TimeoutExpired:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError('Launcher has an operation in progress; no process was terminated') from None
 
 
 def powershell(script):
@@ -207,7 +257,7 @@ def powershell(script):
 
 
 def start_task(name, root=None):
-    if name not in (TASK_RUN, TASK_DEPLOY): raise ValueError('Unknown task')
+    if name not in (TASK_RUN, TASK_DEPLOY, TASK_CONSOLE): raise ValueError('Unknown task')
     if name == TASK_RUN and root:
         current = read(Path(root) / 'current.json')
         data = Path(current.get('data_path') or Path(root) / 'data')
@@ -350,9 +400,11 @@ class Deployment:
                     if json.load(response)['object']['sha'] != request['commit']:
                         return self.record(request, 'superseded')
             current = self.preflight(request)
-            write(root / 'transaction.json', {**request, 'previous': current['commit'], 'activated': False})
             self.record(request, 'stopping', previous=current['commit'])
             close_launcher(root / 'releases' / current['commit'])
+            # The deployment lock already excludes console mutations. A busy
+            # window must not leave a transaction blocking future local recovery.
+            write(root / 'transaction.json', {**request, 'previous': current['commit'], 'activated': False})
             stop(data, root / 'releases' / current['commit'])
             stopped = True
             database_check(data)
@@ -376,7 +428,9 @@ class Deployment:
         except Exception as error:
             if stopped and current:
                 try:
-                    if switched: stop(data, root / 'releases' / request['commit'])
+                    if switched:
+                        close_launcher(root / 'releases' / request['commit'])
+                        stop(data, root / 'releases' / request['commit'])
                     # Schema must still be compatible; keep all current data, even before activation.
                     database_check(data)
                     (data / 'deployment-hold.json').unlink(missing_ok=True)
@@ -384,6 +438,7 @@ class Deployment:
                     start_task(TASK_RUN, root)
                     wait_healthy(root, current['commit'], active=True)
                     (root / 'transaction.json').unlink(missing_ok=True)
+                    self.restore_console(current['commit'])
                     return self.record(request, 'rolled_back', error=str(error), activated=activated)
                 except Exception as rollback_error:
                     return self.record(request, 'failed', error=str(error), rollback_error=str(rollback_error), activated=activated)
@@ -405,9 +460,25 @@ class Deployment:
         result = self.record(request, 'succeeded')
         try:
             self.refresh_controller(request['commit'])
+            self.restore_console(request['commit'])
             self.prune(history)
-        except OSError: self.record(request, 'succeeded', cleanup_pending=True)
+        except (OSError, subprocess.SubprocessError):
+            result = self.record(request, 'succeeded', cleanup_pending=True)
         return result
+
+    def restore_console(self, commit):
+        release = self.root / 'releases' / commit
+        if read(release / 'portable-manifest.json', {}).get('launcher_protocol', 0) >= 1:
+            expected = str(release / 'WeChatAgentBridge.exe').lower()
+            if any((p.info['exe'] or '').lower() == expected for p in psutil.process_iter(['exe'])): return
+            quoted = str(release / 'WeChatAgentBridge.exe').replace("'", "''")
+            powershell("$expected='" + quoted + "'; $deadline=(Get-Date).AddSeconds(30); "
+                       "while ((Get-ScheduledTask -TaskName 'WeChatBridge-Console').State -eq 'Running') { "
+                       "if (Get-Process -Name WeChatAgentBridge -ErrorAction SilentlyContinue | Where-Object Path -eq $expected) { exit 0 }; "
+                       "if ((Get-Date) -gt $deadline) { throw 'Previous console task has not exited' }; Start-Sleep -Milliseconds 250 }; "
+                       "Start-ScheduledTask -TaskName 'WeChatBridge-Console'")
+        elif (self.root / 'open-installed.ps1').exists() and os.name == 'nt':
+            launch_console(release, background=False)
 
     def refresh_controller(self, commit):
         # The running interpreter has loaded this module already. Replace its
@@ -423,6 +494,21 @@ class Deployment:
             temporary = destination.with_suffix('.new')
             shutil.copyfile(release / source, temporary)
             os.replace(temporary, destination)
+        self.refresh_console(commit)
+
+    def refresh_console(self, commit):
+        release = self.root / 'releases' / commit
+        if read(release / 'portable-manifest.json', {}).get('launcher_protocol', 0) >= 1:
+            # Keep these stable, backwards-compatible entrypoints on rollback.
+            for name in ('open-installed.ps1', 'install-tasks.ps1', 'open-console.cmd'):
+                source = release / 'deploy' / name
+                destination = self.root / name
+                temporary = destination.with_suffix('.new')
+                shutil.copyfile(source, temporary)
+                os.replace(temporary, destination)
+            quoted = str(self.root).replace("'", "''")
+            powershell("$root='" + quoted + "'; $user=(Get-ScheduledTask -TaskName 'WeChatBridge-Run').Principal.UserId; "
+                       "& (Join-Path $root 'install-tasks.ps1') -InstallRoot $root -UserName $user -ConsoleOnly")
 
     def prune(self, history):
         keep = {x['commit'] for x in history[-3:]} | {history[-1]['previous']}

@@ -66,6 +66,18 @@ class DeploymentTests(unittest.TestCase):
             stop.assert_not_called()
         self.assertEqual(read(self.root / 'current.json')['commit'], self.old)
 
+    def test_busy_console_blocks_deployment_without_stranding_recovery(self):
+        with patch('bridge_portable.deploy.close_launcher', side_effect=RuntimeError('operation in progress')), \
+             patch('bridge_portable.deploy.stop') as stop:
+            result = self.manager.apply(self.request)
+            self.assertEqual(result['stage'], 'failed')
+            self.assertIn('operation in progress', result['error'])
+            stop.assert_not_called()
+        self.assertFalse((self.root / 'transaction.json').exists())
+        self.assertFalse((self.root / 'data/deployment-hold.json').exists())
+        self.assertEqual(read(self.root / 'current.json')['commit'], self.old)
+        self.assertEqual(self.evidence(), ['preserve'])
+
     def test_incompatible_schema_never_stops_current_production(self):
         with closing(sqlite3.connect(self.root / 'data/bridge.sqlite3')) as db, db: db.execute('PRAGMA user_version=10')
         with patch('bridge_portable.deploy.stop') as stop:

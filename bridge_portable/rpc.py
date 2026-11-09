@@ -16,14 +16,14 @@ def dispatch(request):
     from . import control
     action = request.get('action')
     if action == 'bootstrap':
-        from .deploy import read
+        from .deploy import read, launch_console
         from .updates import installation
         from .update_engine import bootstrap
         if installation(ROOT) != ROOT and installation(ROOT) is not None: return 'continue'
         manifest = read(ROOT / 'portable-manifest.json', {})
         if not manifest or manifest.get('development'): return 'continue'
         release = bootstrap(ROOT)
-        os.startfile(release / 'WeChatAgentBridge.exe')
+        launch_console(release, background=request.get('background') is True)
         return 'opened'
     if action in ('update-check', 'update-auto', 'update-status', 'update-install'):
         from .updates import Updates, TERMINAL
@@ -48,7 +48,13 @@ def dispatch(request):
         return ('UPDATE:' + ('busy' if pending else token) + '\n' + '\n'.join(lines))
     if action in ('start', 'stop', 'setup', 'reset', 'export', 'export-config', 'import'):
         from .updates import Updates, TERMINAL
+        from .deploy import read
         updates = Updates()
+        if updates.mode == 'managed':
+            if ((updates.root / 'transaction.json').exists() or (control.DATA / 'deployment-hold.json').exists()):
+                raise ValueError('服务器正在部署，请等待完成后再操作。')
+            if read(updates.root / 'current.json')['commit'] != ROOT.name:
+                raise ValueError('此控制台版本已过期，请从安装根目录重新打开。')
         if updates.mode == 'portable':
             from .deploy import read
             task = updates.query()['task']
@@ -110,7 +116,8 @@ def main():
                 from .deploy import lock
                 updates = Updates()
                 # Serialize a long import/export/start with accepting a new update.
-                guard = lock(updates.directory) if updates.mode == 'portable' else contextlib.nullcontext()
+                guard = (lock(updates.root) if updates.mode == 'managed' else
+                         lock(updates.directory) if updates.mode == 'portable' else contextlib.nullcontext())
                 with guard: message = dispatch(request)
             else: message = dispatch(request)
         print(message, flush=True)

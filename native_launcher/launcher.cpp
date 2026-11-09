@@ -5,6 +5,8 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <commctrl.h>
+#include <shellapi.h>
+#include <filesystem>
 #include <string>
 #include <vector>
 #include <thread>
@@ -20,9 +22,42 @@ static bool updatePending = false;
 static bool updateRequest = false;
 static std::wstring targetVersion, targetRelease;
 static std::wstring root;
+static bool background = false, trayPresent = false;
+static UINT taskbarCreated, exitForUpdate, showConsole;
+static NOTIFYICONDATAW tray{};
 static std::vector<HWND> controls;
 constexpr UINT Finished = WM_APP + 1;
+constexpr UINT TrayMessage = WM_APP + 2;
+constexpr wchar_t ProtocolProperty[] = L"WeChatAgentBridge.LauncherProtocol";
 struct Reply { std::wstring text; };
+
+static void reveal() {
+    ShowWindow(window, SW_RESTORE);
+    SetForegroundWindow(window);
+}
+static bool addTray() {
+    tray = {}; tray.cbSize = sizeof(tray); tray.hWnd = window; tray.uID = 1;
+    tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    tray.uCallbackMessage = TrayMessage;
+    tray.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wcscpy_s(tray.szTip, L"微信 Agent Bridge · 双击打开控制台");
+    trayPresent = Shell_NotifyIconW(NIM_ADD, &tray) != FALSE;
+    // Duplicate TaskbarCreated notifications must not remove a working icon.
+    if (!trayPresent) trayPresent = Shell_NotifyIconW(NIM_MODIFY, &tray) != FALSE;
+    if (trayPresent) {
+        tray.uVersion = NOTIFYICON_VERSION_4; Shell_NotifyIconW(NIM_SETVERSION, &tray);
+        KillTimer(window,3);
+    } else SetTimer(window,3,5000,nullptr); // Explorer may still be starting.
+    return trayPresent;
+}
+static void hideToTray() {
+    // Never hide the only recovery entry if Explorer cannot host the icon.
+    if (trayPresent || addTray()) ShowWindow(window, SW_HIDE);
+    else reveal();
+}
+static bool mayExit() {
+    return !busy || updateRequest;
+}
 
 static std::wstring readText(HWND h) {
     int n = GetWindowTextLengthW(h);
@@ -123,13 +158,16 @@ static void request(const wchar_t* action, const std::wstring& path=L"") {
     }).detach();
 }
 static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == taskbarCreated) { trayPresent = false; if (!addTray()) reveal(); return 0; }
+    if (message == showConsole) { reveal(); return 0; }
+    if (message == exitForUpdate) { if (mayExit()) DestroyWindow(h); return 0; }
     switch (message) {
     case WM_CREATE: {
         window = h;
         font = CreateFontW(-16,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Microsoft YaHei UI");
         make(L"STATIC",L"微信 Agent Bridge",0,24,18,600,30);
-        make(L"STATIC",L"解压即用 · 当前 Windows 用户运行 · 关闭此窗口不停止后台",0,24,53,660,24);
+        make(L"STATIC",L"关闭或最小化后常驻托盘 · 双击托盘图标重新打开",0,24,53,660,24);
         privateBox=make(L"BUTTON",L"私人访问（SSH）",WS_TABSTOP|BS_AUTOCHECKBOX,24,90,180,30,200);
         SendMessageW(privateBox,BM_SETCHECK,BST_CHECKED,0);
         originBox=make(L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,210,90,454,30);
@@ -141,7 +179,7 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
         passwordBox=make(L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL|ES_PASSWORD,210,170,454,30);
         make(L"STATIC",L"确认新密码",0,24,216,170,24);
         confirmBox=make(L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL|ES_PASSWORD,210,210,454,30);
-        make(L"STATIC",L"初始化/重置：填写两次新密码。自动回复会在检查通过后恢复。",0,24,251,660,24);
+        make(L"STATIC",L"忘记密码：填写两次新密码并点“重置密码”，无需旧密码或重启。",0,24,251,660,24);
         controls={privateBox,originBox,usernameBox,passwordBox,confirmBox};
         const wchar_t* labels[]={L"保存首次配置",L"环境检查",L"启动后台",L"停止后台",L"打开后台",L"刷新状态",L"查看日志",L"重置密码",L"导出全部数据",L"导入迁移包",L"使用说明",L"仅导出角色/API",L"检查版本更新",L"一键升级"};
         for (int i=0;i<14;++i) {
@@ -153,13 +191,48 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
         SetTimer(h,2,3000,nullptr);
         PostMessageW(h, WM_COMMAND, 114, 0); return 0;
     }
+    case WM_SIZE:
+        if (wp == SIZE_MINIMIZED) hideToTray();
+        return 0;
+    case TrayMessage: {
+        auto event = LOWORD(lp);
+        if (event == WM_LBUTTONDBLCLK || event == NIN_KEYSELECT) { reveal(); return 0; }
+        if (event == WM_CONTEXTMENU || event == WM_RBUTTONUP) {
+            HMENU menu = CreatePopupMenu();
+            AppendMenuW(menu, MF_STRING, 301, L"打开控制台");
+            AppendMenuW(menu, MF_STRING, 302, L"打开网页后台");
+            AppendMenuW(menu, MF_STRING, 303, L"重置管理员密码");
+            AppendMenuW(menu, MF_STRING, 304, L"查看日志");
+            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(menu, MF_STRING, 305, L"退出控制台（后台继续运行）");
+            POINT point; GetCursorPos(&point); SetForegroundWindow(h);
+            int selected = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                point.x, point.y, 0, h, nullptr);
+            DestroyMenu(menu); PostMessageW(h, WM_NULL, 0, 0);
+            if (selected) PostMessageW(h, WM_COMMAND, selected, 0);
+        }
+        return 0;
+    }
     case WM_TIMER:
+        if (wp==3) { addTray(); return 0; } // Retry quietly after the visible fallback.
         if (!busy && wp==1) request(L"update-auto");
         if (!busy && wp==2 && updatePending) request(L"update-status");
         return 0;
     case WM_COMMAND: {
-        if (busy) return 0;
         int id=LOWORD(wp);
+        if (id == 301) { reveal(); return 0; }
+        if (id == 303) {
+            reveal(); SetFocus(passwordBox);
+            if (!busy) SetWindowTextW(outputBox,L"填写两次新密码（4–128 字符），再点击“重置密码”。\r\n无需停止后台；重置后所有设备需要重新登录。");
+            return 0;
+        }
+        if (id == 305) {
+            if (mayExit()) DestroyWindow(h);
+            else { reveal(); MessageBoxW(h,L"请等待当前操作完成。",L"操作进行中",MB_OK); }
+            return 0;
+        }
+        if (busy) return 0;
+        if (id == 302 || id == 304) { request(id == 302 ? L"open" : L"logs"); return 0; }
         if (id==200) { EnableWindow(originBox,SendMessageW(privateBox,BM_GETCHECK,0,0)!=BST_CHECKED); return 0; }
         const wchar_t* actions[]={L"setup",L"check",L"start",L"stop",L"open",L"status",L"logs",L"reset",L"export",L"import",L"help",L"export-config"};
         if (id==112 || id==114) { request(id==112 ? L"update-check" : L"update-auto"); return 0; }
@@ -197,31 +270,67 @@ static LRESULT CALLBACK procedure(HWND h, UINT message, WPARAM wp, LPARAM lp) {
         EnableWindow(originBox,SendMessageW(privateBox,BM_GETCHECK,0,0)!=BST_CHECKED); return 0;
     }
     case WM_CLOSE:
-        if(busy && !updateRequest) { MessageBoxW(h,L"请等待当前操作完成。",L"操作进行中",MB_OK); return 0; }
-        DestroyWindow(h); return 0;
-    case WM_DESTROY: DeleteObject(font); PostQuitMessage(0); return 0;
+        hideToTray(); return 0;
+    case WM_QUERYENDSESSION: return TRUE;
+    case WM_DESTROY:
+        Shell_NotifyIconW(NIM_DELETE, &tray); trayPresent = false;
+        RemovePropW(h, ProtocolProperty); DeleteObject(font); PostQuitMessage(0); return 0;
     }
     return DefWindowProcW(h,message,wp,lp);
 }
-int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int show) {
+int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int) {
     SetProcessDPIAware();
+    int argc = 0; LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    for (int i=1; argv && i<argc; ++i) {
+        if (std::wstring(argv[i]) == L"--background") background = true;
+        else { LocalFree(argv); return 2; }
+    }
+    if (argv) LocalFree(argv);
     wchar_t file[32768]; GetModuleFileNameW(nullptr,file,32768);
     root=file; root.resize(root.find_last_of(L"\\/"));
-    auto bootstrap=invoke("{\"action\":\"bootstrap\"}");
+    auto bootstrap=invoke(background ? "{\"action\":\"bootstrap\",\"background\":true}" : "{\"action\":\"bootstrap\"}");
     if (bootstrap.rfind(L"opened",0)==0) return 0;
     if (bootstrap.rfind(L"continue",0)!=0) { MessageBoxW(nullptr,bootstrap.c_str(),L"启动失败",MB_OK|MB_ICONERROR); return 1; }
     uint64_t hash=1469598103934665603ULL;
-    for(wchar_t c:root) { hash^=towlower(c); hash*=1099511628211ULL; }
+    auto installation = std::filesystem::weakly_canonical(root);
+    if (installation.parent_path().filename() == L"releases" &&
+        std::filesystem::exists(installation.parent_path().parent_path()/L"installation.json"))
+        installation = installation.parent_path().parent_path();
+    for(wchar_t c:installation.wstring()) { hash^=towlower(c); hash*=1099511628211ULL; }
     auto mutexName=L"Local\\WeChatAgentBridgeLauncher-"+std::to_wstring(hash);
+    auto className=L"WeChatAgentBridgeLauncher-"+std::to_wstring(hash);
+    taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+    exitForUpdate = RegisterWindowMessageW(L"WeChatAgentBridge.ExitForUpdate.v1");
+    showConsole = RegisterWindowMessageW(L"WeChatAgentBridge.ShowConsole.v1");
     HANDLE mutex=CreateMutexW(nullptr,FALSE,mutexName.c_str());
-    if(GetLastError()==ERROR_ALREADY_EXISTS) { MessageBoxW(nullptr,L"此目录的启动器已经打开。",L"微信 Agent Bridge",MB_OK); CloseHandle(mutex); return 0; }
-    WNDCLASSW cls{}; cls.lpfnWndProc=procedure; cls.hInstance=instance; cls.lpszClassName=L"WeChatAgentBridgeLauncher";
+    if (!mutex) { MessageBoxW(nullptr,L"无法创建控制台实例锁。",L"启动失败",MB_OK|MB_ICONERROR); return 1; }
+    if(GetLastError()==ERROR_ALREADY_EXISTS) {
+        if (!background) {
+            HWND existing = nullptr;
+            for (int i=0; i<100 && !existing; ++i) { existing = FindWindowW(className.c_str(),nullptr); if (!existing) Sleep(50); }
+            if (existing) { DWORD pid=0; GetWindowThreadProcessId(existing,&pid); AllowSetForegroundWindow(pid); PostMessageW(existing,showConsole,0,0); }
+        }
+        CloseHandle(mutex); return 0;
+    }
+    WNDCLASSW cls{}; cls.lpfnWndProc=procedure; cls.hInstance=instance; cls.lpszClassName=className.c_str();
     cls.hCursor=LoadCursorW(nullptr,IDC_ARROW); cls.hIcon=LoadIconW(nullptr,IDI_APPLICATION); cls.hbrBackground=(HBRUSH)(COLOR_WINDOW+1);
     RegisterClassW(&cls);
     RECT bounds{0,0,690,650}; AdjustWindowRect(&bounds,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,FALSE);
-    window=CreateWindowW(cls.lpszClassName,L"微信 Agent Bridge · 便携启动器",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,
+    window=CreateWindowW(cls.lpszClassName,L"微信 Agent Bridge · 便携控制台",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,
         CW_USEDEFAULT,CW_USEDEFAULT,bounds.right-bounds.left,bounds.bottom-bounds.top,nullptr,nullptr,instance,nullptr);
-    ShowWindow(window,show); UpdateWindow(window);
+    if (!window) { CloseHandle(mutex); return 1; }
+    SetPropW(window,ProtocolProperty,(HANDLE)1);
+    ChangeWindowMessageFilterEx(window,showConsole,MSGFLT_ALLOW,nullptr);
+    // The scheduled console may be elevated while Explorer is not.
+    ChangeWindowMessageFilterEx(window,taskbarCreated,MSGFLT_ALLOW,nullptr);
+    ChangeWindowMessageFilterEx(window,TrayMessage,MSGFLT_ALLOW,nullptr);
+    bool configured = std::filesystem::exists(installation/L"data"/L"portable-config.json") &&
+                      std::filesystem::exists(installation/L"data"/L"auth.sqlite3");
+    bool hasTray = addTray();
+    // Windows consumes STARTUPINFO.wShowWindow on the first call. Scheduled
+    // tasks start us hidden; explicitly apply the fallback on the second call.
+    ShowWindow(window,SW_HIDE);
+    ShowWindow(window,background && configured && hasTray ? SW_HIDE : SW_SHOWNORMAL); UpdateWindow(window);
     MSG message{};
     while(GetMessageW(&message,nullptr,0,0)>0) { if(!IsDialogMessageW(window,&message)) { TranslateMessage(&message); DispatchMessageW(&message); } }
     CloseHandle(mutex); return 0;

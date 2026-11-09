@@ -8,11 +8,13 @@ main 的 PR 合并和直接推送都触发测试、构建；只有全部通过�
 
 1. 在 GitHub 创建 production Environment，仅允许 main，无人工审批。配置 `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_PORT`、`DEPLOY_SSH_KEY` 和 `DEPLOY_KNOWN_HOSTS` Secrets。使用专用 SSH 密钥，主机公钥必须从已验证的服务器取得；私钥不入库、不打印。仓库变量 `AUTO_DEPLOY_ENABLED` 初始为 `false`。
 2. 在固定目录放置 `installation.json`（`{"version":1,"repository":"fichil/wechat-agent-bridge"}`）、`controller/deploy.py` 及已验证便携包的 `controller/runtime`，复制 deploy 目录中的三个运行脚本及安装脚本。管理员只通过已有 SSH 传输这些文件。服务器在停机前再次核对 main 提交，跳过过期请求。
-3. 以微信所属 Windows 用户注册任务：`install-tasks.ps1 -InstallRoot C:\Apps\WeChatAgentBridge -UserName <微信用户>`。两个任务均使用 InteractiveToken，不保存登录密码，不安装自动登录；运行任务持续托管 supervisor，部署任务独立执行切换。
+3. 以微信所属 Windows 用户注册任务：`install-tasks.ps1 -InstallRoot C:\Apps\WeChatAgentBridge -UserName <微信用户>`。运行、部署、控制台三个任务均使用 InteractiveToken，不保存登录密码，不安装自动登录；运行任务持续托管 supervisor，部署任务独立执行切换，`WeChatBridge-Console` 独立托管托盘控制台。
 4. 执行 `controller/runtime/python.exe controller/deploy.py bootstrap --root C:\Apps\WeChatAgentBridge --source <原便携包目录>`。命令提交首次接入请求，由桌面部署任务验证原包、正常关闭旧启动器并停止后台、校验复制数据，再通过独立运行任务启动原版本。原目录保持为恢复副本。迁移不得使用导入功能替代同机接入，以免撤销会话或丢弃队列。
 5. 对 main 手动触发一次工作流并选择 deploy，验证候选程序、实际会话与数据，再将仓库变量 `AUTO_DEPLOY_ENABLED` 设为 `true`。后续 main 更新自动发布。
 
 登录用户退出时计划任务无法运行；请求保持排队，用户下次登录后处理。微信需已安装并登录。不要将后台或部署控制器作为 OpenSSH 的常驻子进程启动。
+
+托盘版本首次由旧控制器部署时，新 supervisor 在部署事务完成后补齐控制台任务、稳定入口和桌面快捷方式。此过程不重启业务。控制台关闭窗口会隐藏到托盘，部署通过本机窗口通知正常退出；正在重置密码或迁移数据时等待或报告阻塞，不强杀。新旧版本切换和失败回退保留对应入口；不支持托盘的旧包始终可见打开。`launcher_protocol: 1` 是便携清单中的控制台能力标记，不改变数据 schema 或公开 API。
 
 ## 发布与回退
 
