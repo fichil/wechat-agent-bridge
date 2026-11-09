@@ -141,7 +141,15 @@ def main():
         print(('Started private loopback access at ' if mode == 'private' else 'Started. Verify HTTPS certificate and login at ')+origin,flush=True)
         from bridge_portable.updates import Updates
         updates = Updates()
+        from bridge_portable.console import ensure_console
+        console_pending, console_at = True, 0.0
         while not stop_file.exists() and all(p.poll() is None for p in children):
+            if console_pending and time.monotonic() >= console_at:
+                console_at = time.monotonic() + 5
+                try: console_pending = not ensure_console(ROOT)
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    print('Console startup failed (' + type(error).__name__ + '); backend remains running.', flush=True)
+                    console_pending = False
             if updates.mode == 'portable':
                 from bridge_portable.update_engine import spawn_if_pending
                 try: spawn_if_pending(updates.root)

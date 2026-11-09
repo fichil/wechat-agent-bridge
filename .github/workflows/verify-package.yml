@@ -94,8 +94,13 @@ jobs:
           $package = Get-ChildItem .local/releases -Directory | Where-Object Name -NotLike '*-build' | Select-Object -First 1
           & (Join-Path $package.FullName 'runtime/python.exe') -B -X utf8 scripts/verify_portable_runtime.py --root $package.FullName --private
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Verify native console lifecycle with isolated RPC fixtures
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem .local/releases -Directory | Where-Object Name -NotLike '*-build' | Select-Object -First 1
+          .venv-backend/Scripts/python.exe -B -X utf8 scripts/verify_launcher.py --root $package.FullName
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Exercise real portable upgrades with isolated synthetic releases
-        if: inputs.version != ''
         shell: pwsh
         run: |
           $zip = (Get-ChildItem .local/releases/*.zip | Select-Object -First 1).FullName

@@ -62,7 +62,7 @@ def fixture_files(package, feed_dir):
 def manifest(package, version):
     value = d.read(package/'portable-manifest.json')
     value.update(version=version, development=False)
-    for name in ('bridge_portable/update_feed.py','bridge_portable/update_engine.py','scripts/production_server.py'):
+    for name in ('bridge_portable/update_feed.py','bridge_portable/update_engine.py','scripts/production_server.py','WeChatAgentBridge.exe'):
         value['files'][name] = d.digest(package/name)
     d.write(package/'portable-manifest.json', value)
     return value
@@ -91,7 +91,7 @@ def publish_fixture(package, feed_dir, version, *, broken=False):
             published_at='2026-11-03T00:00:00Z',draft=False,prerelease=False,assets=assets,body='合成升级演练'))
 
 
-def run(archive, temp):
+def run(archive, temp, legacy_launcher=None):
     root, package, feed_dir = temp/'客户 安装', temp/'fixture', temp/'feed'
     feed_dir.mkdir()
     d.write(feed_dir/'release.json', None)
@@ -108,6 +108,11 @@ def run(archive, temp):
     fixture_files(package,feed_dir)
     manifest(package,'90.0.0')
     shutil.copytree(package,root)
+    if legacy_launcher:
+        shutil.copy2(legacy_launcher,root/'WeChatAgentBridge.exe')
+        previous = manifest(root,'90.0.0')
+        previous.pop('launcher_protocol',None)
+        d.write(root/'portable-manifest.json',previous)
     release = bootstrap(root)
     env = {**os.environ,'BRIDGE_DISABLE_MONITOR':'1'}
     password = secrets.token_urlsafe(24)
@@ -144,6 +149,13 @@ def run(archive, temp):
             assert d.read(root/'updates/task.json')['task_id'] == task['task_id']
     try:
         rpc(release,action='setup',private=True,username='admin',password=password,confirmation=password)
+        d.launch_console(release, background=True)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if any((p.info['exe'] or '').lower() == str(release/'WeChatAgentBridge.exe').lower()
+                   for p in d.psutil.process_iter(['exe'])): break
+            time.sleep(.1)
+        else: raise AssertionError('Console did not start before upgrade')
         publish_fixture(package,feed_dir,'90.0.1')
         assert '90.0.1:101' in rpc(release,action='update-check')
         rpc(release,action='update-install',version='90.0.1',release_id=101)
@@ -184,21 +196,34 @@ def run(archive, temp):
             assert db.execute('SELECT message FROM acceptance_sent ORDER BY rowid').fetchall()==[
                 ('confirmed-send-before-update',),('confirmed-send-after-restart',)]
         print('Failed candidate rolled back; login, running state and both send records retained.',flush=True)
+        service_pid = d.owner(root/'data',current())[0].pid
+        d.close_launcher(current())
+        with LocalApi(origin,'admin',password) as api: assert api.post('updates/query')['current_version']=='90.0.2'
+        assert d.owner(root/'data',current())[0].pid == service_pid
+        d.launch_console(current(),background=True)
+        rpc(current(),action='stop')
+        assert not d.owner(root/'data',current())
+        assert any((p.info['exe'] or '').lower() == str(current()/'WeChatAgentBridge.exe').lower()
+                   for p in d.psutil.process_iter(['exe']))
+        print('Console exit preserves backend; stopped backend leaves console available.',flush=True)
     finally:
         # Only touch a validated supervisor belonging to this disposable installation.
         for child in (root/'releases').iterdir():
             try:
                 if d.owner(root/'data',child): d.stop(root/'data',child)
             except ValueError: continue
+        for child in (root/'releases').iterdir():
+            d.close_launcher(child)
 
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--archive',required=True,type=Path)
+    parser.add_argument('--legacy-launcher',type=Path,help='Optional previous native launcher for old-to-new acceptance')
     args=parser.parse_args()
     for port in (8765,18765):
         with socket.socket() as probe:
             probe.setsockopt(socket.SOL_SOCKET,socket.SO_EXCLUSIVEADDRUSE,1)
             probe.bind(('127.0.0.1',port))
     with tempfile.TemporaryDirectory(prefix='更新 演练 ',ignore_cleanup_errors=True) as tmp:
-        run(args.archive.resolve(),Path(tmp))
+        run(args.archive.resolve(),Path(tmp),args.legacy_launcher)

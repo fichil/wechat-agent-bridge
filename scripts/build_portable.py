@@ -16,7 +16,7 @@ CADDY_SHA512 = 'c308154504e53755958ffc62d8a2657ab17eefd6dd25c45dbb2c3d93d2951997
 DIRECTORIES = ('backend/app/', 'backend/assets/', 'bridge_portable/', 'wechat_account_probe/', 'wechat_conversations/', 'wechat_messages/', 'wechat_sender/', 'wechat_compatibility/', 'native_send/')
 EXACT = {'backend/__init__.py','backend/admin.py','backend/compact_group_memory.py','backend/requirements.lock.txt','bridge_paths.py',
          'deploy/Caddyfile.template','deploy/run-installed.ps1','deploy/deploy-task.ps1',
-         'deploy/install-tasks.ps1','deploy/open-installed.ps1','scripts/production_server.py','scripts/serve_backend.py',
+         'deploy/install-tasks.ps1','deploy/open-installed.ps1','deploy/open-console.cmd','scripts/production_server.py','scripts/serve_backend.py',
          'scripts/service_child.py','scripts/windows_job.py','scripts/verify_native_send_live.py',
          'scripts/observe_send_drafts.ps1','scripts/verify_media_send_live.py','scripts/connect_private.ps1'}
 
@@ -43,7 +43,7 @@ def native_build(stage, build):
     # not depend on the launcher's DLL search path for a private VC runtime.
     commands = [
         ['cl.exe','/nologo','/std:c++17','/EHsc','/W4','/utf-8','/MT','/O2','/DNDEBUG','/Brepro',str(ROOT/'native_launcher/launcher.cpp'),
-         '/Fe:'+str(stage/'WeChatAgentBridge.exe'),'/Fo:'+str(build/'launcher.obj'),'/link','/SUBSYSTEM:WINDOWS','/MACHINE:X64','/INCREMENTAL:NO','user32.lib','gdi32.lib','comdlg32.lib'],
+         '/Fe:'+str(stage/'WeChatAgentBridge.exe'),'/Fo:'+str(build/'launcher.obj'),'/link','/SUBSYSTEM:WINDOWS','/MACHINE:X64','/INCREMENTAL:NO','user32.lib','gdi32.lib','comdlg32.lib','shell32.lib'],
         ['cl.exe','/nologo','/std:c++17','/EHsc','/W4','/utf-8','/LD','/MT','/O2','/DNDEBUG','/Brepro',str(ROOT/'native_send/text_bridge.cpp'),
          '/Fe:'+str(native/'bridge_text.dll'),'/Fo:'+str(build/'bridge_text.obj'),'/link','/MACHINE:X64','/INCREMENTAL:NO','bcrypt.lib'],
     ]
@@ -110,6 +110,7 @@ def main():
     native_build(stage,build)
     shutil.copy2(ROOT/'docs/portable-windows.md',stage/'使用说明.txt')
     shutil.copy2(ROOT/'deploy/connect-private.cmd',stage/'连接私人后台.cmd')
+    shutil.copy2(ROOT/'deploy/open-console.cmd',stage/'open-console.cmd')
     shutil.copy2(ROOT/'native_send/LICENSE.helper',licenses/'LICENSE.helper')
     shutil.copy2(ROOT/'native_send/NOTICE.md',licenses/'native-send-NOTICE.md')
     # Copy dependency license texts; package metadata stays with the vendored runtime.
@@ -125,7 +126,7 @@ def main():
                 target=licenses/'frontend'/path.parent.relative_to(ROOT/'frontend/node_modules')/child.name
                 target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(child,target)
     (stage/'THIRD_PARTY_NOTICES.txt').write_text('Python '+PYTHON_VERSION+'：runtime/LICENSE.txt 与 licenses/python\nCaddy '+CADDY_VERSION+'：licenses/Caddy-LICENSE\n网页依赖：licenses/frontend\n原生发送派生自 helper，适用非商业使用许可：licenses/LICENSE.helper 与 licenses/native-send-NOTICE.md\n大肥鱼表情来自 PC2005-cloud/dsh-pet，素材非商业许可及 CC BY-NC-SA 4.0 形象出处：backend/assets/dsh-pet/NOTICE.md 与 LICENSE.assets.md\n',encoding='utf-8')
-    manifest=dict(version=args.version,commit=commit,development=args.development,architecture='windows-x64',
+    manifest=dict(version=args.version,commit=commit,development=args.development,architecture='windows-x64',launcher_protocol=1,
                   python=PYTHON_VERSION,caddy=CADDY_VERSION,database_schema=12,
                   database_compatible_schemas=[9,10,11,12],database_output_schemas=[12],
                   files={str(path.relative_to(stage)).replace('\\','/'):digest(path) for path in sorted(stage.rglob('*')) if path.is_file()})

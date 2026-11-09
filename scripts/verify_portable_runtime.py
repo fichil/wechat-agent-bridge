@@ -52,6 +52,7 @@ def main():
         # The management process has exited; its services must remain alive.
         time.sleep(2)
         results['detached_backend']=bool(control.status().get('backend'))
+        supervisor_pid=control.owner()[0].pid
         results['second_start']=control.start()
         with LocalApi(args.origin,'acceptance',password) as api:
             assert api.post('accounts/query')['accounts']==[]
@@ -84,7 +85,10 @@ def main():
                 new_password=secrets.token_urlsafe(32)
                 reset=rpc(action='reset',password=new_password,confirmation=new_password)
                 assert reset.returncode==0
+                assert control.owner()[0].pid == supervisor_pid
                 assert client.post(args.origin+'/api/v1/accounts/query',headers={'Origin':args.origin,'X-CSRF-Token':login.json()['csrf_token']},json={}).status_code==401
+                with httpx.Client(timeout=3,trust_env=False) as old_client:
+                    assert old_client.post(args.origin+'/api/v1/auth/login',headers={'Origin':args.origin},json=dict(username='acceptance',password=password)).status_code==401
                 with LocalApi(args.origin,'acceptance',new_password) as api:
                     api.post('accounts/query')
                     results['password_reset']=True
@@ -98,6 +102,8 @@ def main():
             listeners=[c.laddr for c in psutil.net_connections(kind='tcp') if c.pid in pids and c.status=='LISTEN']
             results['private_loopback_bind']=bool(listeners) and all(a.ip=='127.0.0.1' for a in listeners) and {a.port for a in listeners}=={8765,18765}
     finally:
+        from bridge_portable.deploy import close_launcher
+        close_launcher(root)
         results['stop']=control.stop()
         results['stopped']=control.owner() is None
         required=['initialized','port_conflict','detached_backend','authenticated_local_api','cookie_policy','websocket','password_reset','spa_deep_link','stopped']

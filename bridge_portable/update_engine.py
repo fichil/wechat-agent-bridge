@@ -209,6 +209,7 @@ class Engine:
         previous = self.old
         active = d.read(self.root / 'current.json')
         if active != previous:
+            d.close_launcher(location(self.root, active))
             d.stop(self.data, location(self.root, active))
         check_data(self.data, d.compatible_schemas(d.read(location(self.root, previous) / 'portable-manifest.json')))
         (self.data / 'deployment-hold.json').unlink(missing_ok=True)
@@ -240,6 +241,8 @@ class Engine:
             if journal['phase'] == 'rollback':
                 self.rollback(journal, journal['error'])
                 journal_path.unlink(missing_ok=True)
+                if journal.get('reopen'):
+                    d.launch_console(previous, background=True)
                 return
             new = journal['target']
             candidate = d.verify_release(location(self.root, new), new['commit'])
@@ -300,7 +303,7 @@ class Engine:
                 journal_path.unlink(missing_ok=True)
         if reopen:
             release = location(self.root, d.read(self.root / 'current.json'))
-            os.startfile(release / 'WeChatAgentBridge.exe')
+            d.launch_console(release, background=True)
 
     def remember(self, new):
         path = self.state / 'history.json'
