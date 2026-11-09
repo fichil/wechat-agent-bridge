@@ -233,7 +233,7 @@ def notify_launcher_exit(pid):
 
 
 def close_launcher(release, timeout=15):
-    expected = str(Path(release) / 'WeChatAgentBridge.exe').lower()
+    expected = str(Path(release).resolve() / 'WeChatAgentBridge.exe').lower()
     for process in psutil.process_iter(['pid', 'exe']):
         if (process.info['exe'] or '').lower() == expected:
             deadline = time.monotonic() + timeout

@@ -92,6 +92,7 @@ def publish_fixture(package, feed_dir, version, *, broken=False):
 
 
 def run(archive, temp, legacy_launcher=None):
+    temp = Path(temp).resolve()
     root, package, feed_dir = temp/'客户 安装', temp/'fixture', temp/'feed'
     feed_dir.mkdir()
     d.write(feed_dir/'release.json', None)

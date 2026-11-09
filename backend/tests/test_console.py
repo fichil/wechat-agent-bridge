@@ -12,7 +12,7 @@ class ConsoleLifecycleTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.commit = 'a' * 40
         self.release = self.root / 'releases' / self.commit
         self.release.mkdir(parents=True)
@@ -70,7 +70,7 @@ class ConsoleLifecycleTests(unittest.TestCase):
         with patch.object(deploy.psutil, 'process_iter', return_value=[other, process]), \
              patch.object(deploy, 'notify_launcher_exit') as notify:
             with self.assertRaisesRegex(RuntimeError, 'no process was terminated'):
-                deploy.close_launcher(self.release, timeout=0)
+                deploy.close_launcher(self.release / '..' / self.commit, timeout=0)
             notify.assert_called_once_with(123)
             process.kill.assert_not_called()
             process.terminate.assert_not_called()

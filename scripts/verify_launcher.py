@@ -65,7 +65,7 @@ def main():
         return found[0] if found else None
 
     with tempfile.TemporaryDirectory(prefix='bridge-launcher-') as directory:
-        root = Path(directory)
+        root = Path(directory).resolve()
         shutil.copy2(args.root / 'WeChatAgentBridge.exe', root)
         shutil.copytree(args.root / 'runtime', root / 'runtime')
         (root / 'bridge_portable').mkdir()
