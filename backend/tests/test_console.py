@@ -1,5 +1,9 @@
 from pathlib import Path
 from types import SimpleNamespace
+import json
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -113,3 +117,17 @@ class ConsoleLifecycleTests(unittest.TestCase):
             rollback.assert_called_once()
             launch.assert_called_once_with(location(self.root, point), background=True)
             self.assertFalse((state / 'transaction.json').exists())
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows command entrypoint')
+    def test_managed_cmd_entry_preserves_directory_with_spaces(self):
+        directory = self.root / 'entry with spaces'
+        directory.mkdir()
+        shutil.copy2(Path(__file__).resolve().parents[2] / 'deploy/open-console.cmd', directory)
+        (directory / 'open-installed.ps1').write_text(
+            'param([string]$InstallRoot); $ErrorActionPreference="Stop"; '
+            'if (-not (Test-Path -LiteralPath $InstallRoot)) { throw "Invalid directory" }; '
+            'ConvertTo-Json -Compress -InputObject $InstallRoot', encoding='ascii')
+        result = subprocess.run([os.environ['COMSPEC'], '/d', '/c', str(directory / 'open-console.cmd')],
+                                capture_output=True, text=True, timeout=20, creationflags=subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(json.loads(result.stdout)).resolve(), directory)
