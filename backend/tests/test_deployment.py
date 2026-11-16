@@ -78,6 +78,17 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(read(self.root / 'current.json')['commit'], self.old)
         self.assertEqual(self.evidence(), ['preserve'])
 
+    def test_cleanup_failure_does_not_roll_back_an_activated_release(self):
+        with patch('bridge_portable.deploy.stop') as stop, patch('bridge_portable.deploy.start_task'), \
+             patch('bridge_portable.deploy.wait_healthy'), \
+             patch.object(self.manager, 'prune', side_effect=ValueError('unsafe maintenance path')):
+            result = self.manager.apply(self.request)
+        self.assertEqual(result['stage'], 'succeeded')
+        self.assertTrue(result['cleanup_pending'])
+        self.assertEqual(read(self.root / 'current.json')['commit'], self.new)
+        self.assertEqual(stop.call_count, 1)
+        self.assertEqual(self.evidence(), ['preserve'])
+
     def test_incompatible_schema_never_stops_current_production(self):
         with closing(sqlite3.connect(self.root / 'data/bridge.sqlite3')) as db, db: db.execute('PRAGMA user_version=10')
         with patch('bridge_portable.deploy.stop') as stop:

@@ -28,6 +28,68 @@ TASK_RUN = 'WeChatBridge-Run'
 TASK_DEPLOY = 'WeChatBridge-Deploy'
 TASK_CONSOLE = 'WeChatBridge-Console'
 TERMINAL = {'succeeded', 'failed', 'rolled_back', 'superseded'}
+HISTORICAL_DIRECTORIES = frozenset({'migration-backups', 'maintenance-backups'})
+CLEANABLE_UPLOAD_STAGES = frozenset({'succeeded', 'rolled_back', 'superseded'})
+
+
+def checked_path(root, path):
+    """Confine maintenance paths without following junctions or symbolic links."""
+    root, path = Path(os.path.abspath(root)), Path(os.path.abspath(path))
+    if path == root or not path.is_relative_to(root):
+        raise ValueError('Maintenance path is outside the installation directory')
+    for part in (root, *reversed(path.relative_to(root).parents[:-1])):
+        # The root is absolute; the remaining parents are relative to it.
+        target = part if part.is_absolute() else root / part
+        if target.is_symlink() or (target.exists() and getattr(target.lstat(), 'st_file_attributes', 0) & 0x400):
+            raise ValueError('Maintenance refuses reparse points')
+    if path.is_symlink() or (path.exists() and getattr(path.lstat(), 'st_file_attributes', 0) & 0x400):
+        raise ValueError('Maintenance refuses reparse points')
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise ValueError('Maintenance path escaped the installation directory')
+    return path
+
+
+def data_files(data, *, exclude_history=False):
+    """One file inventory for managed backup copying, verification and space checks."""
+    data = Path(data)
+    pending = [data]
+    result = []
+    while pending:
+        directory = pending.pop()
+        for path in sorted(directory.iterdir()):
+            checked_path(data, path)
+            if exclude_history and directory == data and path.name in HISTORICAL_DIRECTORIES:
+                if not path.is_dir(): raise ValueError('Historical archive must be a directory')
+                continue
+            if path.is_dir(): pending.append(path)
+            elif path.is_file(): result.append(path)
+            else: raise ValueError('Unsupported backup file')
+    return result
+
+
+def file_evidence(root, path):
+    path = checked_path(root, path)
+    before = path.stat()
+    if not path.is_file(): raise ValueError('Expected a regular file')
+    checksum = digest(path)
+    checked_path(root, path)
+    after = path.stat()
+    identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns)
+    if identity(before) != identity(after): raise ValueError('File changed while hashing')
+    return dict(size_bytes=after.st_size, sha256=checksum)
+
+
+def historical_references(data):
+    data = Path(data)
+    files = []
+    for name in sorted(HISTORICAL_DIRECTORIES):
+        archive = checked_path(data, data / name)
+        if not archive.exists(): continue
+        for path in data_files(archive):
+            files.append(dict(path=path.relative_to(data).as_posix(),
+                              source=path.relative_to(data.parent).as_posix(),
+                              **file_evidence(data, path)))
+    return dict(version=1, files=files)
 
 
 def http_opener():
@@ -152,17 +214,27 @@ def compatible_schemas(manifest):
     return manifest.get('database_compatible_schemas', [manifest.get('database_schema')])
 
 
-def cold_backup(data, backup, *, validate=database_check):
+def cold_backup(data, backup, *, validate=database_check, exclude_history=False):
     """Publish only a completely copied, verified snapshot; safe to resume."""
-    backup = Path(backup)
+    data, backup = Path(data), Path(backup)
     if not backup.is_dir():
+        inventory = data_files(data, exclude_history=exclude_history)
+        references = historical_references(data) if exclude_history else None
         staging = backup.with_name(backup.name + '.partial')
         if staging.exists(): remove(backup.parent, staging)
-        shutil.copytree(data, staging)
+        ignore = (lambda directory, names: HISTORICAL_DIRECTORIES.intersection(names)
+                  if Path(directory) == data else set()) if exclude_history else None
+        shutil.copytree(data, staging, ignore=ignore)
         validate(staging)
-        for path in Path(data).rglob('*'):
-            if path.is_file() and digest(path) != digest(staging / path.relative_to(data)):
+        for path in inventory:
+            checked_path(data, path)
+            target = checked_path(staging, staging / path.relative_to(data))
+            if digest(path) != digest(target):
                 raise ValueError('Data backup verification failed')
+        if references is not None:
+            if historical_references(data) != references:
+                raise ValueError('Historical archive changed during backup')
+            write(checked_path(backup.parent, backup.parent / 'historical-snapshots.json'), references)
         os.replace(staging, backup)
     validate(backup)
 
@@ -317,6 +389,7 @@ def lock(root):
 
 class Deployment:
     def __init__(self, root):
+        self.requested_root = Path(os.path.abspath(root))
         self.root = Path(root).resolve()
         if not (self.root / 'installation.json').is_file(): raise ValueError('Installation is not configured')
 
@@ -333,6 +406,179 @@ class Deployment:
                  'commit': request['commit'], 'stage': stage, 'updated_at': datetime.now(timezone.utc).isoformat()}
         write(self.root / 'status' / (request['request_id'] + '.json'), value)
         return value
+
+    def cleanup_context(self):
+        if self.requested_root != self.root:
+            raise ValueError('Maintenance refuses a redirected installation root')
+        root = self.root
+        def metadata(name, default=None):
+            return read(checked_path(root, root / name), default)
+        for name in ('transaction.json', 'bootstrap-request.json', 'data/deployment-hold.json'):
+            if checked_path(root, root / name).exists():
+                raise ValueError('Deployment or recovery is in progress: ' + name)
+        current = metadata('current.json')
+        history = metadata('history.json', [])
+        if not isinstance(current, dict) or not re.fullmatch(r'[a-f0-9]{40}', current.get('commit', '')) or current.get('data_path'):
+            raise ValueError('Current installation identity is not safe for maintenance')
+        if not isinstance(history, list) or not history:
+            raise ValueError('Successful deployment history is required for maintenance')
+        for entry in history:
+            if not isinstance(entry, dict): raise ValueError('Invalid deployment history')
+            self.validate_id(entry['request_id'])
+            if any(not re.fullmatch(r'[a-f0-9]{40}', entry.get(k, '')) for k in ('commit', 'previous')):
+                raise ValueError('Invalid deployment history')
+        status_root = checked_path(root, root / 'status')
+        for path in status_root.glob('*.json'):
+            state = read(checked_path(root, path))
+            if not isinstance(state, dict) or state.get('stage') not in TERMINAL | {'adopted'}:
+                raise ValueError('A deployment request is still pending: ' + path.name)
+        # Distinct successful versions, consistent with complete()/prune().
+        versions = {}
+        for entry in history:
+            versions.pop(entry['commit'], None)
+            versions[entry['commit']] = entry
+        return dict(current=current, history=list(versions.values())[-3:])
+
+    def cleanup(self, *, apply=False):
+        with lock(self.root):
+            return self._cleanup(apply=apply)
+
+    def _cleanup(self, *, apply=False):
+        """Caller owns deploy.lock; receipts/manifests precede every deletion."""
+        root = self.root
+        result = dict(stage='preview', candidates=[], protected=[], skipped=[], removed=[],
+                      estimated_bytes=0, removed_bytes=0,
+                      checked_at=datetime.now(timezone.utc).isoformat())
+        try:
+            context = self.cleanup_context()
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            result.update(stage='blocked', reason=str(error))
+            return result
+        result['current_commit'] = context['current']['commit']
+        retained = {entry['request_id'] for entry in context['history']}
+        result['retained_requests'] = sorted(retained)
+
+        def protect(path, reason):
+            result['protected'].append(dict(path=str(path), reason=reason))
+
+        protect(root / 'data', 'Keep all live data and every original historical snapshot')
+        for entry in context['history']:
+            identity = entry['request_id']
+            backup = root / 'backups' / identity / 'data'
+            protect(backup, 'Keep the successful release backup and all nonhistorical data')
+            for name in sorted(HISTORICAL_DIRECTORIES):
+                directory = backup / name
+                try:
+                    checked_path(root, directory)
+                    if not directory.exists(): continue
+                    paths = data_files(directory)
+                except (OSError, ValueError) as error:
+                    result['skipped'].append(dict(path=str(directory), reason=str(error)))
+                    continue
+                for path in paths:
+                    source = root / 'data' / path.relative_to(backup)
+                    try:
+                        copied = file_evidence(root, path)
+                        original = file_evidence(root, source)
+                        if copied != original:
+                            protect(path, 'Unique or different historical snapshot')
+                            continue
+                        result['candidates'].append(dict(kind='historical_duplicate', path=str(path),
+                            source=str(source), request_id=identity,
+                            relative_path=path.relative_to(backup).as_posix(), **copied))
+                    except (OSError, ValueError) as error:
+                        result['skipped'].append(dict(path=str(path), reason=str(error)))
+
+        try:
+            inbox = checked_path(root, root / 'inbox')
+            uploads = sorted(inbox.iterdir())
+        except (OSError, ValueError) as error:
+            result['skipped'].append(dict(path=str(root / 'inbox'), reason=str(error)))
+            uploads = []
+        now = datetime.now(timezone.utc)
+        for path in uploads:
+            if path.suffix != '.zip':
+                protect(path, 'Request metadata, unfinished upload or unrecognized file')
+                continue
+            try:
+                checked_path(root, path)
+                identity = path.stem
+                self.validate_id(identity)
+                request = read(checked_path(root, inbox / (identity + '.json')), {})
+                state = read(checked_path(root, root / 'status' / (identity + '.json')), {})
+                if not isinstance(request, dict) or not isinstance(state, dict):
+                    raise ValueError('Invalid upload metadata')
+                if identity in retained or request.get('commit') == context['current']['commit']:
+                    protect(path, 'Retained or current release upload')
+                    continue
+                if (not request or request.get('request_id') != identity or state.get('request_id') != identity
+                        or state.get('commit') != request.get('commit')
+                        or state.get('stage') not in CLEANABLE_UPLOAD_STAGES):
+                    protect(path, 'Unknown, failed or unfinished deployment request')
+                    continue
+                updated = datetime.fromisoformat(state['updated_at'])
+                if updated.tzinfo is None or (now - updated).total_seconds() < 86400:
+                    protect(path, 'Terminal request is less than 24 hours old')
+                    continue
+                evidence = file_evidence(root, path)
+                if evidence['sha256'] != request.get('sha256'):
+                    protect(path, 'Upload checksum differs from the recorded request')
+                    continue
+                result['candidates'].append(dict(kind='upload', path=str(path), request_id=identity,
+                                                 request=request, status=state, **evidence))
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                result['skipped'].append(dict(path=str(path), reason=str(error)))
+
+        result['estimated_bytes'] = sum(item['size_bytes'] for item in result['candidates'])
+        if not apply: return result
+        from uuid import uuid4
+        receipt = checked_path(root, root / 'maintenance' / 'disk-cleanup' /
+                               (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + uuid4().hex + '.json'))
+        result.update(stage='applying', receipt=str(receipt),
+                      free_bytes_before=shutil.disk_usage(root).free)
+        write(receipt, result)
+        for item in result['candidates']:
+            try:
+                if self.cleanup_context() != context:
+                    raise ValueError('Deployment identity changed during maintenance')
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                result['skipped'].append(dict(path=item['path'], reason=str(error)))
+                result['stage'] = 'interrupted'
+                break
+            try:
+                path = checked_path(root, item['path'])
+                expected = {key: item[key] for key in ('size_bytes', 'sha256')}
+                if file_evidence(root, path) != expected:
+                    raise ValueError('Candidate changed after inventory')
+                if item['kind'] == 'historical_duplicate':
+                    source = checked_path(root, item['source'])
+                    if file_evidence(root, source) != expected:
+                        raise ValueError('Historical original changed after inventory')
+                    manifest = checked_path(root, root / 'backups' / item['request_id'] / 'historical-snapshots.json')
+                    references = read(manifest, dict(version=1, files=[]))
+                    if references.get('version') != 1 or not isinstance(references.get('files'), list):
+                        raise ValueError('Invalid historical snapshot manifest')
+                    reference = dict(path=item['relative_path'], source=source.relative_to(root).as_posix(), **expected)
+                    existing = [ref for ref in references['files'] if ref['path'] == reference['path']]
+                    if existing and existing != [reference]:
+                        raise ValueError('Historical snapshot manifest disagrees with original')
+                    if not existing: references['files'].append(reference)
+                    write(manifest, references)
+                else:
+                    identity = item['request_id']
+                    for directory, key in (('inbox', 'request'), ('status', 'status')):
+                        actual = read(checked_path(root, root / directory / (identity + '.json')))
+                        if actual != item[key]: raise ValueError('Upload request changed after inventory')
+                checked_path(root, path).unlink()
+                result['removed'].append(dict(path=str(path), size_bytes=item['size_bytes'], sha256=item['sha256']))
+                result['removed_bytes'] += item['size_bytes']
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                result['skipped'].append(dict(path=item['path'], reason=str(error)))
+            write(checked_path(root, receipt), result)
+        if result['stage'] == 'applying': result['stage'] = 'completed'
+        result['free_bytes_after'] = shutil.disk_usage(root).free
+        write(checked_path(root, receipt), result)
+        return result
 
     def submit(self, request_id, commit, checksum):
         self.validate_id(request_id)
@@ -358,7 +604,7 @@ class Deployment:
         root = self.root
         destination = root / 'releases' / request['commit']
         archive = root / 'inbox' / (request['request_id'] + '.zip')
-        size = sum(p.stat().st_size for p in (root / 'data').rglob('*') if p.is_file())
+        size = sum(p.stat().st_size for p in data_files(root / 'data', exclude_history=True))
         if shutil.disk_usage(root).free < size + archive.stat().st_size * 4 + 512 * 1024**2:
             raise ValueError('Insufficient space for release and data backup')
         manifest = unpack(archive, destination, request['sha256'], request['commit'])
@@ -409,7 +655,7 @@ class Deployment:
             stopped = True
             database_check(data)
             backup = root / 'backups' / request['request_id'] / 'data'
-            cold_backup(data, backup)
+            cold_backup(data, backup, exclude_history=True)
             self.record(request, 'starting', backup=str(backup))
             write(data / 'deployment-hold.json', request)
             write(root / 'current.json', {'commit': request['commit']})
@@ -461,8 +707,10 @@ class Deployment:
         try:
             self.refresh_controller(request['commit'])
             self.restore_console(request['commit'])
-            self.prune(history)
-        except (OSError, subprocess.SubprocessError):
+            cleanup = self.prune(history)
+            if cleanup['stage'] != 'completed' or cleanup['skipped']:
+                result = self.record(request, 'succeeded', cleanup_pending=True)
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
             result = self.record(request, 'succeeded', cleanup_pending=True)
         return result
 
@@ -513,11 +761,12 @@ class Deployment:
     def prune(self, history):
         keep = {x['commit'] for x in history[-3:]} | {history[-1]['previous']}
         for path in (self.root / 'releases').iterdir():
-            if path.name not in keep: remove(self.root / 'releases', path)
+            if path.name not in keep: remove(self.root / 'releases', checked_path(self.root, path))
         backups = self.root / 'backups'
         keep_backups = {x['request_id'] for x in history[-3:]}
         for path in backups.iterdir():
-            if path.name not in keep_backups and path.name != 'bootstrap': remove(backups, path)
+            if path.name not in keep_backups and path.name != 'bootstrap': remove(backups, checked_path(self.root, path))
+        return self._cleanup(apply=True)
 
     def pending(self):
         with lock(self.root):
@@ -592,13 +841,15 @@ def bootstrap(root, source):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['submit', 'apply', 'status', 'preflight', 'rollback', 'bootstrap'])
+    parser.add_argument('action', choices=['submit', 'apply', 'status', 'preflight', 'rollback', 'bootstrap', 'cleanup'])
     parser.add_argument('--root', required=True, type=Path)
     parser.add_argument('--request-id')
     parser.add_argument('--commit')
     parser.add_argument('--sha256')
     parser.add_argument('--source', type=Path)
+    parser.add_argument('--apply', dest='cleanup_apply', action='store_true', help='Apply the cleanup inventory (cleanup only)')
     args = parser.parse_args()
+    if args.cleanup_apply and args.action != 'cleanup': parser.error('--apply is only valid with cleanup')
     deployment = Deployment(args.root)
     if args.action == 'bootstrap':
         if (args.root / 'data').exists(): raise ValueError('Installation data already exists')
@@ -610,6 +861,7 @@ def main():
     elif args.action == 'status': result = deployment.status(args.request_id) if args.request_id else read(args.root / 'current.json')
     elif args.action == 'apply': result = deployment.pending()
     elif args.action == 'preflight': result = deployment.preflight(read(args.root / 'inbox' / (args.request_id + '.json')))
+    elif args.action == 'cleanup': result = deployment.cleanup(apply=args.cleanup_apply)
     else:
         with lock(args.root):
             history = read(args.root / 'history.json', [])
