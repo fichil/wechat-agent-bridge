@@ -260,6 +260,19 @@ class DiskCleanupTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)['stage'], 'preview')
         self.assertEqual(before, self.hashes())
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows short path aliases')
+    def test_windows_short_path_root_is_valid_without_allowing_junctions(self):
+        import ctypes as c
+        from ctypes import wintypes as w
+        kernel = c.WinDLL('kernel32', use_last_error=True)
+        kernel.GetShortPathNameW.argtypes = [w.LPCWSTR, w.LPWSTR, w.DWORD]
+        kernel.GetShortPathNameW.restype = w.DWORD
+        buffer = c.create_unicode_buffer(32768)
+        self.assertGreater(kernel.GetShortPathNameW(str(self.root), buffer, len(buffer)), 0)
+        result = d.Deployment(Path(buffer.value)).cleanup()
+        self.assertEqual(result['stage'], 'preview')
+        self.assertEqual(len(result['candidates']), 13)
+
 
 if __name__ == '__main__':
     unittest.main()

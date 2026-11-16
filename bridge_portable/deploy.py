@@ -408,8 +408,11 @@ class Deployment:
         return value
 
     def cleanup_context(self):
-        if self.requested_root != self.root:
-            raise ValueError('Maintenance refuses a redirected installation root')
+        # A legitimate Windows 8.3 spelling can resolve to a different string.
+        # Check actual reparse attributes rather than rejecting path aliases.
+        for path in (*reversed(self.requested_root.parents), self.requested_root):
+            if path.is_symlink() or getattr(path.lstat(), 'st_file_attributes', 0) & 0x400:
+                raise ValueError('Maintenance refuses a redirected installation root')
         root = self.root
         def metadata(name, default=None):
             return read(checked_path(root, root / name), default)
