@@ -20,7 +20,7 @@ class DiskCleanupTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         for name in ('data', 'inbox', 'status', 'backups', 'releases'):
             (self.root / name).mkdir()
         (self.root / 'deploy.lock').write_bytes(b'0')
@@ -206,6 +206,13 @@ class DiskCleanupTests(unittest.TestCase):
                 self.assertTrue(self.duplicate().exists())
             finally:
                 link.rmdir()  # Remove only the fixture junction, never its target.
+            alias = external / 'installation-alias'
+            subprocess.run(['cmd.exe', '/d', '/c', 'mklink', '/J', str(alias), str(self.root)],
+                           check=True, capture_output=True)
+            try:
+                self.assertEqual(d.Deployment(alias).cleanup(apply=True)['stage'], 'blocked')
+            finally:
+                alias.rmdir()
 
     def test_managed_backup_restores_both_databases_and_referenced_history(self):
         backup = self.root / 'new-backup/data'
