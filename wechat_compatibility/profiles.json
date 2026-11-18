@@ -13,7 +13,8 @@
         "stickers": true,
         "send_text": true,
         "send_image": false,
-        "send_sticker": false
+        "send_sticker": false,
+        "send_voice": false
       },
       "layout": {
         "anchor_owner_back": 296,
@@ -73,7 +74,7 @@
       "id": "wechat-4.2.0.9-x64",
       "version": "4.2.0.9",
       "arch": "x64",
-      "revision": 2,
+      "revision": 3,
       "capabilities": {
         "account": true,
         "messages": true,
@@ -81,7 +82,8 @@
         "stickers": true,
         "send_text": true,
         "send_image": true,
-        "send_sticker": true
+        "send_sticker": true,
+        "send_voice": true
       },
       "layout": {
         "anchor_owner_back": 296,
@@ -123,6 +125,10 @@
           "gif_probe_release": 5245216,
           "sticker_factory": 29591648,
           "sticker_vtable": 154858696
+        },
+        "voice": {
+          "voice_factory": 115628784,
+          "voice_vtable": 165778152
         }
       },
       "builds": [

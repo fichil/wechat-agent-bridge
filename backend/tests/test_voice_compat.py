@@ -7,6 +7,7 @@ from backend.app.voice_schema import upgrade_v13, VOICE_TABLES
 from backend.app.ai_execution_models import AiRun
 import test_reply_media as media_tests
 from test_roles import RoleTestCase
+from migration_helpers import remove_v13
 
 
 class VoiceCompatibilityTests(RoleTestCase):
@@ -33,9 +34,10 @@ class VoiceCompatibilityTests(RoleTestCase):
         self.store.call(upgrade)
         return run
 
-    def test_voice_upgrade_does_not_run_in_compatibility_release(self):
-        self.assertEqual(self.store.call(lambda: self.store.db.execute('PRAGMA user_version').fetchone()[0]), 12)
+    def test_voice_feature_creates_v13(self):
+        self.assertEqual(self.store.call(lambda: self.store.db.execute('PRAGMA user_version').fetchone()[0]), 13)
 
+    @patch('backend.app.delivery_storage.REPLY_FORMAT_VERSION', 2)
     def test_voice_mixed_run_is_preserved_and_no_prefix_is_sent_on_rollback(self):
         run = self.migrated_run()
         self.assertEqual(self.store.delivery_candidates(), [])
@@ -53,6 +55,7 @@ class VoiceCompatibilityTests(RoleTestCase):
         finally:
             reopened.close()
 
+    @patch('backend.app.delivery_storage.REPLY_FORMAT_VERSION', 2)
     def test_voice_preparation_is_paused_without_losing_generated_result(self):
         run = self.migrated_run()
         def pending():
@@ -73,6 +76,7 @@ class VoiceCompatibilityTests(RoleTestCase):
     def test_voice_migration_failure_rolls_back_schema_and_keeps_foreign_keys(self):
         self.prepare()
         run = self.reply('保留的回复')
+        self.store.call(remove_v13, self.store.db)
         with patch('backend.app.voice_schema.VOICE_TABLES', (*VOICE_TABLES, 'INVALID SQL')):
             with self.assertRaises(Exception):
                 self.store.call(upgrade_v13, self.store.db)
@@ -81,4 +85,4 @@ class VoiceCompatibilityTests(RoleTestCase):
                     self.store.db.execute('PRAGMA foreign_keys').fetchone()[0],
                     self.store.db.execute("SELECT count(*) FROM sqlite_master WHERE name='reply_audio'").fetchone()[0])
         self.assertEqual(self.store.call(inspect), (12, 1, 0))
-        self.assertEqual(self.store.delivery_candidates()[0]['run_id'], run['run_id'])
+        self.assertEqual(self.store.call(lambda: self.store.db.execute('SELECT run_id FROM deliveries').fetchone()[0]), run['run_id'])

@@ -5,7 +5,7 @@ from pathlib import Path
 from bridge_paths import DATA
 
 ROOT = DATA / 'outgoing-media'
-EXTENSIONS = {'image/png':'.png', 'image/jpeg':'.jpg', 'image/gif':'.gif'}
+EXTENSIONS = {'image/png':'.png', 'image/jpeg':'.jpg', 'image/gif':'.gif', 'audio/x-silk':'.silk'}
 
 
 def stage(attempt, media):
@@ -16,12 +16,12 @@ def stage(attempt, media):
     ROOT.mkdir(parents=True, exist_ok=True)
     path = ROOT / (attempt + suffix)
     with path.open('xb') as stream: stream.write(data)
-    return dict(media_token=path.name,media_sha256=media['sha256'])
+    return dict(media_token=path.name,media_sha256=media['sha256'], **({'duration_ms':media['duration_ms']} if suffix=='.silk' else {}))
 
 
 def resolve(request):
     token, digest = request.get('media_token',''), request.get('media_sha256','')
-    if not re.fullmatch(r'[0-9a-f]{32}\.(png|jpg|gif)',token) or not re.fullmatch(r'[0-9a-f]{64}',digest):
+    if not re.fullmatch(r'[0-9a-f]{32}\.(png|jpg|gif|silk)',token) or not re.fullmatch(r'[0-9a-f]{64}',digest):
         raise ValueError('native_media_invalid')
     path = ROOT / token
     if path.is_symlink() or path.resolve().parent != ROOT.resolve(): raise ValueError('native_media_invalid')
@@ -29,6 +29,9 @@ def resolve(request):
         data = stream.read(8 * 1024 * 1024 + 1)
     if not data or len(data)>8*1024*1024 or hashlib.sha256(data).hexdigest()!=digest:
         raise ValueError('native_media_invalid')
+    if token.endswith('.silk'):
+        from backend.app.voice_audio import silk_duration
+        if silk_duration(data) != request.get('duration_ms'): raise ValueError('native_media_invalid')
     return path.resolve()
 
 

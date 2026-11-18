@@ -48,6 +48,8 @@ class AiStoreMixin:
             raise ConversationError("api_profile_not_found", "API 配置不存在，请重新选择。", 404)
         result = dict(row)
         secret = result.pop("secret")
+        speech = self.db.execute('SELECT protocol,model FROM speech_profiles WHERE profile_id=?', (identity,)).fetchone()
+        result.update(speech_protocol=speech['protocol'] if speech else 'auto', speech_model=speech['model'] if speech else '')
         return dict(**result, is_default=self._defaults()["api_profile_id"] == identity,
                     usage_count=self._usage("api_profile_id", identity), has_key=bool(secret),
                     key_readable=secret_protection.verify(secret) if secret else False,
@@ -63,6 +65,9 @@ class AiStoreMixin:
         return self.call(self._profile, identity)
 
     def save_api_profile(self, fields, key=None, identity=None, expected_revision=None, verification=None, task=None):
+        fields = dict(fields)
+        speech_protocol = fields.pop('speech_protocol', 'auto')
+        speech_model = fields.pop('speech_model', '')
         def write():
             timestamp = datetime.now(timezone.utc).isoformat()
             with self.db:
@@ -87,6 +92,7 @@ class AiStoreMixin:
                                      secret_protection.protect(key), timestamp, timestamp))
                     if first:
                         self.db.execute("UPDATE ai_defaults SET api_profile_id=?,revision=revision+1 WHERE singleton=1", (code,))
+                self.db.execute('INSERT OR REPLACE INTO speech_profiles VALUES(?,?,?)', (code, speech_protocol, speech_model))
                 if verification:
                     import json
                     revision = self.db.execute("SELECT revision FROM api_profiles WHERE profile_id=?", (code,)).fetchone()[0]

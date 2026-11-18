@@ -105,7 +105,7 @@ class UpdateTests(unittest.TestCase):
         import threading
         control=BusinessControl.__new__(BusinessControl)
         control.data=self.root
-        control.ai=SimpleNamespace(lock=threading.RLock(),pending={'model'})
+        control.ai=SimpleNamespace(lock=threading.RLock(),pending={'model'},speech=SimpleNamespace(lock=threading.RLock(),pending={'speech'}))
         control.sender=SimpleNamespace(lock=threading.RLock(),pending={'already-sending'})
         d.write(self.root/'update-drain.json',{'task_id':'test'})
         control.step()
@@ -113,4 +113,6 @@ class UpdateTests(unittest.TestCase):
         control.ai.pending.clear(); control.step()
         self.assertFalse((self.root/'production/update-drained.json').exists())
         control.sender.pending.clear(); control.step()
+        self.assertFalse((self.root/'production/update-drained.json').exists())
+        control.ai.speech.pending.clear(); control.step()
         self.assertEqual(d.read(self.root/'production/update-drained.json')['task_id'],'test')

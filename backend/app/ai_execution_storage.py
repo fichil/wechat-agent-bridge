@@ -44,6 +44,14 @@ class AiExecutionStoreMixin:
                 self.db.execute('UPDATE ai_sessions SET paused=1 WHERE account_id=? AND conversation_id=?',
                                 (row['account_id'], row['conversation_id']))
                 continue
+            if 'voice_compat_previous_paused' in payload:
+                self.db.execute('UPDATE ai_sessions SET paused=? WHERE account_id=? AND conversation_id=?',
+                                (int(payload.pop('voice_compat_previous_paused')),row['account_id'],row['conversation_id']))
+                payload.update(error=None,message=None)
+            if self.db.execute('SELECT 1 FROM voice_preparations WHERE run_id=?',(row['run_id'],)).fetchone():
+                payload.update(status='queued',next_retry_at=None,voice_phase='preparing')
+                self._ai_write_run(payload)
+                continue
             if self._recover_retry(payload): continue
             payload.update(status="failed", error="ai_interrupted", message="服务在调用完成前停止，请手动重试。", completed_at=stamp())
             self._ai_write_run(payload)
@@ -226,6 +234,8 @@ class AiExecutionStoreMixin:
             run['next_retry_at'] = None
             self.db.execute('DELETE FROM ai_request_snapshots WHERE run_id=?', (run['run_id'],))
             self.db.execute('DELETE FROM reply_candidates WHERE run_id=?', (run['run_id'],))
+            self.db.execute('DELETE FROM voice_preparations WHERE run_id=?', (run['run_id'],))
+            self._voice_collect()
         self.db.execute("UPDATE ai_runs SET status=?,payload=? WHERE run_id=?", (run["status"], pack(run), run["run_id"]))
 
     def ai_run(self, aid, cid, rid):
@@ -547,8 +557,9 @@ class AiExecutionStoreMixin:
                         raise ConversationError('ai_empty_reply', '本轮需要回复，但没有可发送的内容。', 502)
                     run['role_card_change'] = self._apply_ai_role_patch(run, result.get('role_card_update', ''))
                     run['reply_parts'] = parts
-                    run['reply_format_version'] = 2
-                    display = '\n'.join(p['text'] if p['kind']=='text' else '['+('表情' if p['kind']=='sticker' else '图片')+'：'+p['name']+']' for p in parts)
+                    run['reply_format_version'] = 3 if any(p['kind']=='voice' for p in parts) else 2
+                    if run.get('voice_phase'): run['voice_phase'] = 'ready'
+                    display = '\n'.join(p['text'] if p['kind']=='text' else '[语音] '+p['text'] if p['kind']=='voice' else '['+('表情' if p['kind']=='sticker' else '图片')+'：'+p['name']+']' for p in parts)
                     run.update(status="completed", reply=display, memory_revision=prefs["memory_revision"]+1)
                     self._route_attempt_result(run, 'completed')
                     self._queue_delivery(run)
@@ -561,6 +572,7 @@ class AiExecutionStoreMixin:
                 run['next_retry_at'] = None
                 self.db.execute('DELETE FROM ai_request_snapshots WHERE run_id=?',(rid,))
                 self.db.execute('DELETE FROM reply_candidates WHERE run_id=?',(rid,))
+                self.db.execute('DELETE FROM voice_preparations WHERE run_id=?',(rid,))
                 self._media_collect()
                 self._ai_write_run(run)
                 success = run["status"] == "completed"

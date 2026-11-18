@@ -35,9 +35,9 @@ class BusinessControl:
         drain_path = self.data / 'update-drain.json'
         if drain_path.is_file():
             request = json.loads(drain_path.read_text(encoding='utf-8'))
-            with self.ai.lock, self.sender.lock:
+            with self.ai.lock, self.sender.lock, self.ai.speech.lock:
                 self.ai.update_draining = self.sender.update_draining = True
-                idle = not self.ai.pending and not self.sender.pending
+                idle = not self.ai.pending and not self.sender.pending and not self.ai.speech.pending
             if idle:
                 from bridge_portable.deploy import write
                 write(self.data / 'production/update-drained.json', dict(task_id=request['task_id'], pid=os.getpid()))

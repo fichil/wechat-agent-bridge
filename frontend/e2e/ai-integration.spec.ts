@@ -113,6 +113,76 @@ test("sticker library uploads, previews, protects revisions and retains mixed re
 });
 let requestHeaders: Record<string, string>;
 
+test("voice settings, audition and generated reply playback", async ({
+  page,
+}) => {
+  await page.goto(`/workspace/${ids[0]!.account_id}/agents`);
+  await addApi(page, "语音连接");
+  const profile = (await post(page, "api-profiles/query")).items[0];
+  expect(profile.verification.speech.status).toBe("supported");
+  const card = blankCard();
+  card.data.name = "语音角色";
+  const role = await post(page, "role-cards/create", { card });
+  await page.getByRole("link", { name: "角色卡", exact: true }).click();
+  await page.locator(".role-list-item").filter({ hasText: "语音角色" }).click();
+  await page.getByLabel("语音连接 音色", { exact: true }).fill("nova");
+  await page.getByRole("button", { name: "试听音色", exact: true }).click();
+  await expect(page.getByLabel("角色音色试听")).toBeVisible();
+  await expect
+    .poll(() =>
+      page
+        .getByLabel("角色音色试听")
+        .evaluate((node: HTMLAudioElement) => node.readyState),
+    )
+    .toBeGreaterThan(0);
+  await page.getByRole("button", { name: "保存角色卡", exact: true }).click();
+  await expect
+    .poll(
+      async () =>
+        (await post(page, "role-cards/get", { card_code: role.card_code })).card
+          .data.extensions.wechat_agent_bridge?.voices?.[profile.profile_id],
+    )
+    .toBe("nova");
+  await post(page, "conversation-preferences/update", {
+    ...ids[0]!,
+    expected_revision: 0,
+    ai_enabled: true,
+  });
+  await fixturePost(page, service + "/test/reply", {
+    data: {
+      reply:
+        "前文\n[[SPLIT]]\n[[VOICE]]\n你好，这是角色语音。\n[[SPLIT]]\n后文",
+    },
+  });
+  await fixturePost(page, service + "/test/message", { data: { index: 1 } });
+  await page.goto(`/workspace/${ids[0]!.account_id}/logs`);
+  await page
+    .getByLabel("会话", { exact: true })
+    .selectOption(ids[0]!.conversation_id);
+  await page
+    .getByRole("button", { name: "处理未处理消息", exact: true })
+    .click();
+  await expect(page.locator(".reply-part")).toHaveCount(3);
+  await page.getByRole("button", { name: "加载语音", exact: true }).click();
+  await expect(page.getByLabel("AI 合成语音")).toBeVisible();
+  await expect
+    .poll(() =>
+      page
+        .getByLabel("AI 合成语音")
+        .evaluate((node: HTMLAudioElement) => node.readyState),
+    )
+    .toBeGreaterThan(0);
+  await expect(page.locator(".reply-part").nth(1)).toContainText(
+    "你好，这是角色语音。",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBeTruthy();
+});
+
 test("AI role edits create and reuse a local card while preserving open drafts", async ({
   page,
   context,

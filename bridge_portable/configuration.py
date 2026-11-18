@@ -15,6 +15,7 @@ from .migrate import offline, snapshot, sha, validate_db
 FORMAT = 'wechat-agent-bridge-configuration'
 LIMIT = 32 * 1024 * 1024
 API_FIELDS = ('name', 'provider', 'protocol', 'base_url', 'model', 'anthropic_version', 'workspace_id')
+SPEECH_FIELDS = ('speech_protocol','speech_model')
 
 
 def validate(value):
@@ -27,13 +28,16 @@ def validate(value):
     for key, identity, fields in (('roles','card_code',{'card_code','card'}), ('profiles','profile_id',{'profile_id',*API_FIELDS})):
         ids = set()
         for row in value[key]:
-            if not isinstance(row, dict) or set(row) != fields or not isinstance(row[identity], str) or not 1 <= len(row[identity]) <= 128 or row[identity] in ids:
+            allowed = (fields, fields | set(SPEECH_FIELDS)) if key == 'profiles' else (fields,)
+            if not isinstance(row, dict) or set(row) not in allowed or not isinstance(row[identity], str) or not 1 <= len(row[identity]) <= 128 or row[identity] in ids:
                 raise ValueError('配置迁移包存在重复或非法条目。')
             ids.add(row[identity])
             if key == 'roles':
                 CharacterCard.model_validate(row['card'])
+                from backend.app.voice_provider import validate_voice_bindings
+                validate_voice_bindings(row['card'])
             else:
-                ProfileFields.model_validate({k:row[k] for k in API_FIELDS})
+                ProfileFields.model_validate({k:row[k] for k in (*API_FIELDS,*SPEECH_FIELDS) if k in row})
     defaults = value['defaults']
     if not isinstance(defaults, dict) or set(defaults) != {'role_card_code','api_profile_id'}:
         raise ValueError('配置默认值不正确。')
@@ -56,6 +60,11 @@ def export_configuration(data, output):
             roles = [dict(card_code=r['card_code'], card=json.loads(r['card'])) for r in db.execute('SELECT card_code,card FROM role_cards')]
             # Deliberately never select the secret column, even as DPAPI ciphertext.
             profiles = [dict(r) for r in db.execute('SELECT profile_id,'+','.join(API_FIELDS)+' FROM api_profiles')]
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='speech_profiles'").fetchone():
+                speech = {r['profile_id']:r for r in db.execute('SELECT * FROM speech_profiles')}
+                for profile in profiles:
+                    setting = speech.get(profile['profile_id'])
+                    profile.update(speech_protocol=setting['protocol'] if setting else 'auto', speech_model=setting['model'] if setting else '')
             defaults = dict(db.execute('SELECT role_card_code,api_profile_id FROM ai_defaults WHERE singleton=1').fetchone())
         value = dict(roles=roles, profiles=profiles, defaults=defaults)
         validate(value)
@@ -104,19 +113,24 @@ def import_configuration(archive, data):
             def install():
                 timestamp = datetime.now(timezone.utc).isoformat()
                 with store.db:
+                    profile_map = {row['profile_id']: ('API_'+uuid4().hex if store.db.execute('SELECT 1 FROM api_profiles WHERE profile_id=?',(row['profile_id'],)).fetchone() else row['profile_id']) for row in value['profiles']}
                     for row in value['roles']:
                         if store.db.execute('SELECT 1 FROM role_cards WHERE card_code=?',(row['card_code'],)).fetchone():
                             raise ValueError('角色卡编号已存在，未覆盖目标配置。')
+                        from copy import deepcopy
+                        card = deepcopy(row['card'])
+                        extension = card['data'].get('extensions',{}).get('wechat_agent_bridge',{})
+                        if 'voices' in extension:
+                            extension['voices'] = {profile_map.get(pid,pid):voice for pid,voice in extension['voices'].items()}
                         store.db.execute('INSERT INTO role_cards VALUES(?,?,?,1,?,?)',
-                                         (row['card_code'],row['card']['data']['name'],json.dumps(row['card'],ensure_ascii=False),timestamp,timestamp))
+                                         (row['card_code'],card['data']['name'],json.dumps(card,ensure_ascii=False),timestamp,timestamp))
                     for row in value['profiles']:
-                        if store.db.execute('SELECT 1 FROM api_profiles WHERE profile_id=?',(row['profile_id'],)).fetchone():
-                            raise ValueError('API 配置编号已存在，未覆盖目标配置。')
                         store.db.execute('INSERT INTO api_profiles VALUES(?,?,?,?,?,?,?,?,?,1,?,?)',
-                                         (row['profile_id'],*(row[k] for k in API_FIELDS),b'',timestamp,timestamp))
+                                         (profile_map[row['profile_id']],*(row[k] for k in API_FIELDS),b'',timestamp,timestamp))
+                        store.db.execute('INSERT INTO speech_profiles VALUES(?,?,?)', (profile_map[row['profile_id']],row.get('speech_protocol','auto'),row.get('speech_model','')))
                     # Existing target defaults and all account/conversation choices remain intact.
                     store.db.execute('UPDATE ai_defaults SET role_card_code=COALESCE(role_card_code,?),api_profile_id=COALESCE(api_profile_id,?),revision=revision+1 WHERE singleton=1',
-                                     (value['defaults']['role_card_code'],value['defaults']['api_profile_id']))
+                                     (value['defaults']['role_card_code'],profile_map.get(value['defaults']['api_profile_id'])))
             store.call(install)
         validate_db(staged,'bridge.sqlite3')
         backup = data/'migration-backups'/('before-config-import-'+uuid4().hex)

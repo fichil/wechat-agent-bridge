@@ -32,6 +32,9 @@ def main():
     from backend.compact_group_memory import compact_disabled_group
     assert callable(compact_disabled_group)
     import httpx
+    from backend.app.voice_audio import encode_audio, make_wav, silk_duration
+    audio = encode_audio(make_wav(b'\0\0' * 2400))
+    assert audio['duration_ms'] == silk_duration(audio['silk']) == 100
     password=secrets.token_urlsafe(32)
     def rpc(**value):
         return subprocess.run([sys.executable,'-B','-X','utf8','-m','bridge_portable.rpc'],cwd=root,
@@ -39,7 +42,7 @@ def main():
                               creationflags=subprocess.CREATE_NO_WINDOW)
     initialized=rpc(action='setup',origin=args.origin,username='acceptance',password=password,confirmation=password,private=args.private)
     if initialized.returncode: raise RuntimeError(initialized.stdout)
-    results=dict(runtime=sys.version.split()[0],initialized=True,origin=args.origin,mode='private' if args.private else 'production')
+    results=dict(runtime=sys.version.split()[0],silk_codec=True,initialized=True,origin=args.origin,mode='private' if args.private else 'production')
     try:
         with socket.socket() as occupied:
             occupied.setsockopt(socket.SOL_SOCKET,socket.SO_EXCLUSIVEADDRUSE,1)

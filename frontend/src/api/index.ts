@@ -71,6 +71,17 @@ function value<T>(result: {
 }
 
 export const api = {
+  async voicePreview(
+    profile_id: string,
+    expected_revision: number,
+    voice: string | null,
+  ) {
+    return value(
+      await client.POST("/api/v1/voice/preview", {
+        body: { profile_id, expected_revision, voice: voice || "" },
+      }),
+    );
+  },
   async updates() {
     return value(await client.POST("/api/v1/updates/query", { body: {} }));
   },

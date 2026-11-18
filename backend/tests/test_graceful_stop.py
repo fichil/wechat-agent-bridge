@@ -90,7 +90,7 @@ main()
                 db=sqlite3.connect(database)
                 try:
                     self.assertEqual(db.execute("PRAGMA quick_check").fetchone()[0],"ok")
-                    self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],12)
+                    self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],13)
                 finally:db.close()
             finally:
                 if process.poll() is None:process.kill();process.wait(timeout=5)

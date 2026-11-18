@@ -145,6 +145,8 @@ def quarantine(db, reset_compatibility=False):
             db.execute("UPDATE notification_settings SET payload=json_set(payload,'$.enabled',json('false')),revision=revision+1")
         if db.execute('PRAGMA user_version').fetchone()[0] >= 11:
             db.execute('DELETE FROM reply_candidates')
+        if db.execute('PRAGMA user_version').fetchone()[0] >= 13:
+            db.execute('DELETE FROM voice_preparations')
 
 
 def import_data(archive, data):

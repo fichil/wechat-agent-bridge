@@ -30,6 +30,7 @@ from .delivery_models import Delivery, DeliveryAction, DeliveryResolve, SendCapa
 from .media_models import (StickerList, StickerDetail, Sticker, StickerQuery, StickerCreate, StickerUpdate,
                            StickerDelete, StickerDeleted, ReplyMediaQuery, MediaData)
 from .compatibility import CompatibilitySnapshot
+from .voice_models import AudioData, VoicePreview, VoicePreviewResult
 from .update_models import UpdateInstall, UpdateState
 from bridge_portable.updates import AutomaticChecks, Updates
 from .auth import AuthConfig, AuthStore, AuthError, Login, PasswordChange, AuthSession, AuthOk, DEFAULT_AUTH_PATH, SESSION_SECONDS
@@ -40,7 +41,7 @@ def error(code: str, message: str, status: int):
 
 def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_reader=None,
                settings_path=None, message_reader=None, database_path=None, monitor=None, ai_provider=None, ai_auto=None,
-               send_transport=None, send_auto=None, auth_path=None, auth_config=None) -> FastAPI:
+               send_transport=None, send_auto=None, auth_path=None, auth_config=None, speech_provider=None) -> FastAPI:
     @asynccontextmanager
     async def business_lifespan(app):
         from .storage import Store, DEFAULT_PATH
@@ -65,7 +66,7 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
         app.state.log_clear = LogClearService(store)
         app.state.discovery, app.state.conversations, app.state.messages = bridge.discovery, bridge.conversations, bridge.messages
         from .ai_execution import AiExecution
-        app.state.ai = AiExecution(store, bridge, ai_provider, False)
+        app.state.ai = AiExecution(store, bridge, ai_provider, False, speech_provider)
         from .delivery import DeliveryExecution
         app.state.sender = DeliveryExecution(store,bridge,send_transport,False)
         from .notifications import Notifications
@@ -434,9 +435,13 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
     def stickers_delete(body: StickerDelete):
         return app.state.store.delete_sticker(body.asset_id,body.expected_revision)
 
-    @app.post('/api/v1/ai-runs/media/query', response_model=MediaData, responses=failures)
+    @app.post('/api/v1/ai-runs/media/query', response_model=MediaData | AudioData, responses=failures)
     def reply_media_query(body: ReplyMediaQuery):
         return app.state.store.reply_media(body.account_id,body.conversation_id,body.run_id,body.part_index)
+
+    @app.post('/api/v1/voice/preview', response_model=VoicePreviewResult, responses=failures)
+    def voice_preview(body: VoicePreview):
+        return app.state.ai.speech.preview(body.profile_id,body.expected_revision,body.voice)
 
     @app.post("/api/v1/ai-settings/query", response_model=AiSettings, responses=failures)
     def ai_settings(_body: JsonRequest, request: Request):

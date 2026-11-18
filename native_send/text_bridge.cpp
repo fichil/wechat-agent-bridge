@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <iterator>
+#include <vector>
 #include "core_version.h"
 struct SharedMessage { void* object; void* control; };
 struct SmallString { char data[16]; uint64_t length; uint64_t capacity; };
@@ -305,6 +306,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI WxSendText(void* parameter) {
     return schedule_task(config.base, &task);
 }
 #include "media_send.h"
+#include "voice_send.h"
 extern "C" __declspec(dllexport) DWORD WINAPI WxWaitForTasks(void*) {
  return active_callbacks || live_completions || live_tasks ? ERROR_BUSY : 0;
 }

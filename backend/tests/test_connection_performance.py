@@ -28,7 +28,7 @@ class MetadataPerformanceTests(unittest.TestCase):
                 self.store.close()
                 self.store = Store(self.path)
             def check():
-                self.assertEqual(self.store.db.execute('PRAGMA user_version').fetchone()[0], 12)
+                self.assertEqual(self.store.db.execute('PRAGMA user_version').fetchone()[0], 13)
                 for sql, args in queries:
                     plan = [r[3] for r in self.store.db.execute('EXPLAIN QUERY PLAN '+sql, args)]
                     self.assertTrue(any('COVERING INDEX' in line for line in plan), plan)

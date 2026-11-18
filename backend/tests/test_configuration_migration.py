@@ -85,3 +85,29 @@ class ConfigurationMigrationTests(unittest.TestCase):
             dest.writestr('configuration.json','{}')
         with self.assertRaises(ValueError): import_data(bad,self.target)
         self.assertFalse((self.target/'bridge.sqlite3').exists())
+
+    def test_voice_settings_and_bindings_follow_remapped_profiles(self):
+        with closing(Store(self.source/'bridge.sqlite3')) as store:
+            role = store.role_card(self.role['card_code'])
+            role['card']['data']['extensions']['wechat_agent_bridge'] = {'voices':{self.api['profile_id']:'nova'}}
+            store.save_role_card(role['card'],role['card_code'],role['revision'])
+            store.call(lambda:store.db.execute('UPDATE speech_profiles SET model=? WHERE profile_id=?',('speech-model',self.api['profile_id'])))
+            store.call(store.db.commit)
+        export_configuration(self.source,self.package)
+        with closing(Store(self.target/'bridge.sqlite3')) as store:
+            fields={k:self.api[k] for k in ('name','provider','protocol','base_url','model','anthropic_version','workspace_id')}
+            with patch('backend.app.secret_protection.protect',return_value=b''):
+                existing=store.save_api_profile(fields,key='test')
+            def collide():
+                with store.db:
+                    store.db.execute('DELETE FROM speech_profiles')
+                    store.db.execute('UPDATE ai_defaults SET api_profile_id=NULL')
+                    store.db.execute('UPDATE api_profiles SET profile_id=?',(self.api['profile_id'],))
+            store.call(collide)
+        import_data(self.package,self.target)
+        with closing(Store(self.target/'bridge.sqlite3')) as store:
+            imported=next(p for p in store.api_profiles()['items'] if p['profile_id']!=self.api['profile_id'])
+            self.assertEqual(imported['speech_model'],'speech-model')
+            self.assertFalse(imported['has_key'])
+            bindings=store.role_card(self.role['card_code'])['card']['data']['extensions']['wechat_agent_bridge']['voices']
+            self.assertEqual(bindings,{imported['profile_id']:'nova'})

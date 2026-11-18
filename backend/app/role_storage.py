@@ -92,6 +92,8 @@ class RoleStoreMixin:
         return self.call(self._card, code)
 
     def save_role_card(self, card, code=None, expected_revision=None):
+        from .voice_provider import validate_voice_bindings
+        validate_voice_bindings(card)
         def write():
             identity = code or "RC_" + uuid4().hex
             timestamp = datetime.now(timezone.utc).isoformat()

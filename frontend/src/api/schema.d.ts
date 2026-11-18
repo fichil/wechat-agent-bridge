@@ -820,6 +820,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/voice/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Voice Preview */
+        post: operations["voice_preview_api_v1_voice_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ai-settings/query": {
         parameters: {
             query?: never;
@@ -1269,6 +1286,8 @@ export interface components {
         };
         /** AiRun */
         AiRun: {
+            /** Voice Phase */
+            voice_phase?: ("preparing" | "ready") | null;
             role_card_change?: components["schemas"]["RoleCardChange"] | null;
             /** Processing Type */
             processing_type?: ("realtime_reply" | "memory_backfill" | "group_threshold") | null;
@@ -1393,7 +1412,8 @@ export interface components {
              *     trigger_reason 为 group_threshold 时，根据角色和群聊语境判断是否有必要参与；没有自然、有效的回应时可以保持沉默。其他无需回复且没有强制回复要求的情况，reply 也可为空字符串。
              *
              *     【回复形式】
-             *     根据角色、语境和表达需要，自主选择纯文字、表情包、图片，或按顺序组合多种形式；可以只回复一张表情包或图片，也可以回复多条消息。
+             *     根据角色、语境和表达需要，自主选择纯文字、语音、表情包、图片，或按顺序组合多种形式；可以只回复一条语音、表情包或图片，也可以回复多条消息。
+             *     reply_media.capabilities.voice 为 true 时，可以用独占首行的 [[VOICE]] 开始一个语音段，下一行起填写准确朗读的文本；前后消息仍用 [[SPLIT]] 分隔。音色由角色卡设置，音频由程序合成，不输出音频路径、网址或 Base64。代码、链接和需要仔细阅读的内容用文字；语音生成失败会回退为相同文字。语音属于 AI 合成内容，生成成功不代表已发送。
              *     多条独立微信消息必须使用独占一行的 [[SPLIT]] 分隔。普通换行只表示同一条消息内换行，不会拆成多条。不要用数组、编号或其他分隔符替代此协议。
              *     reply 是 JSON 字符串，其中的换行必须按 JSON 规则编码为 \n，双引号和反斜杠也须正确转义。
              *     根据聊天节奏决定消息数量，不必每次拆分；避免无意义的碎片回复、重复表达或连续堆叠表情包。
@@ -1458,6 +1478,17 @@ export interface components {
              * @default
              */
             workspace_id: string;
+            /**
+             * Speech Protocol
+             * @default auto
+             * @enum {string}
+             */
+            speech_protocol: "auto" | "openai_speech" | "gemini_generate_content";
+            /**
+             * Speech Model
+             * @default
+             */
+            speech_model: string;
             /** Profile Id */
             profile_id: string;
             /** Revision */
@@ -1481,6 +1512,30 @@ export interface components {
             /** Key Readable */
             key_readable: boolean;
             verification?: components["schemas"]["Verification"];
+        };
+        /** AudioData */
+        AudioData: {
+            /** Audio Id */
+            audio_id: string;
+            /**
+             * Mime Type
+             * @default audio/wav
+             * @constant
+             */
+            mime_type: "audio/wav";
+            /** Size Bytes */
+            size_bytes: number;
+            /** Sha256 */
+            sha256: string;
+            /** Duration Ms */
+            duration_ms: number;
+            /**
+             * Sample Rate
+             * @default 24000
+             */
+            sample_rate: number;
+            /** Data Base64 */
+            data_base64: string;
         };
         /** AudioSummary */
         AudioSummary: {
@@ -3002,6 +3057,17 @@ export interface components {
              */
             workspace_id: string;
             /**
+             * Speech Protocol
+             * @default auto
+             * @enum {string}
+             */
+            speech_protocol: "auto" | "openai_speech" | "gemini_generate_content";
+            /**
+             * Speech Model
+             * @default
+             */
+            speech_model: string;
+            /**
              * Api Key
              * Format: password
              */
@@ -3106,6 +3172,17 @@ export interface components {
              * @default
              */
             workspace_id: string;
+            /**
+             * Speech Protocol
+             * @default auto
+             * @enum {string}
+             */
+            speech_protocol: "auto" | "openai_speech" | "gemini_generate_content";
+            /**
+             * Speech Model
+             * @default
+             */
+            speech_model: string;
             /** Api Key */
             api_key?: string | null;
         };
@@ -3362,6 +3439,31 @@ export interface components {
             account_id: string;
             exclusions: components["schemas"]["Exclusions"];
         };
+        /** SpeechVerification */
+        SpeechVerification: {
+            /**
+             * Status
+             * @default unverified
+             * @enum {string}
+             */
+            status: "unverified" | "testing" | "supported" | "unsupported" | "failed";
+            /** Tested At */
+            tested_at?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Protocol */
+            protocol?: string | null;
+            /** Default Voice */
+            default_voice?: string | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Latency Ms */
+            latency_ms?: number | null;
+            /** Error */
+            error?: string | null;
+            /** Message */
+            message?: string | null;
+        };
         /** StartScanRequest */
         StartScanRequest: Record<string, never>;
         /** Sticker */
@@ -3554,6 +3656,7 @@ export interface components {
         };
         /** Verification */
         Verification: {
+            speech?: components["schemas"]["SpeechVerification"];
             /**
              * Status
              * @default unverified
@@ -3580,6 +3683,31 @@ export interface components {
             error?: string | null;
             /** Message */
             message?: string | null;
+        };
+        /** VoicePreview */
+        VoicePreview: {
+            /** Profile Id */
+            profile_id: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Voice
+             * @default
+             */
+            voice: string;
+        };
+        /** VoicePreviewResult */
+        VoicePreviewResult: {
+            /**
+             * Mime Type
+             * @default audio/wav
+             * @constant
+             */
+            mime_type: "audio/wav";
+            /** Data Base64 */
+            data_base64: string;
+            /** Duration Ms */
+            duration_ms: number;
         };
     };
     responses: never;
@@ -8873,7 +9001,121 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MediaData"];
+                    "application/json": components["schemas"]["MediaData"] | components["schemas"]["AudioData"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unsupported Media Type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    voice_preview_api_v1_voice_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoicePreview"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VoicePreviewResult"];
                 };
             };
             /** @description Bad Request */
