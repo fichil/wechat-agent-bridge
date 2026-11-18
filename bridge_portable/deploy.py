@@ -27,6 +27,9 @@ import certifi
 TASK_RUN = 'WeChatBridge-Run'
 TASK_DEPLOY = 'WeChatBridge-Deploy'
 TASK_CONSOLE = 'WeChatBridge-Console'
+# A cold archive migration includes a full backup, integrity check and startup
+# check. Keep the standalone controller and service supervisor on one budget.
+BACKEND_STARTUP_TIMEOUT_SECONDS = 1800
 TERMINAL = {'succeeded', 'failed', 'rolled_back', 'superseded'}
 HISTORICAL_DIRECTORIES = frozenset({'migration-backups', 'maintenance-backups'})
 CLEANABLE_UPLOAD_STAGES = frozenset({'succeeded', 'rolled_back', 'superseded'})
@@ -339,7 +342,7 @@ def start_task(name, root=None):
     powershell("$ErrorActionPreference='Stop'; Start-ScheduledTask -TaskName '" + name + "'")
 
 
-def wait_healthy(root, commit, *, active, timeout=720, release=None):
+def wait_healthy(root, commit, *, active, timeout=BACKEND_STARTUP_TIMEOUT_SECONDS + 120, release=None):
     root = Path(root)
     release = release or root / 'releases' / commit
     managed_version = bool(read(release / 'portable-manifest.json').get('database_schema'))

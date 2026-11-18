@@ -17,14 +17,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from backend.app.auth import AuthConfig, AuthStore, DEFAULT_AUTH_PATH
 from backend.app.ai_timeouts import AI_SHUTDOWN_GRACE_SECONDS
+from bridge_portable.deploy import BACKEND_STARTUP_TIMEOUT_SECONDS
 
 from bridge_paths import DATA, FRONTEND
 RUNTIME = DATA / 'production'
 
 
-def wait_backend(child, timeout=600):
-    # Startup validates the existing archive before opening the HTTP listener.
-    # A large archive on a small server can exceed three minutes when cold.
+def wait_backend(child, timeout=BACKEND_STARTUP_TIMEOUT_SECONDS):
+    # A schema migration backs up and validates the archive before opening HTTP.
+    # Cold production archives can exceed ten minutes even while making progress.
     opener = build_opener(ProxyHandler({}))
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
