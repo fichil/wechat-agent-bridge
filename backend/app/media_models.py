@@ -66,12 +66,23 @@ class StickerDeleted(BaseModel):
     deleted: bool
 
 
+class AudioSummary(BaseModel):
+    audio_id: str
+    mime_type: Literal['audio/wav'] = 'audio/wav'
+    size_bytes: int
+    sha256: str
+    duration_ms: int
+    sample_rate: int = 24000
+
+
 class ReplyPart(BaseModel):
     index: int
-    kind: Literal['text', 'image', 'sticker']
+    kind: Literal['text', 'image', 'sticker', 'voice']
     text: str | None = None
     name: str | None = None
     media: MediaSummary | None = None
+    audio: AudioSummary | None = None
+    fallback_reason: str | None = None
 
 
 class ReplyMediaQuery(PreferencesQuery):
