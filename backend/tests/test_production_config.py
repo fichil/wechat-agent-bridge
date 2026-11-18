@@ -2,7 +2,9 @@ import unittest
 from unittest.mock import Mock, patch
 import io
 from pathlib import Path
+from urllib.error import HTTPError
 from scripts.production_server import render_config, wait_backend
+from bridge_portable.deploy import wait_healthy
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.testclient import TestClient
 from backend.app.main import create_app
@@ -11,22 +13,40 @@ from wechat_account_probe.models import aggregate
 
 
 class ProductionConfigTests(unittest.TestCase):
-    def test_cold_archive_can_finish_starting_after_three_minutes(self):
+    def test_cold_archive_migration_can_finish_starting_after_ten_minutes(self):
         child = Mock(); child.poll.return_value = None
         opener = Mock()
         opener.open.side_effect = [OSError('not listening yet'), io.StringIO('{"service":"wechat-agent-bridge"}')]
         with patch('scripts.production_server.build_opener', return_value=opener), \
-             patch('scripts.production_server.time.monotonic', side_effect=[0, 190, 220]), \
+             patch('scripts.production_server.time.monotonic', side_effect=[0, 650, 900]), \
              patch('scripts.production_server.time.sleep'):
             wait_backend(child)
         self.assertEqual(opener.open.call_count, 2)
 
     def test_startup_remains_bounded_and_dead_child_fails_immediately(self):
-        with patch('scripts.production_server.time.monotonic', side_effect=[0, 601]):
+        with patch('scripts.production_server.time.monotonic', side_effect=[0, 1801]):
             with self.assertRaisesRegex(RuntimeError, 'startup timed out'): wait_backend(Mock())
         child = Mock(); child.poll.return_value = 1
         with patch('scripts.production_server.time.monotonic', side_effect=[0, 1]):
             with self.assertRaisesRegex(RuntimeError, 'stopped during startup'): wait_backend(child)
+
+    def test_deployment_allows_service_startup_then_checks_health_and_authentication(self):
+        process = Mock(); process.children.return_value = [Mock(pid=17)]
+        def metadata(path, *args):
+            return {'portable-manifest.json': {'database_schema': 13},
+                    'portable-config.json': {'origin': 'https://bridge.example.com'},
+                    'business.json': {'pid': 17, 'commit': 'candidate', 'active': False}}[path.name]
+        opener = Mock()
+        opener.open.side_effect = [OSError('not listening yet'),
+            io.StringIO('{"service":"wechat-agent-bridge"}'), io.BytesIO(b'<html>login</html>'),
+            HTTPError('https://bridge.example.com/api/v1/accounts/query',401,'Unauthorized',{},None)]
+        with patch('bridge_portable.deploy.read',side_effect=metadata), \
+             patch('bridge_portable.deploy.owner',return_value=(process,{})), \
+             patch('bridge_portable.deploy.http_opener',return_value=opener), \
+             patch('bridge_portable.deploy.time.monotonic',side_effect=[0,1700,1810]), \
+             patch('bridge_portable.deploy.time.sleep'):
+            wait_healthy(Path('synthetic-installation'),'candidate',active=False)
+        self.assertEqual(opener.open.call_count,4)
 
     def test_template_exposes_dist_and_proxies_api_without_opening_backend(self):
         config=render_config('https://bridge.example.com',Path('frontend/dist'))
