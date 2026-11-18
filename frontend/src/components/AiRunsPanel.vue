@@ -304,6 +304,9 @@ onBeforeUnmount(() => {
               }}</small
             >
             <p v-if="part.kind === 'text'" class="ai-reply">{{ part.text }}</p>
+            <p v-else-if="part.kind === 'voice'" class="ai-reply">
+              语音记录已保留，升级到支持语音的版本后可播放。{{ part.text }}
+            </p>
             <template v-else
               ><span
                 >{{ part.kind === "sticker" ? "表情" : "图片" }} ·

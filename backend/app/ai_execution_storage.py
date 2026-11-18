@@ -33,8 +33,17 @@ EXECUTION_SCHEMA = (
 
 class AiExecutionStoreMixin:
     def _ai_recover(self):
+        from .delivery_storage import REPLY_FORMAT_VERSION
         for row in self.db.execute("SELECT * FROM ai_runs WHERE status IN ('queued','running')").fetchall():
             payload = json.loads(row["payload"])
+            if payload.get('reply_format_version', 1) > REPLY_FORMAT_VERSION:
+                payload.setdefault('voice_compat_previous_paused', bool(self._ai_session(row['account_id'], row['conversation_id'])['paused']))
+                payload.update(status='queued', error='reply_version_unsupported',
+                               message='当前程序保留了新版语音任务，升级到支持语音的版本后继续。')
+                self._ai_write_run(payload)
+                self.db.execute('UPDATE ai_sessions SET paused=1 WHERE account_id=? AND conversation_id=?',
+                                (row['account_id'], row['conversation_id']))
+                continue
             if self._recover_retry(payload): continue
             payload.update(status="failed", error="ai_interrupted", message="服务在调用完成前停止，请手动重试。", completed_at=stamp())
             self._ai_write_run(payload)

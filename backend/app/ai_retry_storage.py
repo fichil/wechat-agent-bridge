@@ -54,6 +54,8 @@ class AiRetryStoreMixin:
         if not row:
             return None
         run = json.loads(row[0])
+        if not self._delivery_format_supported(run['run_id']):
+            return None
         if self._ai_terminate_invalid(run):
             return run
         if run.get('next_retry_at') and run['next_retry_at'] > time.time():
@@ -167,6 +169,7 @@ class AiRetryStoreMixin:
             with self.db:
                 for row in self.db.execute("SELECT payload FROM ai_runs WHERE status='queued'").fetchall():
                     run=json.loads(row[0]); aid,cid=run['account_id'],run['conversation_id']
+                    if not self._delivery_format_supported(run['run_id']): continue
                     if self._ai_terminate_invalid(run):
                         events.append(self._ai_touch(aid,cid,[])); continue
                     if self._suspend_background(run):

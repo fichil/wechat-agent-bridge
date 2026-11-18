@@ -1,15 +1,16 @@
 from typing import Literal
 from pydantic import BaseModel, Field
 from .role_models import PreferencesQuery
-from .media_models import MediaSummary
+from .media_models import MediaSummary, AudioSummary
 
 DeliveryStatus = Literal["not_required", "queued", "sending", "sent", "failed", "unknown", "cancelled"]
 
 
 class DeliveryPart(BaseModel):
     index: int
-    kind: Literal['text','image','sticker'] = 'text'
+    kind: Literal['text','image','sticker','voice'] = 'text'
     media: MediaSummary | None = None
+    audio: AudioSummary | None = None
     status: DeliveryStatus
     attempts: int = 0
     code: str | None = None
@@ -42,3 +43,4 @@ class SendCapability(BaseModel):
     send_text: bool = False
     send_image: bool = False
     send_sticker: bool = False
+    send_voice: bool = False

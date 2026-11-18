@@ -9513,6 +9513,45 @@
         ],
         "title": "ApiProfile"
       },
+      "AudioSummary": {
+        "properties": {
+          "audio_id": {
+            "type": "string",
+            "title": "Audio Id"
+          },
+          "mime_type": {
+            "type": "string",
+            "const": "audio/wav",
+            "title": "Mime Type",
+            "default": "audio/wav"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "title": "Duration Ms"
+          },
+          "sample_rate": {
+            "type": "integer",
+            "title": "Sample Rate",
+            "default": 24000
+          }
+        },
+        "type": "object",
+        "required": [
+          "audio_id",
+          "size_bytes",
+          "sha256",
+          "duration_ms"
+        ],
+        "title": "AudioSummary"
+      },
       "AuthOk": {
         "properties": {
           "ok": {
@@ -10874,7 +10913,8 @@
             "enum": [
               "text",
               "image",
-              "sticker"
+              "sticker",
+              "voice"
             ],
             "title": "Kind",
             "default": "text"
@@ -10883,6 +10923,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/MediaSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "audio": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AudioSummary"
               },
               {
                 "type": "null"
@@ -14425,7 +14475,8 @@
             "enum": [
               "text",
               "image",
-              "sticker"
+              "sticker",
+              "voice"
             ],
             "title": "Kind"
           },
@@ -14460,6 +14511,27 @@
                 "type": "null"
               }
             ]
+          },
+          "audio": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AudioSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Reason"
           }
         },
         "type": "object",
@@ -14924,6 +14996,11 @@
           "send_sticker": {
             "type": "boolean",
             "title": "Send Sticker",
+            "default": false
+          },
+          "send_voice": {
+            "type": "boolean",
+            "title": "Send Voice",
             "default": false
           }
         },

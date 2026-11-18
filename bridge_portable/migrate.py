@@ -60,8 +60,8 @@ def validate_db(path, name):
         if not required <= tables:
             raise ValueError('不是有效的 Bridge 数据库：' + name)
         version = db.execute('PRAGMA user_version').fetchone()[0]
-        if name == FILES[0] and version not in (8, 9, 10, 11, 12):
-            raise ValueError('迁移包仅支持数据库版本 8–12；请使用匹配版本升级。')
+        if name == FILES[0] and version not in (8, 9, 10, 11, 12, 13):
+            raise ValueError('迁移包仅支持数据库版本 8–13；请使用匹配版本升级。')
         if name == FILES[0] and version >= 9 and 'compatibility_state' not in tables:
             raise ValueError('兼容状态表缺失。')
         if name == FILES[0] and version >= 10:
@@ -76,6 +76,11 @@ def validate_db(path, name):
                 raise ValueError('媒体发送队列结构缺失。')
         if name == FILES[0] and version >= 12 and 'role_card_derivations' not in tables:
             raise ValueError('角色卡派生记录缺失。')
+        if name == FILES[0] and version >= 13:
+            if not {'speech_profiles','reply_audio','voice_preparations'} <= tables:
+                raise ValueError('语音配置或音频快照缺失。')
+            if 'audio_id' not in {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}:
+                raise ValueError('语音发送队列结构缺失。')
         return version
 
 
@@ -160,7 +165,7 @@ def import_data(archive, data):
             if sum(i.file_size for i in infos) > MAX_BYTES or zin.getinfo('manifest.json').file_size > 16384:
                 raise ValueError('迁移包超过大小限制。')
             manifest = json.loads(zin.read('manifest.json'))
-            if manifest.get('format') != 'wechat-agent-bridge-migration' or manifest.get('version') != 1 or manifest.get('database_version') not in (8,9,10,11,12) or set(manifest.get('files', {})) != set(FILES):
+            if manifest.get('format') != 'wechat-agent-bridge-migration' or manifest.get('version') != 1 or manifest.get('database_version') not in (8,9,10,11,12,13) or set(manifest.get('files', {})) != set(FILES):
                 raise ValueError('迁移包格式或版本不支持。')
             for name in FILES:
                 with zin.open(name) as source, (temp/name).open('xb') as target:

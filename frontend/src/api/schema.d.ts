@@ -1482,6 +1482,28 @@ export interface components {
             key_readable: boolean;
             verification?: components["schemas"]["Verification"];
         };
+        /** AudioSummary */
+        AudioSummary: {
+            /** Audio Id */
+            audio_id: string;
+            /**
+             * Mime Type
+             * @default audio/wav
+             * @constant
+             */
+            mime_type: "audio/wav";
+            /** Size Bytes */
+            size_bytes: number;
+            /** Sha256 */
+            sha256: string;
+            /** Duration Ms */
+            duration_ms: number;
+            /**
+             * Sample Rate
+             * @default 24000
+             */
+            sample_rate: number;
+        };
         /** AuthOk */
         AuthOk: {
             /**
@@ -1985,8 +2007,9 @@ export interface components {
              * @default text
              * @enum {string}
              */
-            kind: "text" | "image" | "sticker";
+            kind: "text" | "image" | "sticker" | "voice";
             media?: components["schemas"]["MediaSummary"] | null;
+            audio?: components["schemas"]["AudioSummary"] | null;
             /**
              * Status
              * @enum {string}
@@ -3112,12 +3135,15 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "text" | "image" | "sticker";
+            kind: "text" | "image" | "sticker" | "voice";
             /** Text */
             text?: string | null;
             /** Name */
             name?: string | null;
             media?: components["schemas"]["MediaSummary"] | null;
+            audio?: components["schemas"]["AudioSummary"] | null;
+            /** Fallback Reason */
+            fallback_reason?: string | null;
         };
         /** RoleCard */
         RoleCard: {
@@ -3284,6 +3310,11 @@ export interface components {
              * @default false
              */
             send_sticker: boolean;
+            /**
+             * Send Voice
+             * @default false
+             */
+            send_voice: boolean;
         };
         /** Sender */
         Sender: {
