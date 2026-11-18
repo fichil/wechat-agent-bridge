@@ -96,11 +96,12 @@ def main():
     media = dict(data=audio['silk'], mime_type='audio/x-silk', sha256=audio['silk_sha256'], duration_ms=audio['duration_ms'])
     probe_stage = stage(uuid4().hex, media)
     probe = transport.invoke(dict(binding, operation='send', target='filehelper', text='', kind='voice', voice_probe=True, **probe_stage))
+    probe['module_unloaded'] = 'bridge_text.dll' not in modules(instance['pid'])
     report['constructor_probe'] = probe
     save()
     if probe.get('resources_released'):
         release(probe_stage)
-    if probe.get('status')!='probe_ok' or not probe.get('resources_released') or not probe.get('module_unloaded'):
+    if not probe.get('voice_probe_valid') or not probe.get('resources_released') or not probe.get('module_unloaded'):
         raise RuntimeError('Voice constructor probe failed; no message was sent')
     observer = DesktopObservation(instance['pid'])
     report['drafts_before'] = observer.drafts()
