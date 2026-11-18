@@ -116,6 +116,9 @@ class SpeechExecution:
             error = ConversationError('voice_preparation_failed', '语音准备中断，任务已保留，请检查后重试。', 503)
             error.retryable = False
             self.store.finish_ai_run(aid,cid,rid,error=error)
+        finally:
+            try: self.store.log_application(rid, self.store.ai_run(aid,cid,rid))
+            except ConversationError: pass  # Account/run may be deleted while synthesis is in flight.
 
     def preview(self, pid, revision, voice):
         if self.provider is None:

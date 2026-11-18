@@ -171,6 +171,39 @@ class VoiceReplyTests(RoleTestCase):
         self.assertEqual(run['reply_parts'][0]['kind'],'text')
         self.assertEqual(self.speech.calls,[])
 
+    def test_cancelled_synthesis_finishes_logs_and_rejects_stale_worker_status(self):
+        self.prepare()
+        entered, release = threading.Event(), threading.Event()
+        def block():
+            entered.set()
+            self.assertTrue(release.wait(5))
+        self.speech.hook = block
+        ai = self.app.state.ai
+        run = self.store.start_ai_run(self.ids[0],self.cids[0],'voice-log-cancel','manual')
+        rid = run['run_id']
+        def logs():
+            return self.store.call(lambda: [(row[0],json.loads(row[1])) for row in
+                self.store.db.execute('SELECT active,payload FROM diagnostic_logs WHERE task_id=?',(rid,))])
+        try:
+            with patch.object(self.provider,'generate',return_value=dict(memory='不能保存',reply='[[VOICE]]\n正在合成')):
+                ai.perform(self.ids[0],self.cids[0],rid)
+            self.assertTrue(entered.wait(2))
+            stale = self.store.ai_run(self.ids[0],self.cids[0],rid)
+            self.assertEqual(stale['status'],'running')
+            self.assertEqual([r[0] for r in logs()],[1])
+            self.update(self.preferences()['revision'],ai_enabled=False)
+        finally:
+            release.set()
+        for _ in range(200):
+            if 'run:'+rid not in ai.speech.pending: break
+            time.sleep(.01)
+        self.assertNotIn('run:'+rid,ai.speech.pending)
+        self.assertEqual([(r[0],r[1]['application_status']) for r in logs()],[(0,'cancelled')])
+        self.store.log_application(rid,stale)
+        self.assertEqual([(r[0],r[1]['application_status']) for r in logs()],[(0,'cancelled')])
+        self.assertEqual(self.preferences()['memory'],'')
+        self.assertEqual(self.store.ai_run(self.ids[0],self.cids[0],rid)['delivery']['total_parts'],0)
+
     def test_cancel_and_revision_change_during_synthesis_never_commit(self):
         self.prepare()
         self.speech.hook=lambda:self.update(self.preferences()['revision'],memory='手工保留')
@@ -244,3 +277,40 @@ class VoiceReplyTests(RoleTestCase):
         self.assertEqual(run['status'],'completed',run)
         self.assertEqual(seen,[self.profile['profile_id'],backup['profile_id']])
         self.assertEqual(self.speech.calls,[(backup['profile_id'],'backup-only-key','备用角色语音','nova')])
+
+    def test_invalid_mixed_reply_retries_backup_without_reusing_old_voice(self):
+        self.prepare()
+        backup = self.create_api(name='备用',api_key='backup-only-key',speech_model='backup-speech')
+        seen = []
+        def generate(profile,key,envelope,mode):
+            seen.append(profile['profile_id'])
+            reply = ('[[VOICE]]\n旧语音\n[[SPLIT]]\n[[IMAGE:data:image/png;base64,'+media.encoded()+']]'
+                     if profile['profile_id']==self.profile['profile_id'] else '[[VOICE]]\n备用回复')
+            return dict(memory='备用记忆',reply=reply)
+        prepare = self.store.prepare_reply_candidates
+        def no_images(aid,cid,rid,caps):
+            return prepare(aid,cid,rid,{**caps,'image':False})
+        ai = self.app.state.ai
+        run = self.store.start_ai_run(self.ids[0],self.cids[0],'voice-invalid-fallback','manual')
+        rid = run['run_id']
+        with patch.object(self.provider,'generate',side_effect=generate), patch.object(self.store,'prepare_reply_candidates',side_effect=no_images):
+            ai.perform(self.ids[0],self.cids[0],rid)
+            for _ in range(200):
+                if 'run:'+rid not in ai.speech.pending: break
+                time.sleep(.01)
+            self.assertNotIn('run:'+rid,ai.speech.pending)
+            failed = self.store.ai_run(self.ids[0],self.cids[0],rid)
+            self.assertEqual(failed['status'],'queued',failed)
+            self.assertEqual(failed['profile_id'],backup['profile_id'])
+            self.assertIsNone(self.store.voice_preparation(rid))
+            self.assertNotIn('voice_phase',failed)
+            self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM reply_audio').fetchone()[0]),0)
+            self.assertEqual(self.preferences()['memory'],'')
+            self.assertEqual(failed['delivery']['total_parts'],0)
+            ai.perform(self.ids[0],self.cids[0],rid)
+            run = self.wait_run(run)
+        self.assertEqual(run['status'],'completed',run)
+        self.assertEqual(seen,[self.profile['profile_id'],backup['profile_id']])
+        self.assertEqual([p['text'] for p in run['reply_parts']],['备用回复'])
+        self.assertEqual([c[2] for c in self.speech.calls],['旧语音','备用回复'])
+        self.assertEqual(self.preferences()['memory'],'备用记忆')

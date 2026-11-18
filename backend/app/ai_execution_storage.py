@@ -544,6 +544,11 @@ class AiExecutionStoreMixin:
                     run.update(status="conflicted", error="ai_memory_conflict", message="记忆已被手工修改，本次结果未覆盖记忆，请重试。")
                 elif error:
                     if self._schedule_ai_retry(run,error):
+                        # A new model attempt must not resume the rejected reply's audio.
+                        self.db.execute('DELETE FROM voice_preparations WHERE run_id=?',(rid,))
+                        self._voice_collect()
+                        run.pop('voice_phase', None)
+                        self._ai_write_run(run)
                         event=self._ai_touch(aid,cid,[])
                         # Commit before notifying; no model worker sleeps during backoff.
                         self.db.commit()
