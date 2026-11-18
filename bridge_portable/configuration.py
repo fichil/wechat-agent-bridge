@@ -120,7 +120,7 @@ def import_configuration(archive, data):
                         from copy import deepcopy
                         card = deepcopy(row['card'])
                         extension = card['data'].get('extensions',{}).get('wechat_agent_bridge',{})
-                        if 'voices' in extension:
+                        if isinstance(extension,dict) and 'voices' in extension:
                             extension['voices'] = {profile_map.get(pid,pid):voice for pid,voice in extension['voices'].items()}
                         store.db.execute('INSERT INTO role_cards VALUES(?,?,?,1,?,?)',
                                          (row['card_code'],card['data']['name'],json.dumps(card,ensure_ascii=False),timestamp,timestamp))

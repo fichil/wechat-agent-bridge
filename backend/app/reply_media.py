@@ -113,7 +113,7 @@ def summarize_memory(memory):
     return value.replace('[[SPLIT]]','\n').replace('[[VOICE]]', '[语音]')
 
 
-REPLY_INSTRUCTIONS = '''Reply protocol v2: reply is still a string. Separate independent WeChat messages ONLY with [[SPLIT]] on its own line. Ordinary newlines stay within one message.
+REPLY_INSTRUCTIONS = '''Reply protocol v3: reply is still a string. Separate independent WeChat messages ONLY with [[SPLIT]] on its own line. Ordinary newlines stay within one message.
 An image or sticker segment must contain ONLY [[STICKER:asset_id]] from reply_media.stickers or [[IMAGE:message_id]] from reply_media.images; never invent IDs. Text before/after images and stickers is a separate segment.
 Choose an occasional sticker when suitable for the character and context; an image-only reply is valid. No image generation service exists. Prefer references, never synthesize base64. If actual image data is supplied by your service, [[IMAGE:data:image/png;base64,...]] or [[STICKER:data:image/gif;base64,...]] is supported.
 Media availability is explicitly listed in reply_media. If a media capability is false, do not request it. Include human-readable descriptions in memory, never base64 or control markers. Generated replies are not proof of delivery.'''

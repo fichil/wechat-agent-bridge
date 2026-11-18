@@ -111,3 +111,13 @@ class ConfigurationMigrationTests(unittest.TestCase):
             self.assertFalse(imported['has_key'])
             bindings=store.role_card(self.role['card_code'])['card']['data']['extensions']['wechat_agent_bridge']['voices']
             self.assertEqual(bindings,{imported['profile_id']:'nova'})
+
+    def test_null_voice_extension_roundtrips_without_a_binding(self):
+        with closing(Store(self.source/'bridge.sqlite3')) as store:
+            role=store.role_card(self.role['card_code'])
+            role['card']['data']['extensions']['wechat_agent_bridge']=None
+            store.save_role_card(role['card'],role['card_code'],role['revision'])
+        export_configuration(self.source,self.package)
+        import_data(self.package,self.target)
+        with closing(Store(self.target/'bridge.sqlite3')) as store:
+            self.assertIsNone(store.role_card(self.role['card_code'])['card']['data']['extensions']['wechat_agent_bridge'])

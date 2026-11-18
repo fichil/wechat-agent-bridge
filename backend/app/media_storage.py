@@ -186,7 +186,7 @@ class MediaStoreMixin:
         def query():
             run=self._media_run(aid,cid,rid)
             part=next((p for p in run.get('reply_parts',[]) if p['index']==index and p['kind']!='text'),None)
-            if not part: raise ConversationError('reply_media_not_found','此回复没有对应图片。',404)
+            if not part: raise ConversationError('reply_media_not_found','此回复没有对应媒体。',404)
             if part['kind'] == 'voice':
                 return self._audio_value(part['audio']['audio_id'],True)
             return self._media_value(part['media']['media_id'],True)
