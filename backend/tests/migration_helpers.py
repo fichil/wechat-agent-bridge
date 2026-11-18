@@ -57,5 +57,29 @@ def remove_v11(db):
 
 
 def remove_v12(db):
+    remove_v13(db)
     db.execute('DROP TABLE IF EXISTS role_card_derivations')
     db.execute('DELETE FROM schema_migrations WHERE version=12')
+
+
+def remove_v13(db):
+    """Construct a real pre-voice fixture, including the old delivery CHECK."""
+    import re
+    if 'audio_id' not in {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}: return
+    db.commit()
+    foreign_keys = db.execute('PRAGMA foreign_keys').fetchone()[0]
+    db.execute('PRAGMA foreign_keys=OFF')
+    with db:
+        db.execute('ALTER TABLE deliveries DROP COLUMN audio_id')
+        sql = db.execute("SELECT sql FROM sqlite_master WHERE name='deliveries'").fetchone()[0]
+        indexes = [r[0] for r in db.execute("SELECT sql FROM sqlite_master WHERE tbl_name='deliveries' AND type IN ('index','trigger') AND sql IS NOT NULL")]
+        sql = re.sub(r'^CREATE TABLE (?:"deliveries"|deliveries)', 'CREATE TABLE old_deliveries', sql)
+        db.execute(sql.replace("CHECK(kind IN ('text','image','sticker','voice'))", "CHECK(kind IN ('text','image','sticker'))"))
+        db.execute('INSERT INTO old_deliveries SELECT * FROM deliveries ORDER BY rowid')
+        db.execute('DROP TABLE deliveries')
+        db.execute('ALTER TABLE old_deliveries RENAME TO deliveries')
+        for statement in indexes: db.execute(statement)
+        for table in ('voice_preparations','reply_audio','speech_profiles'): db.execute('DROP TABLE IF EXISTS '+table)
+        db.execute('DELETE FROM schema_migrations WHERE version=13')
+        db.execute('PRAGMA user_version=12')
+    db.execute('PRAGMA foreign_keys='+str(foreign_keys))

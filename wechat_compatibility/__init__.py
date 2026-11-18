@@ -6,7 +6,8 @@ from pathlib import Path
 import struct
 
 REGISTRY = Path(__file__).with_name('profiles.json')
-CAPABILITIES = ('account', 'messages', 'images', 'stickers', 'send_text', 'send_image', 'send_sticker')
+CAPABILITIES = ('account', 'messages', 'images', 'stickers', 'send_text', 'send_image', 'send_sticker', 'send_voice')
+VOICE_FIELDS = ('voice_factory', 'voice_vtable')
 MEDIA_FIELDS = ('context_shared', 'context_provider', 'message_manager', 'manager_vtable',
                 'qstring_utf8', 'image_factory', 'message_send', 'copy_wide', 'gif_validate',
                 'gif_probe', 'gif_probe_release', 'sticker_factory', 'sticker_vtable')
@@ -55,6 +56,9 @@ def validate_registry(value):
         if type(native['id']) is not int or not 1 <= native['id'] < 65536 or native['id'] in native_ids:
             raise ValueError('compatibility_native_id_invalid')
         native_ids.add(native['id'])
+        if item['capabilities']['send_voice']:
+            if not item['capabilities']['send_image'] or set(native.get('voice', {})) != set(VOICE_FIELDS):
+                raise ValueError('compatibility_voice_incomplete')
         if item['capabilities']['send_image'] or item['capabilities']['send_sticker']:
             if not item['capabilities']['send_text'] or set(native.get('media', {})) != set(MEDIA_FIELDS):
                 raise ValueError('compatibility_media_incomplete')
@@ -74,7 +78,7 @@ def validate_registry(value):
             hashes.add(digest)
             if (any(type(build[k]) is not int or build[k] <= 0 for k in ('bytes','timestamp','image_size')) or
                     any(type(v) is not int or not 0 < v < build['image_size']
-                        for v in (*native['rvas'].values(), *native.get('media', {}).values(), native['app_entry']))):
+                        for v in (*native['rvas'].values(), *native.get('media', {}).values(), *native.get('voice', {}).values(), native['app_entry']))):
                 raise ValueError('compatibility_build_invalid')
     return value
 

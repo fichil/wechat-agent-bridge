@@ -83,7 +83,18 @@ function verificationText(profile: ApiProfile) {
   if (!result || result.status === "unverified") return "尚未通过可用性测试";
   if (result.status === "failed")
     return `最近测试失败：${result.message || "请重试"}`;
-  return `文本与 JSON 测试通过 · 图片${result.vision === "supported" ? "支持" : result.vision === "unsupported" ? "不支持" : "未验证"}`;
+  const speech = result.speech;
+  const speechText =
+    speech?.status === "supported"
+      ? "支持"
+      : speech?.status === "unsupported"
+        ? "不支持"
+        : speech?.status === "failed"
+          ? "测试失败"
+          : speech?.status === "testing"
+            ? "测试中"
+            : "未验证";
+  return `文本与 JSON 测试通过 · 图片${result.vision === "supported" ? "支持" : result.vision === "unsupported" ? "不支持" : "未验证"} · 语音${speechText}`;
 }
 void config.load();
 function blank(): ProfileCreate {
@@ -96,6 +107,8 @@ function blank(): ProfileCreate {
     api_key: "",
     anthropic_version: "2026-10-21",
     workspace_id: "",
+    speech_protocol: "auto",
+    speech_model: "",
   };
 }
 function setDraft(profile: ApiProfile | null) {
@@ -110,6 +123,8 @@ function setDraft(profile: ApiProfile | null) {
         api_key: "",
         anthropic_version: profile.anthropic_version,
         workspace_id: profile.workspace_id,
+        speech_protocol: profile.speech_protocol || "auto",
+        speech_model: profile.speech_model || "",
       }
     : blank();
   baseline.value = JSON.stringify(draft.value);
@@ -446,6 +461,33 @@ onBeforeUnmount(() => {
                 maxlength="256"
                 placeholder="填写服务商提供的模型 ID"
             /></label>
+            <label class="editor-field"
+              ><span>语音接口</span>
+              <select
+                v-model="draft.speech_protocol"
+                class="editor-input"
+                aria-label="语音接口"
+              >
+                <option value="auto">跟随 API 协议</option>
+                <option value="openai_speech">OpenAI 兼容语音</option>
+                <option value="gemini_generate_content">Gemini 原生语音</option>
+              </select>
+            </label>
+            <label class="editor-field"
+              ><span>语音模型</span>
+              <input
+                v-model="draft.speech_model"
+                class="editor-input"
+                maxlength="256"
+                placeholder="留空使用上方模型"
+              />
+              <small
+                >沿用此配置的地址和密钥。语音测试通过后自动可用，音色在角色卡中设置。</small
+              >
+              <small v-if="selected?.verification?.speech?.message">{{
+                selected.verification.speech.message
+              }}</small>
+            </label>
             <label class="editor-field"
               ><span>API 密钥{{ selected ? "（留空保留原密钥）" : " *" }}</span
               ><input

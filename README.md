@@ -9,6 +9,8 @@ Windows 本机微信工作台：Vue 3 / TypeScript 前端，Python 3.12 / FastAP
 
 支持 [图片、原生表情与有序多条回复](docs/media-replies.md)：独立行 `[[SPLIT]]` 分隔消息，媒体引用经过整批校验与快照保存；内置 27 张大肥鱼并支持自定义表情库。新增原生媒体发送面向生产微信 4.2.0.9 精确构建，4.1.15.56 保留已有能力。
 
+支持 [原生语音回复](docs/voice-replies.md)：AI 根据角色和上下文选择文字、语音或混合回复，角色卡可按 API 配置绑定音色并试听。语音复用实际完成聊天的 API 地址和密钥，可单独指定语音模型。
+
 本机与远程访问均需独立的后台管理员登录。登录保持 7 天；退出只注销当前浏览器会话，修改或重置密码会注销所有设备。退出网页不停止消息同步、AI 处理或已启用的自动回复。
 云服务器使用 Caddy 提供 HTTPS 和生产静态文件，完整步骤见 [后台认证与 Windows 部署](docs/auth-and-deployment.md)。
 本地已于 2026-10-30 合并并启用登录，密码长度按用户选择为 4–128 字符；运行验收与回退见 [本地切换记录](docs/deployment-auth-local-2026-10-30.md)。
@@ -85,7 +87,7 @@ npm run dev
 
 开启会话 AI 后，系统按批次处理本地未纳入记忆的消息，生成回复并更新会话记忆。具备实时触发资格的回复在自动检查就绪后发送至微信；历史批次只更新记忆。会话配置按账号和会话隔离，微信退出或服务重启后仍保留；微信同步不会覆盖配置。角色卡修改对全部引用会话生效。多页面编辑使用修订号避免覆盖，冲突时保留草稿并提示重新加载。
 
-数据保存在 `.local/bridge.sqlite3`，数据库版本升级至 8，和聊天归档一样不进入源码备份。升级前备份方式见 [数据库说明](docs/database.md)。实现参考 [Character Card V2 规范](https://github.com/malfoyslastname/character-card-spec-v2/blob/main/spec_v2.md)及 [SillyTavern 可编辑会话记忆](https://docs.sillytavern.app/extensions/summarize/)，角色卡作为每次请求的角色资料传入，不自动将开场白发送到微信。
+数据保存在 `.local/bridge.sqlite3`，当前数据库版本为 13，和聊天归档一样不进入源码备份。升级前备份方式见 [数据库说明](docs/database.md)。实现参考 [Character Card V2 规范](https://github.com/malfoyslastname/character-card-spec-v2/blob/main/spec_v2.md)及 [SillyTavern 可编辑会话记忆](https://docs.sillytavern.app/extensions/summarize/)，角色卡作为每次请求的角色资料传入，不自动将开场白发送到微信。
 
 ### Agent API 配置与全局默认
 

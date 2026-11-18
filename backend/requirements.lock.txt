@@ -19,6 +19,7 @@ pycparser==3.12
 pydantic==2.14.1
 pydantic_core==2.50.1
 starlette==1.10.0
+silk-python==0.2.8
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 uvicorn==0.54.0

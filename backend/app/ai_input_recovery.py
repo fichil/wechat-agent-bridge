@@ -48,8 +48,8 @@ def inspect(db, aid, cid, expected):
     # Reuse query helpers without Store initialization, migrations or global recovery.
     reader = Store.__new__(Store)
     reader.db = db
-    if db.execute('PRAGMA user_version').fetchone()[0] != 12:
-        raise ValueError('仅支持当前 v12 数据库；不会自动迁移。')
+    if db.execute('PRAGMA user_version').fetchone()[0] != 13:
+        raise ValueError('仅支持当前 v13 数据库；不会自动迁移。')
     marker = 'ai-input-recovery:' + expected
     saved = db.execute('SELECT value FROM metadata WHERE key=?', (marker,)).fetchone()
     if saved:

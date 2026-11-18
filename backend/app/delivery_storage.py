@@ -7,7 +7,7 @@ import unicodedata
 from uuid import uuid4
 from .conversations import ConversationError
 
-REPLY_FORMAT_VERSION = 2
+REPLY_FORMAT_VERSION = 3
 DELIVERY_SCHEMA = (
     "CREATE TABLE delivery_sessions(account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, enabled_at TEXT NOT NULL, watermarks TEXT NOT NULL, last_trigger_at REAL NOT NULL DEFAULT 0, PRIMARY KEY(account_id,conversation_id), FOREIGN KEY(account_id,conversation_id) REFERENCES conversations(account_id,conversation_id))",
     "CREATE TABLE reply_triggers(message_id TEXT PRIMARY KEY REFERENCES messages, account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, epoch INTEGER NOT NULL, consumed_run_id TEXT)",
@@ -156,7 +156,7 @@ class DeliveryStoreMixin:
 
     def _delivery_public(self, rid):
         parts=[dict(index=r['part_index'],kind=r['kind'],media=self._media_value(r['media_id']) if r['media_id'] else None,status=r['status'],attempts=r['attempts'],code=r['code'],
-                    archive_message_id=r['archive_message_id'],confirmation=r['confirmation'])
+                    archive_message_id=r['archive_message_id'],confirmation=r['confirmation'], audio=self._audio_value(r['audio_id']) if r['audio_id'] else None)
                for r in self.db.execute('SELECT * FROM deliveries WHERE run_id=? ORDER BY part_index',(rid,))]
         statuses={p['status'] for p in parts}
         status=next((s for s in ('unknown','sending','failed','queued','cancelled','sent') if s in statuses),'not_required')
@@ -190,8 +190,8 @@ class DeliveryStoreMixin:
         parts = run.get('reply_parts')
         if parts is None: parts = [dict(index=i,kind='text',text=text) for i,text in enumerate(split_reply(run['reply']))]
         for part in parts:
-            self.db.execute('INSERT INTO deliveries(run_id,part_index,account_id,conversation_id,epoch,target,text,status,created_at,kind,media_id) VALUES(?,?,?,?,?,?,?,\'queued\',?,?,?)',
-                (rid,part['index'],aid,cid,run['epoch'],target,part.get('text') or '',stamp(),part['kind'],part.get('media',{}).get('media_id')))
+            self.db.execute('INSERT INTO deliveries(run_id,part_index,account_id,conversation_id,epoch,target,text,status,created_at,kind,media_id,audio_id) VALUES(?,?,?,?,?,?,?,\'queued\',?,?,?,?)',
+                (rid,part['index'],aid,cid,run['epoch'],target,part.get('text') or '',stamp(),part['kind'],part.get('media',{}).get('media_id'),part.get('audio',{}).get('audio_id')))
 
     def delivery_candidates(self):
         def query():
@@ -276,7 +276,7 @@ class DeliveryStoreMixin:
             or not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}',str(evidence.get('source_uuid','')))
             or not re.fullmatch(r'[0-9a-f]{32}',str(evidence.get('token','')))
             or evidence.get('target')!=job['target']
-            or evidence.get('message_type')!={'image':3,'sticker':47}.get(job.get('kind'))): return None
+            or evidence.get('message_type')!={'image':3,'sticker':47,'voice':34}.get(job.get('kind'))): return None
         rows=self.db.execute("SELECT m.message_id,m.payload,m.server_id FROM messages m WHERE m.account_id=? AND m.conversation_id=? AND m.local_id=? AND unixepoch(json_extract(m.payload,'$.sent_at'))=? AND EXISTS(SELECT 1 FROM delivery_attempts a WHERE a.attempt_id=? AND unixepoch(a.started_at)<=unixepoch(json_extract(m.payload,'$.sent_at')))",
             (job['account_id'],job['conversation_id'],local_id,created,job['attempt_id'])).fetchall()
         matches=[r['message_id'] for r in rows if re.fullmatch(r'[1-9][0-9]{0,19}',r['server_id'] or '') and json.loads(r['payload']).get('is_self') is True and json.loads(r['payload']).get('type')==job['kind']

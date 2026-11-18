@@ -1,8 +1,9 @@
+param([string]$BuildDirectory = '')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 & python (Join-Path $PSScriptRoot 'generate_compatibility.py') --check
 if ($LASTEXITCODE -ne 0) { throw 'Compatibility header is stale.' }
-$buildPath = Join-Path $projectRoot '.local\native-send'
+$buildPath = if ($BuildDirectory) { [IO.Path]::GetFullPath($BuildDirectory) } else { Join-Path $projectRoot '.local\native-send' }
 New-Item -ItemType Directory -Path $buildPath -Force | Out-Null
 $vswherePath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 $vsInstall = & $vswherePath -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -10,7 +11,7 @@ if (-not $vsInstall) { throw 'MSVC x64 Build Tools are required.' }
 $vcvarsPath = Join-Path $vsInstall 'VC\Auxiliary\Build\vcvars64.bat'
 Push-Location $buildPath
 try {
-    $compileCommand = 'call "' + $vcvarsPath + '" >nul && cl.exe /nologo /std:c++17 /EHsc /W4 /utf-8 /LD /MT /O2 /DNDEBUG /Brepro "..\..\native_send\text_bridge.cpp" /Fe:bridge_text.dll /Fo:bridge_text.obj /link /MACHINE:X64 /INCREMENTAL:NO bcrypt.lib'
+    $compileCommand = 'call "' + $vcvarsPath + '" >nul && cl.exe /nologo /std:c++17 /EHsc /W4 /utf-8 /LD /MT /O2 /DNDEBUG /Brepro "' + (Join-Path $projectRoot 'native_send\text_bridge.cpp') + '" /Fe:bridge_text.dll /Fo:bridge_text.obj /link /MACHINE:X64 /INCREMENTAL:NO bcrypt.lib'
     & $env:ComSpec /d /s /c $compileCommand
     if ($LASTEXITCODE -ne 0) { throw 'Native text bridge compilation failed.' }
     $manifest = @{
@@ -18,7 +19,7 @@ try {
         sources = @{}
         compatibility_sha256 = (Get-FileHash -LiteralPath (Join-Path $projectRoot 'wechat_compatibility\profiles.json') -Algorithm SHA256).Hash.ToLower()
     }
-    foreach ($file in @('text_bridge.cpp','core_version.h','media_send.h')) {
+    foreach ($file in @('text_bridge.cpp','core_version.h','media_send.h','voice_send.h')) {
         $manifest.sources[$file] = (Get-FileHash -LiteralPath (Join-Path $projectRoot "native_send\$file") -Algorithm SHA256).Hash.ToLower()
     }
     $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath 'build.json' -Encoding utf8

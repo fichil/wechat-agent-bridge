@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { MediaData } from "../api";
 const props = defineProps<{
   identity: string;
   label: string;
-  fetcher: () => Promise<MediaData>;
+  fetcher: () => Promise<{ mime_type: string; data_base64: string }>;
 }>();
 const target = ref<HTMLElement>();
 const visible = ref(false);

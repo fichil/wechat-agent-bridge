@@ -1,5 +1,6 @@
 """Transactional v13 audio storage; the compatibility release does not invoke it."""
 from datetime import datetime, timezone
+import re
 
 
 VOICE_TABLES = (
@@ -28,7 +29,7 @@ def upgrade_v13(db):
             marker = "CHECK(kind IN ('text','image','sticker'))"
             if marker not in original:
                 raise RuntimeError('unexpected_delivery_schema')
-            definition = original.replace('CREATE TABLE deliveries', 'CREATE TABLE deliveries_voice_migration', 1)
+            definition = re.sub(r'^CREATE TABLE (?:"deliveries"|deliveries)', 'CREATE TABLE deliveries_voice_migration', original, count=1)
             definition = definition.replace(marker, "CHECK(kind IN ('text','image','sticker','voice'))")
             db.execute(definition)
             db.execute('ALTER TABLE deliveries_voice_migration ADD audio_id TEXT REFERENCES reply_audio')

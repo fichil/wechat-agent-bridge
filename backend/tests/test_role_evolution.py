@@ -356,8 +356,8 @@ class EvolutionMigrationTests(unittest.TestCase):
                     self.assertEqual(settings['instructions'], expected)
                     self.assertEqual(settings['revision'], 8 if instructions == V11_DEFAULT_INSTRUCTIONS else 7)
                     self.assertEqual(len(store.role_cards()['items']), 1)
-                self.assertEqual(validate_db(path, 'bridge.sqlite3'), 12)
-                self.assertTrue(list((path.parent / 'migration-backups').glob('before-v12-*.sqlite3')))
+                self.assertEqual(validate_db(path, 'bridge.sqlite3'), 13)
+                self.assertTrue(list((path.parent / 'migration-backups').glob('before-v13-*.sqlite3')))
 
     def test_configuration_export_import_keeps_card_without_owner_metadata(self):
         with tempfile.TemporaryDirectory() as folder:

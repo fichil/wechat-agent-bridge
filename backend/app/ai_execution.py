@@ -11,7 +11,7 @@ from . import secret_protection
 from .diagnostics import log_context
 
 class AiExecution:
-    def __init__(self, store, bridge, provider=None, automatic=True):
+    def __init__(self, store, bridge, provider=None, automatic=True, speech_provider=None):
         self.store, self.bridge = store, bridge
         self.provider = provider or Provider()
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ai-request")
@@ -23,6 +23,9 @@ class AiExecution:
         self.wake = threading.Event()
         self.image_attempts = {}
         self.thread = None
+        from .voice_execution import SpeechExecution
+        from .voice_provider import SpeechProvider
+        self.speech = SpeechExecution(self, speech_provider or (SpeechProvider() if bridge.compatibility.enabled else None))
         if automatic: self.start_automatic()
 
     def start_automatic(self):
@@ -70,6 +73,7 @@ class AiExecution:
                 with log_context(self.store, task_id=task["task_id"], trigger=operation, profile_id=identity,
                                  profile_revision=expected if operation=="test" else (expected or 0)+1, settings_revision=settings["revision"]):
                     verification = self.provider.test(fields, key, settings["instructions"])
+                    verification['speech'] = self.speech.test(fields, key)
                 if operation == "test":
                     self.store.save_verification(identity, expected, verification, task)
                 else:
@@ -126,6 +130,9 @@ class AiExecution:
     def _perform(self, aid, cid, rid):
         try:
             self.bridge.compatibility.guard(aid)
+            if self.store.voice_preparation(rid):
+                self.speech.start_run(aid,cid,rid)
+                return
             if self.store.ai_run(aid, cid, rid).get('processing_type') != 'realtime_reply':
                 self.request_images(aid, cid)
             snapshot = self.store.claim_ai_run(aid, cid, rid)
@@ -171,8 +178,10 @@ class AiExecution:
             if not snapshot.get('resumed'):
                 envelope.update(self.store.ai_reply_envelope(aid,cid,rid))
             # Validate the final permissions/targets, not an earlier batch projection.
+            self.speech.decorate(profile, envelope, aid)
             build_request(profile, "", envelope, mode)
             if not self.store.save_ai_snapshot(aid,cid,rid,profile,envelope): return
+            if not self.store.save_voice_request_capability(rid,envelope): return
             # Closing AI while preparing must not launch a new remote request.
             self.bridge.compatibility.guard(aid)
             key = secret_protection.reveal(encrypted_key)
@@ -192,7 +201,9 @@ class AiExecution:
                 result = self.provider.generate(profile, key, envelope, mode)
             if envelope.get('memory_max_chars'):
                 result['memory'] = compact_for_run(self, aid, cid, rid, profile, encrypted_key, mode, 'after', result['memory'])
-            self.store.finish_ai_run(aid, cid, rid, result=result, model_duration_ms=round((time.monotonic()-request_started)*1000, 3))
+            duration = round((time.monotonic()-request_started)*1000, 3)
+            if not self.speech.prepare(aid,cid,rid,result,duration):
+                self.store.finish_ai_run(aid, cid, rid, result=result, model_duration_ms=duration)
         except ConversationError as exc:
             if exc.code != 'compatibility_paused':
                 self.store.finish_ai_run(aid, cid, rid, error=exc)
@@ -206,6 +217,7 @@ class AiExecution:
 
     def tick(self):
         if self.update_draining: return
+        self.speech.tick()
         retries = self.store.ai_retry_candidates()  # Also yields queued memory work to new mentions.
         candidates = self.store.ai_candidates()
         work = [(bool(r.get('reply_trigger_ids')) and r.get('processing_type') != 'memory_backfill', 'retry', r) for r in retries]
@@ -246,3 +258,4 @@ class AiExecution:
         if self.thread:
             self.thread.join(timeout=4)
         self.executor.shutdown(wait=True)
+        self.speech.close()

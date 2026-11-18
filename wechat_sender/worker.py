@@ -52,6 +52,9 @@ class Config(c.Structure):
               ("log_path",w.WCHAR*260),("text",c.c_char*1024),("account",c.c_char*128),
               ("token",c.c_char*40),("target",c.c_char*128)]
 
+class VoiceConfig(c.Structure):
+    _fields_ = [("base",Config),("duration_ms",w.DWORD)]
+
 
 for name in ("Module32FirstW","Module32NextW"):
     getattr(K,name).argtypes=[w.HANDLE,c.POINTER(Module)]
@@ -115,6 +118,7 @@ def code_windows(path):
         sections=[struct.unpack_from('<8sIIII',head,pe+24+optional+i*40) for i in range(count)]
         result={}
         media_calls = [rva for name,rva in native.get('media',{}).items() if not name.endswith('_vtable')]
+        media_calls += [rva for name,rva in native.get('voice',{}).items() if not name.endswith('_vtable')]
         for rva in (native['app_entry'], *media_calls, *(native['rvas'][n] for n in
                     ('app_get','scheduler_get','schedule','context_get','text_builder','allocate','free'))):
             for _,vs,va,rs,rp in sections:
@@ -167,7 +171,7 @@ def inspect(request):
         dll_hash=build_identity()
         return dict(core_sha256=core_hash,dll_sha256=dll_hash,profile_id=profile['id'],
                     profile_digest=profile_digest(profile),native_profile_id=profile['native']['id'],
-                    ready=True, **{name:profile['capabilities'][name] for name in ('send_text','send_image','send_sticker')})
+                    ready=True, **{name:profile['capabilities'][name] for name in ('send_text','send_image','send_sticker','send_voice')})
     finally: K.CloseHandle(process)
 
 
@@ -195,7 +199,7 @@ def send(request):
     try:
         identity=inspect(request)
         target=request['target']; kind=request.get('kind','text')
-        if kind not in ('text','image','sticker') or not identity.get('send_'+kind):
+        if kind not in ('text','image','sticker','voice') or not identity.get('send_'+kind):
             raise ValueError('native_version_unsupported')
         if kind=='text': text=request['text']
         else:
@@ -206,6 +210,8 @@ def send(request):
             raise ValueError('native_text_invalid')
         testing=request.get('acceptance_test') is True
         if testing and (kind!='text' or target!='filehelper' or not text.startswith('BRIDGE_TEST_')):
+            raise ValueError('acceptance_target_invalid')
+        if request.get('voice_probe') and (kind!='voice' or target!='filehelper'):
             raise ValueError('acceptance_target_invalid')
         if not identity['ready'] and not testing: raise ValueError('native_unavailable')
         pid=int(request['pid']); created=int(request['created'])
@@ -230,10 +236,19 @@ def send(request):
         config=Config(); config.size=c.sizeof(config); config.pid=pid; config.created=created
         config.log_path=str(report); config.text=encoded; config.target=target.encode('ascii')
         config.account=request['account'].encode('ascii'); config.token=token.encode('ascii')
+        if kind == 'voice':
+            if type(request.get('duration_ms')) is not int or not 0 < request['duration_ms'] <= 60000:
+                raise ValueError('native_media_invalid')
+            voice_config = VoiceConfig()
+            voice_config.base = config
+            voice_config.base.size = c.sizeof(VoiceConfig)
+            voice_config.duration_ms = request['duration_ms']
+            config = voice_config
         parameter=allocate(bytes(config))
         # From this point a lost response is ambiguous, never a retryable failure.
         submitted=True
-        code=call(loaded[0]+exports[{'text':'WxSendText','image':'WxSendImage','sticker':'WxSendSticker'}[kind]],parameter)
+        entry = 'WxProbeVoice' if kind=='voice' and request.get('voice_probe') else {'text':'WxSendText','image':'WxSendImage','sticker':'WxSendSticker','voice':'WxSendVoice'}[kind]
+        code=call(loaded[0]+exports[entry],parameter)
         if code in (4,21,87,170):
             status='failed'
         else:
@@ -241,12 +256,13 @@ def send(request):
             while time.monotonic()<deadline:
                 try:
                     receipt=json.loads(report.read_text(encoding='utf-8'))
-                    if receipt.get('token')==token and receipt.get('status') in ('sent','failed','unknown','accepted'):
+                    if receipt.get('token')==token and receipt.get('status') in ('sent','failed','unknown','accepted','probe_ok'):
                         status=receipt['status']; break
                 except (OSError,ValueError): pass
                 time.sleep(.05)
         if kind!='text' and status=='sent': status='unknown'
         outcome.update(status=status,code='native_completed' if status=='sent' else 'native_accepted' if status=='accepted' else 'native_rejected' if status=='failed' else 'native_result_uncertain',**identity)
+        if status=='probe_ok': outcome.update(code='native_voice_probe_verified',voice_probe_valid=True)
         if kind!='text' and receipt.get('token')==token:
             outcome.update(native_stage=receipt.get('stage'),native_exception=receipt.get('exception'))
         if kind!='text' and status=='accepted':

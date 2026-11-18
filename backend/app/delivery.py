@@ -86,7 +86,7 @@ class DeliveryExecution:
         except Exception: code='native_unavailable'
         return dict(account_id=aid,ready=code=='ready',code=code,message=MESSAGES.get(code,MESSAGES['native_unavailable']),
                     profile_id=result.get('profile_id'),core_sha256=result.get('core_sha256'),
-                    **{name:bool(code=='ready' and result.get(name, name=='send_text')) for name in ('send_text','send_image','send_sticker')})
+                    **{name:bool(code=='ready' and result.get(name, name=='send_text')) for name in ('send_text','send_image','send_sticker','send_voice')})
 
     def perform(self, candidate):
         job=None

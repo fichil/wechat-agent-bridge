@@ -123,6 +123,14 @@ class LogStoreMixin:
     def log_application(self, task_id, task, category="ai"):
         try:
             def write():
+                nonlocal task
+                if task.get('run_id'):
+                    # Chat and speech workers can finish in either order. Read the
+                    # committed state on the SQL owner thread instead of reviving
+                    # an active log from an older worker snapshot.
+                    row = self.db.execute('SELECT payload FROM ai_runs WHERE run_id=?', (task_id,)).fetchone()
+                    if row is None: return
+                    task = {**task, **json.loads(row[0])}
                 if task.get('account_id') and not self.db.execute('SELECT 1 FROM accounts WHERE account_id=?', (task['account_id'],)).fetchone(): return
                 with self.db:
                     rows = self.db.execute("SELECT payload FROM diagnostic_logs WHERE task_id=?", (task_id,)).fetchall()

@@ -108,6 +108,7 @@ class MediaStoreMixin:
         return self.call(write)
 
     def _media_collect(self):
+        self._voice_collect()
         self.db.execute('DELETE FROM reply_media WHERE media_id NOT IN (SELECT original_media_id FROM stickers UNION SELECT send_media_id FROM stickers UNION SELECT media_id FROM reply_candidates UNION SELECT media_id FROM deliveries WHERE media_id IS NOT NULL)')
 
     def prepare_reply_candidates(self, aid, cid, rid, capabilities):
@@ -145,8 +146,23 @@ class MediaStoreMixin:
         parts=[]; total=0
         snapshot=self.db.execute('SELECT payload FROM ai_request_snapshots WHERE run_id=?',(run['run_id'],)).fetchone()
         catalog=json.loads(snapshot[0])['envelope'].get('reply_media',{}) if snapshot else {}
-        for item in parse_reply(reply):
+        preparation = self.db.execute('SELECT payload FROM voice_preparations WHERE run_id=?', (run['run_id'],)).fetchone()
+        prepared = json.loads(preparation[0]) if preparation else {}
+        for logical_index, item in enumerate(parse_reply(reply)):
             kind=item['kind']
+            if kind == 'voice':
+                value = prepared.get('prepared', {}).get(str(logical_index))
+                if not value or prepared.get('result', {}).get('reply') != reply:
+                    invalid('语音尚未完成准备。')
+                if value.get('fallback_reason'):
+                    for text in split_reply(item['text']):
+                        parts.append(dict(index=len(parts), kind='text', text=text, fallback_reason=value['fallback_reason']))
+                else:
+                    for chunk in value['chunks']:
+                        audio = self._audio_value(chunk['audio']['audio_id'])
+                        total += self.db.execute('SELECT size_bytes FROM reply_audio WHERE audio_id=?', (audio['audio_id'],)).fetchone()[0]
+                        parts.append(dict(index=len(parts), kind='voice', text=chunk['text'], audio=audio))
+                continue
             if kind=='text':
                 for text in split_reply(item['text']): parts.append(dict(index=len(parts),kind='text',text=text))
                 continue
@@ -162,15 +178,17 @@ class MediaStoreMixin:
             media=self._media_value(mid);total+=media['size_bytes']
             if total>MAX_REPLY_MEDIA: invalid('一次回复的媒体总量不能超过 16 MiB。')
             parts.append(dict(index=len(parts),kind=kind,name=name,media=media))
+        if total > MAX_REPLY_MEDIA or sum(p['kind']!='text' for p in parts) > 16:
+            invalid('一次回复的媒体超过数量或大小限制。')
         return parts
 
     def reply_media(self,aid,cid,rid,index):
         def query():
             run=self._media_run(aid,cid,rid)
             part=next((p for p in run.get('reply_parts',[]) if p['index']==index and p['kind']!='text'),None)
-            if not part: raise ConversationError('reply_media_not_found','此回复没有对应图片。',404)
+            if not part: raise ConversationError('reply_media_not_found','此回复没有对应媒体。',404)
             if part['kind'] == 'voice':
-                raise ConversationError('reply_version_unsupported','语音记录已保留，请升级到支持语音的版本后播放。',409)
+                return self._audio_value(part['audio']['audio_id'],True)
             return self._media_value(part['media']['media_id'],True)
         return self.call(query)
 
@@ -181,6 +199,11 @@ class MediaStoreMixin:
 
     def delivery_media(self,job):
         def query():
+            if job.get('kind') == 'voice':
+                audio = self.db.execute('SELECT a.silk,a.silk_sha256,a.duration_ms FROM deliveries d JOIN reply_audio a USING(audio_id) WHERE d.run_id=? AND d.part_index=? AND d.account_id=? AND d.conversation_id=?',
+                    (job['run_id'],job['part_index'],job['account_id'],job['conversation_id'])).fetchone()
+                if audio is None: raise ConversationError('voice_audio_not_found','发送语音快照不存在。',404)
+                return dict(data=bytes(audio['silk']),sha256=audio['silk_sha256'],mime_type='audio/x-silk',duration_ms=audio['duration_ms'])
             row=self.db.execute('SELECT d.media_id,m.data,m.mime_type,m.sha256 FROM deliveries d JOIN reply_media m USING(media_id) WHERE d.run_id=? AND d.part_index=? AND d.account_id=? AND d.conversation_id=?',
                                 (job['run_id'],job['part_index'],job['account_id'],job['conversation_id'])).fetchone()
             if not row: raise ConversationError('reply_media_not_found','发送素材不存在。',404)

@@ -79,6 +79,11 @@ def parse_reply(reply):
     for raw in SPLIT.split(reply):
         segment = raw.strip()
         if not segment: continue
+        if segment.startswith('[[VOICE]]\n') or segment.startswith('[[VOICE]]\r\n'):
+            text = segment[len('[[VOICE]]'):].strip()
+            if not text or RESERVED.search(text): invalid('语音标记后必须包含朗读文本，不能嵌套控制标记。')
+            parts.append(dict(kind='voice', text=text))
+            continue
         match = MARKER.fullmatch(segment)
         if match:
             tag, reference = match.groups()
@@ -105,10 +110,13 @@ def summarize_memory(memory):
     from .diagnostics import sanitize
     value=sanitize(memory)
     value=re.sub(r'\[\[(IMAGE|STICKER):[^\r\n]*?\]\]',lambda m:'[图片]' if m[1]=='IMAGE' else '[表情]',value)
-    return value.replace('[[SPLIT]]','\n')
+    return value.replace('[[SPLIT]]','\n').replace('[[VOICE]]', '[语音]')
 
 
-REPLY_INSTRUCTIONS = '''Reply protocol v2: reply is still a string. Separate independent WeChat messages ONLY with [[SPLIT]] on its own line. Ordinary newlines stay within one message.
-A media segment must contain ONLY [[STICKER:asset_id]] from reply_media.stickers or [[IMAGE:message_id]] from reply_media.images; never invent IDs. Text before/after media is a separate segment.
+REPLY_INSTRUCTIONS = '''Reply protocol v3: reply is still a string. Separate independent WeChat messages ONLY with [[SPLIT]] on its own line. Ordinary newlines stay within one message.
+An image or sticker segment must contain ONLY [[STICKER:asset_id]] from reply_media.stickers or [[IMAGE:message_id]] from reply_media.images; never invent IDs. Text before/after images and stickers is a separate segment.
 Choose an occasional sticker when suitable for the character and context; an image-only reply is valid. No image generation service exists. Prefer references, never synthesize base64. If actual image data is supplied by your service, [[IMAGE:data:image/png;base64,...]] or [[STICKER:data:image/gif;base64,...]] is supported.
 Media availability is explicitly listed in reply_media. If a media capability is false, do not request it. Include human-readable descriptions in memory, never base64 or control markers. Generated replies are not proof of delivery.'''
+
+REPLY_INSTRUCTIONS += '''
+When reply_media.capabilities.voice is true, choose spoken replies naturally for the character and context. A voice segment begins with [[VOICE]] on its own line followed by the exact words to speak. Separate it from any other text, image, sticker or voice with [[SPLIT]]. Do not emit audio URLs, paths or base64. The application supplies the character's configured voice. Never read control markers aloud; use text for code, URLs or content better read visually. This is AI-generated speech. Never claim that speech has been delivered; generation or a text fallback is not delivery confirmation.'''

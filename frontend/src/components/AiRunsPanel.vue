@@ -4,6 +4,7 @@ import { api, type Conversation, type RunList } from "../api";
 import { onChange } from "../api/events";
 import { settingsError } from "../role-cards";
 import MediaPreview from "./MediaPreview.vue";
+import AudioPreview from "./AudioPreview.vue";
 import AiProcessingDetails from "./AiProcessingDetails.vue";
 const props = defineProps<{
   accountId: string;
@@ -275,6 +276,15 @@ onBeforeUnmount(() => {
           :timings="run.timings_ms"
           :role-card-change="run.role_card_change"
         />
+        <p
+          v-if="
+            run.voice_phase === 'preparing' &&
+            ['running', 'queued'].includes(run.status)
+          "
+          role="status"
+        >
+          正在准备语音，完成后按顺序发送…
+        </p>
         <p v-if="run.round_id" class="settings-note">
           {{
             run.trigger_reason === "manual"
@@ -303,10 +313,22 @@ onBeforeUnmount(() => {
                 ]
               }}</small
             >
+            <small v-if="part.fallback_reason"
+              >语音未能生成，已改用相同文字。</small
+            >
             <p v-if="part.kind === 'text'" class="ai-reply">{{ part.text }}</p>
-            <p v-else-if="part.kind === 'voice'" class="ai-reply">
-              语音记录已保留，升级到支持语音的版本后可播放。{{ part.text }}
-            </p>
+            <template v-else-if="part.kind === 'voice'">
+              <small
+                >AI 合成语音 ·
+                {{ ((part.audio?.duration_ms || 0) / 1000).toFixed(1) }}
+                秒</small
+              >
+              <AudioPreview
+                :identity="`${run.run_id}:${part.index}`"
+                :fetcher="mediaFetcher(run.run_id, part.index)"
+              />
+              <p class="ai-reply">{{ part.text }}</p>
+            </template>
             <template v-else
               ><span
                 >{{ part.kind === "sticker" ? "表情" : "图片" }} ·

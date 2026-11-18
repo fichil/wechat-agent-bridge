@@ -1,8 +1,16 @@
 # 数据库设计与恢复
 
+## v13 原生语音回复
+
+当前版本为 v13。升级前用 SQLite backup API 保存 `migration-backups/before-v13-<UUID>.sqlite3`。v12→v13 在单一事务内增加 `speech_profiles`、`reply_audio`、`voice_preparations`，重建发送队列的媒体类型约束并增加 `audio_id` 外键，保留原行、索引和触发器；失败回滚并恢复外键检查。
+
+语音准备检查点保存已生成的模型结果、逐段音频和失败原因。准备完成前不提交记忆、角色变化或发送队列；重启继续准备，取消清理未被队列引用的音频。已提交音频保留 WAV 试听与 SILK 发送快照，和发送记录共同保留。
+
+生产发布先安装可保留 v13 的兼容版本，再安装功能版本。正常回退只切换程序，保留当前数据，不恢复升级前快照；兼容版本暂停整个语音格式任务及其混合发送队列，恢复功能版本后继续。旧快照只用于明确的灾难恢复，不能覆盖升级后的新聊天和发送记录。详见[语音发布与回退](voice-reply-rollout.md)。
+
 ## v10 账号生命周期、请求重试与邮件通知
 
-当前版本为 v10。v9→v10 仅新增表及带默认值的列：`conversation_preferences.ai_max_retries`（0–100，默认 10）、`ai_request_snapshots`、`notification_settings`、`account_observations` 和 `notification_outbox`。迁移前写入 `migration-backups/before-v10-<UUID>.sqlite3` 并检查完整性；DDL、初始化和版本号在单个事务提交，失败回滚。
+v9→v10 仅新增表及带默认值的列：`conversation_preferences.ai_max_retries`（0–100，默认 10）、`ai_request_snapshots`、`notification_settings`、`account_observations` 和 `notification_outbox`。当时迁移前写入 `migration-backups/before-v10-<UUID>.sqlite3` 并检查完整性；DDL、初始化和版本号在单个事务提交，失败回滚。
 
 AI 任务的 JSON 持久化 `attempt_count`、`max_retries`、`next_retry_at` 与最后错误；任务仍使用 `queued/running` 的单会话唯一约束。请求发出前登记尝试数，等待期间释放执行器；重启恢复剩余预算。固定请求快照包含必要的消息和规范化图片，不含 API 密钥；结束或取消后清理。旧版本已经失败或暂停的任务不自动恢复。配置、记忆、身份或 AI 开关变化会阻止旧结果应用，成功记忆与发送队列只提交一次。
 

@@ -42,8 +42,13 @@ class BrowserSender:
     def send(self, binding, job): return dict(status=self.result,code='synthetic')
 
 sender = BrowserSender()
+class BrowserSpeech:
+    def test(self, profile, key): return dict(status='supported',default_voice='alloy')
+    def synthesize(self, profile, key, text, voice=None, **kwargs):
+        from backend.app.voice_audio import encode_audio, make_wav
+        return encode_audio(make_wav(b'\0\0' * 2400))
 app = create_app(accounts, database_path=":memory:", conversation_reader=reader, message_reader=reader, monitor=False, ai_provider=provider,send_transport=sender,send_auto=True,
-                 auth_path=':memory:', auth_config=AuthConfig('development', 'http://127.0.0.1:15173', ('http://127.0.0.1:18765',)))
+                 auth_path=':memory:', auth_config=AuthConfig('development', 'http://127.0.0.1:15173', ('http://127.0.0.1:18765',)),speech_provider=BrowserSpeech())
 original_lifespan = app.router.lifespan_context
 
 

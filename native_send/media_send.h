@@ -26,13 +26,13 @@ static void media_free_string(SmallString* text, TestResult* report) {
     } __except (record_exception(GetExceptionInformation(), report)) {}
 }
 
-static void media_report(const TextConfig& config, const TestResult& report, const char* state, bool sticker, uint64_t key_first, uint64_t key_second, const char* key_source) {
+static void media_report(const TextConfig& config, const TestResult& report, const char* state, uint32_t message_type, uint64_t key_first, uint64_t key_second, const char* key_source) {
     FILE* log = nullptr;
     if (_wfopen_s(&log, config.base.log_path, L"wb") != 0 || !log) return;
     std::fputs("{\"token\":", log); write_json_string(log, config.base.token);
     std::fputs(",\"status\":", log); write_json_string(log, state);
     std::fprintf(log, ",\"stage\":%lu,\"exception\":%lu", report.stage, report.exception);
-    std::fprintf(log, ",\"message_type\":%u,\"target\":", sticker ? 47u : 3u);
+    std::fprintf(log, ",\"message_type\":%u,\"target\":", message_type);
     write_json_string(log, config.target);
     std::fprintf(log, ",\"local_id\":%u,\"create_time\":%u,\"timestamp_ms\":%llu,\"source_uuid\":", static_cast<uint32_t>(key_first >> 32), static_cast<uint32_t>(key_first), key_second);
     write_json_string(log, key_source);
@@ -180,7 +180,7 @@ static void send_media_on_task(const TextConfig& config, bool sticker) {
         guarded_release_shared(&manager, &report);
         guarded_release_shared(&provider, &report);
         guarded_release_shared(&context, &report);
-        media_report(config, report, completed && !report.exception ? "accepted" : submitted || report.exception ? "unknown" : "failed", sticker, key_first, key_second, key_source);
+        media_report(config, report, completed && !report.exception ? "accepted" : submitted || report.exception ? "unknown" : "failed", sticker ? 47u : 3u, key_first, key_second, key_source);
     } __finally {}
 }
 

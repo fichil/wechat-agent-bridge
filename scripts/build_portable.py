@@ -18,7 +18,7 @@ EXACT = {'backend/__init__.py','backend/admin.py','backend/compact_group_memory.
          'deploy/Caddyfile.template','deploy/run-installed.ps1','deploy/deploy-task.ps1',
          'deploy/install-tasks.ps1','deploy/open-installed.ps1','deploy/open-console.cmd','scripts/production_server.py','scripts/serve_backend.py',
          'scripts/service_child.py','scripts/windows_job.py','scripts/verify_native_send_live.py',
-         'scripts/observe_send_drafts.ps1','scripts/verify_media_send_live.py','scripts/connect_private.ps1'}
+         'scripts/observe_send_drafts.ps1','scripts/verify_media_send_live.py','scripts/verify_voice_send_live.py','scripts/connect_private.ps1'}
 
 
 def digest(path, algorithm='sha256'):
@@ -57,7 +57,7 @@ def native_build(stage, build):
     for suffix in ('.exp','.lib'):
         (native/('bridge_text'+suffix)).unlink(missing_ok=True)
     manifest=dict(dll_sha256=digest(native/'bridge_text.dll'), compatibility_sha256=digest(ROOT/'wechat_compatibility/profiles.json'),
-                  sources={name:digest(ROOT/'native_send'/name) for name in ('text_bridge.cpp','core_version.h','media_send.h')})
+                  sources={name:digest(ROOT/'native_send'/name) for name in ('text_bridge.cpp','core_version.h','media_send.h','voice_send.h')})
     (native/'build.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
 
 
@@ -127,8 +127,8 @@ def main():
                 target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(child,target)
     (stage/'THIRD_PARTY_NOTICES.txt').write_text('Python '+PYTHON_VERSION+'：runtime/LICENSE.txt 与 licenses/python\nCaddy '+CADDY_VERSION+'：licenses/Caddy-LICENSE\n网页依赖：licenses/frontend\n原生发送派生自 helper，适用非商业使用许可：licenses/LICENSE.helper 与 licenses/native-send-NOTICE.md\n大肥鱼表情来自 PC2005-cloud/dsh-pet，素材非商业许可及 CC BY-NC-SA 4.0 形象出处：backend/assets/dsh-pet/NOTICE.md 与 LICENSE.assets.md\n',encoding='utf-8')
     manifest=dict(version=args.version,commit=commit,development=args.development,architecture='windows-x64',launcher_protocol=1,
-                  python=PYTHON_VERSION,caddy=CADDY_VERSION,database_schema=12,
-                  database_compatible_schemas=[9,10,11,12,13],database_output_schemas=[12,13],
+                  python=PYTHON_VERSION,caddy=CADDY_VERSION,database_schema=13,
+                  database_compatible_schemas=[9,10,11,12,13],database_output_schemas=[13],
                   files={str(path.relative_to(stage)).replace('\\','/'):digest(path) for path in sorted(stage.rglob('*')) if path.is_file()})
     (stage/'portable-manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
     # Run the bundled interpreter with a PATH that contains no developer tools.

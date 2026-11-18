@@ -37,10 +37,13 @@ class ProfileFields(JsonRequest):
     model: str = Field(min_length=1, max_length=256)
     anthropic_version: str = Field(default="2026-10-21", pattern=r"^\d{4}-\d{2}-\d{2}$")
     workspace_id: str = Field(default="", max_length=200, pattern=r"^[^\s\r\n]*$")
+    speech_protocol: Literal['auto','openai_speech','gemini_generate_content'] = 'auto'
+    speech_model: str = Field(default='', max_length=256, pattern=r'^[^\x00-\x1f]*$')
 
     @model_validator(mode="after")
     def valid_connection(self):
         self.name, self.model = self.name.strip(), self.model.strip()
+        self.speech_model = self.speech_model.strip()
         if not self.name or not self.model or any(ord(c) < 32 for c in self.model):
             raise ValueError("required_fields")
         self.base_url = self.base_url.strip().rstrip("/")

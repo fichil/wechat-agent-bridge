@@ -11,6 +11,7 @@ import {
   settingsError,
 } from "../role-cards";
 import { useUnsavedChanges } from "../unsaved-changes";
+import RoleVoiceSettings from "./RoleVoiceSettings.vue";
 
 const cards = useRoleCardsStore();
 const config = useAiConfigStore();
@@ -413,6 +414,10 @@ watch(
                   >添加{{ group === "tags" ? "标签" : "备用开场白" }}</ElButton
                 >
               </div>
+              <RoleVoiceSettings
+                v-model="draft.data.extensions"
+                :profiles="config.items"
+              />
               <p class="settings-note">
                 角色书、扩展字段及完整数据可在高级 JSON
                 中编辑。表单保存会保留这些数据。

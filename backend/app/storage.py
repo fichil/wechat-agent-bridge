@@ -25,6 +25,8 @@ from .notification_storage import NotificationStoreMixin
 from .reliability_schema import upgrade_v10
 from .media_schema import upgrade_v11
 from .role_evolution_schema import upgrade_v12
+from .voice_schema import upgrade_v13
+from .voice_storage import VoiceStoreMixin
 from .media_storage import MediaStoreMixin
 from .ai_retry_storage import AiRetryStoreMixin
 
@@ -92,7 +94,7 @@ CREATE TABLE cursors(token TEXT PRIMARY KEY, account_id TEXT NOT NULL, conversat
 """
 
 
-class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, AiRoutingStoreMixin, CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
+class Store(VoiceStoreMixin, MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, AiRoutingStoreMixin, CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
     def __init__(self, path=DEFAULT_PATH, settings=None, image_limit=IMAGE_LIMIT):
         self.path, self.image_limit = Path(path) if str(path) != ":memory:" else path, image_limit
         from .performance import PerformanceLog
@@ -190,10 +192,10 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
         if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
             self.db.close()
             raise ConversationError("storage_version_unsupported", "数据库版本高于当前程序，请使用匹配版本。", 503)
-        if 0 < version < 12 and str(self.path) != ':memory:':
+        if 0 < version < 13 and str(self.path) != ':memory:':
             backup_dir = self.path.parent / 'migration-backups'
             backup_dir.mkdir(exist_ok=True)
-            backup_path = backup_dir / ('before-v12-' + uuid4().hex + '.sqlite3')
+            backup_path = backup_dir / ('before-v13-' + uuid4().hex + '.sqlite3')
             with closing(sqlite3.connect(backup_path)) as backup:
                 self.db.backup(backup)
                 if backup.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
@@ -267,6 +269,7 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
         upgrade_v10(self.db)
         upgrade_v11(self.db)
         upgrade_v12(self.db)
+        upgrade_v13(self.db)
         self._log_indexes()
         # Additive indexes keep schema 12 and old releases compatible. Explicitly
         # select these covering indexes: SQLite otherwise prefers the unique key.
@@ -278,6 +281,7 @@ class Store(MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRe
             raise ConversationError("storage_corrupt", "数据库校验失败，请保留原文件后恢复备份。", 503)
         try:
             with self.db:
+                self._voice_recover()
                 self._ai_recover()
                 self.db.execute("DELETE FROM reply_candidates WHERE run_id IN (SELECT run_id FROM ai_runs WHERE status NOT IN ('queued','running','suspended'))")
                 self._media_collect()

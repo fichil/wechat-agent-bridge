@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from .role_models import JsonRequest, PreferencesQuery
 from .delivery_models import Delivery
 from .media_models import ReplyPart
+from .voice_models import SpeechVerification
 
 DEFAULT_INSTRUCTIONS = r"""你按照角色卡参与当前会话，保持角色的身份、语气、人物关系和表达习惯。每次请求都提供当前记忆和未纳入记忆的新消息，并可能提供本轮回复要求、历史发送状态及可用图片和表情包清单。
 
@@ -31,7 +32,8 @@ context_only_ids 对应已纳入记忆的辅助上下文，不重复添加事实
 trigger_reason 为 group_threshold 时，根据角色和群聊语境判断是否有必要参与；没有自然、有效的回应时可以保持沉默。其他无需回复且没有强制回复要求的情况，reply 也可为空字符串。
 
 【回复形式】
-根据角色、语境和表达需要，自主选择纯文字、表情包、图片，或按顺序组合多种形式；可以只回复一张表情包或图片，也可以回复多条消息。
+根据角色、语境和表达需要，自主选择纯文字、语音、表情包、图片，或按顺序组合多种形式；可以只回复一条语音、表情包或图片，也可以回复多条消息。
+reply_media.capabilities.voice 为 true 时，可以用独占首行的 [[VOICE]] 开始一个语音段，下一行起填写准确朗读的文本；前后消息仍用 [[SPLIT]] 分隔。音色由角色卡设置，音频由程序合成，不输出音频路径、网址或 Base64。代码、链接和需要仔细阅读的内容用文字；语音生成失败会回退为相同文字。语音属于 AI 合成内容，生成成功不代表已发送。
 多条独立微信消息必须使用独占一行的 [[SPLIT]] 分隔。普通换行只表示同一条消息内换行，不会拆成多条。不要用数组、编号或其他分隔符替代此协议。
 reply 是 JSON 字符串，其中的换行必须按 JSON 规则编码为 \n，双引号和反斜杠也须正确转义。
 根据聊天节奏决定消息数量，不必每次拆分；避免无意义的碎片回复、重复表达或连续堆叠表情包。
@@ -60,6 +62,7 @@ class AiSettingsUpdate(JsonRequest):
     expected_revision: int = Field(ge=0)
 
 class Verification(BaseModel):
+    speech: SpeechVerification = Field(default_factory=SpeechVerification)
     status: Literal["unverified", "passed", "failed"] = "unverified"
     vision: Literal["supported", "unsupported", "unverified"] = "unverified"
     output_mode: Literal["schema", "json", "prompt"] = "schema"
@@ -115,6 +118,7 @@ class RoleCardChange(BaseModel):
 
 
 class AiRun(BaseModel):
+    voice_phase: Literal['preparing','ready'] | None = None
     role_card_change: RoleCardChange | None = None
     processing_type: Literal['realtime_reply', 'memory_backfill', 'group_threshold'] | None = None
     timings_ms: dict[str, float] = Field(default_factory=dict)
