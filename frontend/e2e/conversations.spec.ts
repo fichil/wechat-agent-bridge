@@ -25,6 +25,7 @@ async function mockConversations(page: Page) {
     mediaReads: 0,
     connection: "ready" as "ready" | "timeout" | "offline",
     cacheNeedsSync: false,
+    conversationResponseGate: null as Promise<void> | null,
   };
   const messageTasks = new Map();
   const second = {
@@ -60,6 +61,8 @@ async function mockConversations(page: Page) {
       if (state.connection === "timeout") return;
       if (state.connection === "offline") return route.abort();
     }
+    if (path.endsWith("/conversations/query"))
+      await state.conversationResponseGate;
     const body =
       route.request().method() === "POST" ? route.request().postDataJSON() : {};
     const id = body?.account_id;
@@ -332,13 +335,23 @@ for (const failure of ["timeout", "offline"] as const) {
     state.connection = "ready";
     state.cacheNeedsSync = true;
     state.extraMessage = true;
+    let releaseConversations!: () => void;
+    state.conversationResponseGate = new Promise<void>((resolve) => {
+      releaseConversations = resolve;
+    });
     // No ready/changed/resync event follows the outage.
     await page.clock.fastForward(2001);
+    // History recovers first; replacing the same conversation afterwards must
+    // not reactivate history and turn cache recovery into a source read.
+    await expect(history.getByRole("alert")).toHaveCount(0);
+    await expect(history).toContainText("合成消息 6");
+    releaseConversations();
     await expect(
       page.locator(".conversation-alert").filter({ hasText: reason }),
     ).toHaveCount(0);
-    await expect(history.getByRole("alert")).toHaveCount(0);
-    await expect(history).toContainText("合成消息 6");
+    await expect(
+      history.getByRole("button", { name: "刷新", exact: true }),
+    ).not.toHaveClass(/is-loading/);
     expect(state.refreshes).toBe(original.refreshes);
     expect(state.historyReads).toBe(original.historyReads);
   });
