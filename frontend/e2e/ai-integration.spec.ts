@@ -211,6 +211,94 @@ test("voice settings, audition and generated reply playback", async ({
   ).toBeTruthy();
 });
 
+test("independent child voice config, preview and generated reply use the same role settings", async ({
+  page,
+}, testInfo) => {
+  await page.goto(`/workspace/${ids[0]!.account_id}/agents`);
+  await addApi(page, "独立语音的聊天连接");
+  const card = blankCard();
+  card.data.name = "小鲸鱼童声";
+  const role = await post(page, "role-cards/create", { card });
+  await page.getByRole("link", { name: "角色卡", exact: true }).click();
+  await page
+    .locator(".role-list-item")
+    .filter({ hasText: "小鲸鱼童声" })
+    .click();
+  await page.getByLabel("语音来源", { exact: true }).selectOption("bailian");
+  await page.getByText("百炼语音配置 · 待配置", { exact: true }).click();
+  await page
+    .getByLabel("百炼工作空间 ID", { exact: true })
+    .fill("test-workspace");
+  await page
+    .getByLabel("百炼 API Key", { exact: true })
+    .fill("synthetic-bailian-key");
+  await page
+    .getByRole("button", { name: "保存并测试百炼", exact: true })
+    .click();
+  await expect(
+    page.getByText("百炼语音配置 · 已验证", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("百炼 API Key", { exact: true })).toHaveValue(
+    "",
+  );
+  const instructions = "你说话的角色是傲娇公主，你说话的情感是neutral。";
+  const text = "才不是大肥鱼，是小鲸鱼。";
+  await page.getByLabel("百炼说话风格", { exact: true }).fill(instructions);
+  await page.getByLabel("试听文案", { exact: true }).fill(text);
+  await page.getByRole("button", { name: "试听百炼音色", exact: true }).click();
+  await expect(page.getByLabel("角色音色试听")).toBeVisible();
+  await page.getByRole("button", { name: "保存角色卡", exact: true }).click();
+  await expect
+    .poll(
+      async () =>
+        (await post(page, "role-cards/get", { card_code: role.card_code })).card
+          .data.extensions.wechat_agent_bridge?.voice_service,
+    )
+    .toEqual({ service_id: "bailian", voice: "longhuhu_v3", instructions });
+  expect((await post(page, "api-profiles/query")).items).toHaveLength(1);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByLabel("语音来源").scrollIntoViewIfNeeded();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBeTruthy();
+  await page.screenshot({
+    path: testInfo.outputPath("child-voice-settings-mobile.png"),
+    fullPage: true,
+  });
+  await post(page, "conversation-preferences/update", {
+    ...ids[0]!,
+    expected_revision: 0,
+    ai_enabled: true,
+  });
+  await fixturePost(page, service + "/test/reply", {
+    data: { reply: "[[VOICE]]\n" + text },
+  });
+  await fixturePost(page, service + "/test/message", { data: { index: 1 } });
+  await page.goto(`/workspace/${ids[0]!.account_id}/logs`);
+  await page
+    .getByLabel("会话", { exact: true })
+    .selectOption(ids[0]!.conversation_id);
+  await page
+    .getByRole("button", { name: "处理未处理消息", exact: true })
+    .click();
+  await expect(page.locator(".reply-part")).toHaveCount(1);
+  await page.getByRole("button", { name: "加载语音", exact: true }).click();
+  await expect(page.getByLabel("AI 合成语音")).toBeVisible();
+  const calls = await (
+    await fixturePost(page, service + "/test/speech-calls", { data: {} })
+  ).json();
+  expect(calls).toEqual(
+    [1, 2].map(() => ({
+      profile_id: "speech-service:bailian",
+      voice: "longhuhu_v3",
+      text,
+      instructions,
+    })),
+  );
+});
+
 test("AI role edits create and reuse a local card while preserving open drafts", async ({
   page,
   context,

@@ -30,7 +30,8 @@ from .delivery_models import Delivery, DeliveryAction, DeliveryResolve, SendCapa
 from .media_models import (StickerList, StickerDetail, Sticker, StickerQuery, StickerCreate, StickerUpdate,
                            StickerDelete, StickerDeleted, ReplyMediaQuery, MediaData)
 from .compatibility import CompatibilitySnapshot
-from .voice_models import AudioData, VoicePreview, VoicePreviewResult
+from .voice_models import (AudioData, VoicePreview, VoicePreviewResult,
+                           VoiceServiceUpdate, VoiceServiceSettings, VoiceServicePreview)
 from .update_models import UpdateInstall, UpdateState
 from bridge_portable.updates import AutomaticChecks, Updates
 from .auth import AuthConfig, AuthStore, AuthError, Login, PasswordChange, AuthSession, AuthOk, DEFAULT_AUTH_PATH, SESSION_SECONDS
@@ -442,6 +443,19 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
     @app.post('/api/v1/voice/preview', response_model=VoicePreviewResult, responses=failures)
     def voice_preview(body: VoicePreview):
         return app.state.ai.speech.preview(body.profile_id,body.expected_revision,body.voice,body.instructions,body.text)
+
+    @app.post('/api/v1/voice/service/query', response_model=VoiceServiceSettings, responses=failures)
+    def voice_service_query(_body: JsonRequest):
+        return app.state.store.voice_service()
+
+    @app.post('/api/v1/voice/service/update', response_model=VoiceServiceSettings, responses=failures)
+    def voice_service_update(body: VoiceServiceUpdate):
+        return app.state.ai.speech.configure_service(body.expected_revision, body.workspace_id,
+            body.api_key.get_secret_value() if body.api_key is not None else None)
+
+    @app.post('/api/v1/voice/service/preview', response_model=VoicePreviewResult, responses=failures)
+    def voice_service_preview(body: VoiceServicePreview):
+        return app.state.ai.speech.preview_service(body.expected_revision,body.voice,body.instructions,body.text)
 
     @app.post("/api/v1/ai-settings/query", response_model=AiSettings, responses=failures)
     def ai_settings(_body: JsonRequest, request: Request):

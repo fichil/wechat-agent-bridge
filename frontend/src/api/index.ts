@@ -26,6 +26,8 @@ export type PreferencesUpdate = components["schemas"]["PreferencesUpdate"];
 export type ApiProfile = components["schemas"]["ApiProfile"];
 export type ProfileCreate = components["schemas"]["ProfileCreate"];
 export type ProfileUpdate = components["schemas"]["ProfileUpdate"];
+export type VoiceServiceSettings =
+  components["schemas"]["VoiceServiceSettings"];
 export type AiDefaults = components["schemas"]["AiDefaults"];
 export type DefaultsUpdate = components["schemas"]["DefaultsUpdate"];
 export type AiSettings = components["schemas"]["AiSettings"];
@@ -71,6 +73,19 @@ function value<T>(result: {
 }
 
 export const api = {
+  async voiceService() {
+    return value(
+      await client.POST("/api/v1/voice/service/query", { body: {} }),
+    );
+  },
+  async updateVoiceService(body: components["schemas"]["VoiceServiceUpdate"]) {
+    return value(await client.POST("/api/v1/voice/service/update", { body }));
+  },
+  async previewVoiceService(
+    body: components["schemas"]["VoiceServicePreview"],
+  ) {
+    return value(await client.POST("/api/v1/voice/service/preview", { body }));
+  },
   async voicePreview(
     profile_id: string,
     expected_revision: number,

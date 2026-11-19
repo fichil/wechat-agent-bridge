@@ -93,6 +93,7 @@ def reset():
             store.db.execute("DELETE FROM ai_runs")
             store.db.execute("DELETE FROM ai_sessions")
             store.db.execute("DELETE FROM metadata WHERE key GLOB 'ai_agent_route:*'")
+            store.db.execute("DELETE FROM metadata WHERE key='speech-service:bailian'")
             store.db.execute("DELETE FROM ai_message_state")
             store.db.execute("DELETE FROM messages")
             store.db.execute("DELETE FROM history_ranges")

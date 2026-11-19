@@ -27,6 +27,7 @@ from .media_schema import upgrade_v11
 from .role_evolution_schema import upgrade_v12
 from .voice_schema import upgrade_v13
 from .voice_storage import VoiceStoreMixin
+from .voice_service import VoiceServiceStoreMixin
 from .media_storage import MediaStoreMixin
 from .ai_retry_storage import AiRetryStoreMixin
 
@@ -94,7 +95,7 @@ CREATE TABLE cursors(token TEXT PRIMARY KEY, account_id TEXT NOT NULL, conversat
 """
 
 
-class Store(VoiceStoreMixin, MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, AiRoutingStoreMixin, CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
+class Store(VoiceServiceStoreMixin, VoiceStoreMixin, MediaStoreMixin, AccountLifecycleMixin, NotificationStoreMixin, AiRetryStoreMixin, AiRoutingStoreMixin, CompatibilityStoreMixin, GroupRoundStoreMixin, DeliveryStoreMixin, LogStoreMixin, AiExecutionStoreMixin, AiStoreMixin, RoleStoreMixin):
     def __init__(self, path=DEFAULT_PATH, settings=None, image_limit=IMAGE_LIMIT):
         self.path, self.image_limit = Path(path) if str(path) != ":memory:" else path, image_limit
         from .performance import PerformanceLog

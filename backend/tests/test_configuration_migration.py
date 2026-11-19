@@ -89,7 +89,10 @@ class ConfigurationMigrationTests(unittest.TestCase):
     def test_voice_settings_and_bindings_follow_remapped_profiles(self):
         with closing(Store(self.source/'bridge.sqlite3')) as store:
             role = store.role_card(self.role['card_code'])
-            role['card']['data']['extensions']['wechat_agent_bridge'] = {'voices':{self.api['profile_id']:'nova'}}
+            role['card']['data']['extensions']['wechat_agent_bridge'] = {
+                'voices':{self.api['profile_id']:'nova'}, 'voice_instructions':{self.api['profile_id']:'自然'},
+                'voice_service':{'service_id':'bailian','voice':'longhuhu_v3','instructions':'你正在进行自由对话。'}}
+            store.save_voice_service(0,'workspace',b'service-private-ciphertext',dict(status='supported'))
             store.save_role_card(role['card'],role['card_code'],role['revision'])
             store.call(lambda:store.db.execute('UPDATE speech_profiles SET model=? WHERE profile_id=?',('speech-model',self.api['profile_id'])))
             store.call(store.db.commit)
@@ -111,6 +114,12 @@ class ConfigurationMigrationTests(unittest.TestCase):
             self.assertFalse(imported['has_key'])
             bindings=store.role_card(self.role['card_code'])['card']['data']['extensions']['wechat_agent_bridge']['voices']
             self.assertEqual(bindings,{imported['profile_id']:'nova'})
+            extension=store.role_card(self.role['card_code'])['card']['data']['extensions']['wechat_agent_bridge']
+            self.assertEqual(extension['voice_instructions'],{imported['profile_id']:'自然'})
+            self.assertEqual(extension['voice_service']['voice'],'longhuhu_v3')
+            self.assertFalse(store.voice_service()['has_key'])
+        with zipfile.ZipFile(self.package) as archive:
+            self.assertNotIn(b'service-private-ciphertext',archive.read('configuration.json'))
 
     def test_null_voice_extension_roundtrips_without_a_binding(self):
         with closing(Store(self.source/'bridge.sqlite3')) as store:
