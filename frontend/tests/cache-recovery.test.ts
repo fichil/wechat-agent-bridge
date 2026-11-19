@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia, disposePinia, type Pinia } from "pinia";
-import { flushPromises } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import {
   api,
   ApiFailure,
   type ConversationPage,
+  type Conversation,
   type MessagePage,
 } from "../src/api";
 import { authState } from "../src/auth";
@@ -13,6 +14,7 @@ import { useConversationsStore } from "../src/stores/conversations";
 import { useMessagesStore } from "../src/stores/messages";
 import { defaultExclusions } from "../src/conversation-options";
 import { messagePage } from "./message-fixtures";
+import MessageHistory from "../src/components/MessageHistory.vue";
 
 vi.mock("../src/api", async (original) => ({
   ...(await original<typeof import("../src/api")>()),
@@ -61,6 +63,7 @@ describe("cache-only connection recovery", () => {
   });
   afterEach(() => {
     disposePinia(pinia);
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -114,6 +117,71 @@ describe("cache-only connection recovery", () => {
     expect(store.error).toBe("");
     expect(store.recovering).toBe(false);
     expect(api.readMessages).not.toHaveBeenCalled();
+  });
+
+  it("keeps recovered history cache-only when the same conversation is updated", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const conversation: Conversation = {
+      conversation_id: "chat",
+      ai_enabled: false,
+      ai_pending_count: 0,
+      ai_waiting_count: 0,
+      ai_paused: false,
+      memory_revision: 0,
+      preferences_revision: 0,
+      name: "合成好友",
+      category: "contact",
+      is_container: false,
+      summary: "合成消息",
+      last_message_at: null,
+      unread_count: 0,
+      avatar: null,
+    };
+    const history = mount(MessageHistory, {
+      props: { accountId: "one", conversation },
+      global: { plugins: [pinia], stubs: { ElButton: true, RouterLink: true } },
+    });
+    try {
+      const store = useMessagesStore();
+      await flushPromises();
+      vi.mocked(api.messages).mockRejectedValueOnce(
+        new ConnectionFailure("network_unavailable"),
+      );
+      await store.refresh();
+      expect(store.recovering).toBe(true);
+      vi.mocked(api.messages).mockResolvedValue({
+        ...messagePage(),
+        needs_sync: true,
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(store.recovering).toBe(false);
+      const reads = vi.mocked(api.messages).mock.calls.length;
+      await history.setProps({
+        conversation: { ...conversation, name: "更新后的好友" },
+      });
+      await flushPromises();
+      expect(history.text()).toContain("更新后的好友");
+      expect(api.readMessages).not.toHaveBeenCalled();
+      expect(api.messages).toHaveBeenCalledTimes(reads);
+      vi.mocked(api.messages).mockImplementation(async (id, chat) =>
+        messagePage(id, chat),
+      );
+      await history.setProps({
+        conversation: { ...conversation, conversation_id: "another" },
+      });
+      await flushPromises();
+      expect(store.conversationId).toBe("another");
+      expect(store.page?.conversation_id).toBe("another");
+      expect(api.messages).toHaveBeenCalledWith("one", "another", null);
+    } finally {
+      history.unmount();
+    }
   });
 
   it("preserves an explicit source refresh while automatic recovery is pending", async () => {

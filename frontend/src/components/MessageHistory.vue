@@ -20,7 +20,11 @@ function activate() {
   );
 }
 watch(
-  () => [props.accountId, props.conversation?.conversation_id],
+  [
+    () => props.accountId,
+    () => props.conversation?.conversation_id,
+    () => props.conversation?.is_container,
+  ],
   () => {
     unseen.value = 0;
     atBottom.value = true;
