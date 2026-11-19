@@ -75,10 +75,18 @@ export const api = {
     profile_id: string,
     expected_revision: number,
     voice: string | null,
+    instructions = "",
+    text = "",
   ) {
     return value(
       await client.POST("/api/v1/voice/preview", {
-        body: { profile_id, expected_revision, voice: voice || "" },
+        body: {
+          profile_id,
+          expected_revision,
+          voice: voice || "",
+          instructions,
+          text,
+        },
       }),
     );
   },

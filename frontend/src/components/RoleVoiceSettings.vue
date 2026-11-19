@@ -16,6 +16,12 @@ function object(value: unknown): Record<string, unknown> {
 }
 const extension = computed(() => object(props.modelValue.wechat_agent_bridge));
 const bindings = computed(() => object(extension.value.voices));
+const styles = computed(() => object(extension.value.voice_instructions));
+const previewText = ref("");
+function styleValue(pid: string): string {
+  const value = styles.value[pid];
+  return typeof value === "string" ? value : "";
+}
 const busy = ref(""),
   source = ref(""),
   previewProfile = ref(""),
@@ -29,15 +35,31 @@ function release() {
   previewProfile.value = "";
   error.value = "";
 }
-function setVoice(pid: string, event: Event) {
-  const voice = (event.target as HTMLInputElement).value;
-  const next = { ...bindings.value };
-  if (voice.trim()) next[pid] = voice;
+function setBinding(
+  key: "voices" | "voice_instructions",
+  pid: string,
+  event: Event,
+) {
+  const value = (event.target as HTMLInputElement | HTMLTextAreaElement).value;
+  const next = { ...object(extension.value[key]) };
+  if (value.trim()) next[pid] = value;
   else delete next[pid];
   emit("update:modelValue", {
     ...props.modelValue,
-    wechat_agent_bridge: { ...extension.value, voices: next },
+    wechat_agent_bridge: { ...extension.value, [key]: next },
   });
+}
+function supportsStyle(profile: ApiProfile) {
+  const protocol = profile.speech_protocol || "auto";
+  const openai =
+    protocol === "openai_speech" ||
+    (protocol === "auto" && profile.protocol !== "gemini_generate_content");
+  return (
+    openai &&
+    /^gpt-4o-mini-tts(?:-\d{4}-\d{2}-\d{2})?$/.test(
+      profile.speech_model || profile.model,
+    )
+  );
 }
 function defaultVoice(profile: ApiProfile) {
   return (
@@ -55,10 +77,13 @@ async function preview(profile: ApiProfile) {
   busy.value = profile.profile_id;
   try {
     const name = bindings.value[profile.profile_id];
+    const instructions = styles.value[profile.profile_id];
     const audio = await api.voicePreview(
       profile.profile_id,
       profile.revision,
       typeof name === "string" ? name.trim() : null,
+      typeof instructions === "string" ? instructions : "",
+      previewText.value,
     );
     if (ticket !== generation) return;
     const bytes = Uint8Array.from(atob(audio.data_base64), (c) =>
@@ -75,6 +100,7 @@ async function preview(profile: ApiProfile) {
   }
 }
 watch(() => [props.modelValue, props.profiles], release, { deep: true });
+watch(previewText, release);
 onBeforeUnmount(release);
 </script>
 <template>
@@ -82,11 +108,24 @@ onBeforeUnmount(release);
     <h4>角色语音</h4>
     <p class="settings-note">
       AI 会根据角色和对话选择文字或语音。音色按 API
-      配置绑定，留空使用服务商默认音色；试听为 AI 合成语音。
+      配置绑定，留空使用服务商默认音色。说话风格控制语气和节奏，试听与正式回复使用相同设置；试听为
+      AI 合成语音。
     </p>
     <p v-if="!profiles.length" class="settings-note">
       添加 API 配置后可设置音色。
     </p>
+    <label v-if="profiles.length" class="editor-field">
+      <span>试听文案（可选）</span>
+      <textarea
+        v-model="previewText"
+        class="editor-input"
+        aria-label="试听文案"
+        maxlength="500"
+        rows="2"
+        placeholder="输入角色常说的中文或英文短句，留空使用默认试听句"
+      />
+      <small>最多 500 字符，仅用于试听，不保存到角色卡。</small>
+    </label>
     <div
       v-for="profile in profiles"
       :key="profile.profile_id"
@@ -100,7 +139,7 @@ onBeforeUnmount(release);
           :value="bindings[profile.profile_id] || ''"
           :placeholder="`默认 ${defaultVoice(profile)}`"
           maxlength="200"
-          @input="setVoice(profile.profile_id, $event)"
+          @input="setBinding('voices', profile.profile_id, $event)"
         />
         <small
           >{{ profile.speech_model || profile.model }} ·
@@ -111,9 +150,37 @@ onBeforeUnmount(release);
           }}</small
         >
       </label>
+      <label
+        v-if="supportsStyle(profile) || styles[profile.profile_id]"
+        class="editor-field voice-style"
+      >
+        <span>{{ profile.name }} · 说话风格</span>
+        <textarea
+          class="editor-input"
+          :aria-label="`${profile.name} 说话风格`"
+          :value="styleValue(profile.profile_id)"
+          maxlength="2000"
+          rows="3"
+          placeholder="例如：清亮自然的女声，短句利落，略带俏皮；认真关心时温柔克制"
+          @input="setBinding('voice_instructions', profile.profile_id, $event)"
+        />
+        <small v-if="supportsStyle(profile)"
+          >最多 2000 字符，只描述声音与演绎方式，留空使用音色的自然表达。</small
+        >
+        <small v-else
+          >当前模型不支持已保存的说话风格，请清空风格或更换支持的语音模型。</small
+        >
+      </label>
+      <small v-else class="settings-note"
+        >说话风格仅适用于 OpenAI gpt-4o-mini-tts 系列。</small
+      >
       <ElButton
         :loading="busy === profile.profile_id"
-        :disabled="!!busy || !profile.key_readable"
+        :disabled="
+          !!busy ||
+          !profile.key_readable ||
+          (!supportsStyle(profile) && !!styles[profile.profile_id])
+        "
         @click="preview(profile)"
         >试听音色</ElButton
       >
@@ -142,6 +209,9 @@ onBeforeUnmount(release);
 .voice-setting label {
   flex: 1;
   min-width: 180px;
+}
+.voice-setting .voice-style {
+  flex-basis: 100%;
 }
 audio {
   max-width: 100%;

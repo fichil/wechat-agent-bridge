@@ -3695,6 +3695,16 @@ export interface components {
              * @default
              */
             voice: string;
+            /**
+             * Instructions
+             * @default
+             */
+            instructions: string;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
         };
         /** VoicePreviewResult */
         VoicePreviewResult: {

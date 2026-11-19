@@ -15,8 +15,9 @@ from backend.app.conversations import ConversationError
 from backend.app.reply_media import parse_reply
 from backend.app.storage import Store
 from backend.app.voice_audio import encode_audio, make_wav, normalize_audio, silk_duration, split_voice_text
-from backend.app.voice_provider import SpeechProvider, voice_for_card
-from test_roles import RoleTestCase
+from backend.app.voice_provider import SpeechProvider, voice_for_card, instructions_for_card, SPEECH_CONTENT_INSTRUCTIONS
+from backend.app.role_evolution import merge_role_patch
+from test_roles import RoleTestCase, card
 import test_reply_media as media
 
 
@@ -74,14 +75,70 @@ class VoiceCodecTests(unittest.TestCase):
         self.assertEqual(result['status'],'unsupported')
         self.assertNotIn('test-secret',json.dumps(result))
 
+    def test_style_is_separate_from_verbatim_input_and_keeps_selected_voice(self):
+        requests = []
+        def handle(request):
+            requests.append(request)
+            return httpx.Response(200,content=WAV)
+        provider = SpeechProvider(httpx.MockTransport(handle))
+        profile = dict(protocol='openai_responses',base_url='https://same.test/v1',model='chat',speech_model='gpt-4o-mini-tts')
+        for model in ('gpt-4o-mini-tts','gpt-4o-mini-tts-2025-12-15'):
+            profile['speech_model'] = model
+            text = '典。\nI am Finn!  原文保留。'
+            provider.synthesize(profile,'test-secret',text,'marin',instructions='清亮女声。\n短句利落。')
+            body = json.loads(requests[-1].content)
+            self.assertEqual(body['input'],text)
+            self.assertEqual(body['voice'],'marin')
+            self.assertEqual(body['instructions'],'清亮女声。\n短句利落。\n\n'+SPEECH_CONTENT_INSTRUCTIONS)
+            self.assertNotIn('test-secret',json.dumps(body))
+
+    def test_unsupported_style_fails_before_http_without_default_voice_retry(self):
+        def unexpected(_request): raise AssertionError('unsupported styles must not send HTTP requests')
+        provider = SpeechProvider(httpx.MockTransport(unexpected))
+        for protocol, model in (('openai_responses','tts-1'),('openai_responses','custom-speech'),('gemini_generate_content','gemini-2.5-flash-preview-tts')):
+            with self.subTest(model=model), self.assertRaises(ConversationError) as caught:
+                provider.synthesize(dict(protocol=protocol,base_url='https://same.test',model=model),'test-secret','原文','marin',instructions='女声')
+            self.assertEqual(caught.exception.code,'voice_style_unsupported')
+
 
 class FakeSpeech:
-    def __init__(self): self.calls=[]; self.hook=None; self.audio=encode_audio(WAV)
+    def __init__(self): self.calls=[]; self.options=[]; self.hook=None; self.audio=encode_audio(WAV)
     def test(self,profile,key): return dict(status='supported',default_voice='alloy')
     def synthesize(self,profile,key,text,voice=None,**kwargs):
         self.calls.append((profile['profile_id'],key,text,voice))
+        self.options.append(dict(kwargs))
         if self.hook: self.hook()
         return dict(self.audio)
+
+
+class VoiceStyleCardTests(RoleTestCase):
+    def test_style_roundtrip_copy_and_role_evolution_preserve_all_extensions(self):
+        document = card()
+        document['data']['extensions']['wechat_agent_bridge'] = {
+            'voices': {'API_voice':'marin'}, 'voice_instructions': {'API_voice':'清亮女声\n情绪克制'}, 'future': {'keep':True}}
+        saved = self.create(document)
+        exported = self.post('role-cards/get',card_code=saved['card_code']).json()['card']
+        imported = self.create(json.loads(json.dumps(exported)))
+        self.assertEqual(imported['card'],document)
+        changed, fields = merge_role_patch(exported,json.dumps({'personality':'新的长期性格'}),True)
+        self.assertEqual(fields,['personality'])
+        self.assertEqual(changed['data']['extensions'],document['data']['extensions'])
+        with self.assertRaises(ConversationError):
+            merge_role_patch(exported,json.dumps({'extensions':{}}),True)
+        self.assertEqual(instructions_for_card(changed,{'profile_id':'API_voice'}),'清亮女声\n情绪克制')
+        self.assertEqual(instructions_for_card(changed,{'profile_id':'API_other'}),'')
+        self.assertEqual(instructions_for_card(card(),{'profile_id':'API_voice'}),'')
+
+    def test_style_validation_and_preview_limits_do_not_change_role(self):
+        for value in ([], {'bad id':'自然'}, {'API_voice':None}, {'API_voice':'a'*2001}, {'API_voice':'bad\x00text'}, {f'API_{n}':'风格' for n in range(101)}):
+            document = card()
+            document['data']['extensions']['wechat_agent_bridge'] = {'voice_instructions':value}
+            result = self.post('role-cards/create',card=document)
+            self.assertEqual((result.status_code,result.json()['code']),(422,'voice_instructions_invalid'))
+        for field, value in (('instructions','a'*2001),('instructions','bad\x01'),('text','a'*501),('text','bad\x00')):
+            response = self.post('voice/preview',profile_id='API_voice',expected_revision=1,**{field:value})
+            self.assertEqual(response.status_code,422)
+        self.assertEqual(self.store.role_cards()['items'],[])
 
 
 class VoiceReplyTests(RoleTestCase):
@@ -222,19 +279,40 @@ class VoiceReplyTests(RoleTestCase):
     def test_role_voice_binding_is_used_and_preview_does_not_enqueue(self):
         self.prepare()
         role=self.store.role_card(self.preferences()['effective']['role_card_code'])
-        role['card']['data']['extensions']['wechat_agent_bridge']={'voices':{self.profile['profile_id']:'nova'}}
+        style='清亮自然的女声。\n短句利落，认真时温柔克制。'
+        role['card']['data']['extensions']['wechat_agent_bridge']={'voices':{self.profile['profile_id']:'marin'},'voice_instructions':{self.profile['profile_id']:style}}
         self.store.save_role_card(role['card'],role['card_code'],role['revision'])
         run=self.reply('[[VOICE]]\n按角色朗读')
         self.assertEqual(run['status'],'completed',run)
-        self.assertEqual(self.speech.calls[-1][-1],'nova')
+        self.assertEqual(self.speech.calls[-1][-1],'marin')
+        self.assertEqual(self.speech.options[-1]['instructions'],style)
         count=self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM deliveries').fetchone()[0])
-        preview=self.post('voice/preview',profile_id=self.profile['profile_id'],expected_revision=1,voice='shimmer')
+        preview=self.post('voice/preview',profile_id=self.profile['profile_id'],expected_revision=1,voice='marin',instructions=style,text='I am Finn!')
         self.assertEqual(preview.status_code,200,preview.text)
-        self.assertEqual(self.speech.calls[-1][-1],'shimmer')
+        self.assertEqual(self.speech.calls[-1][-2:],('I am Finn!','marin'))
+        self.assertEqual(self.speech.options[-1]['instructions'],style)
         self.assertEqual(self.store.call(lambda:self.store.db.execute('SELECT count(*) FROM deliveries').fetchone()[0]),count)
+        legacy=self.post('voice/preview',profile_id=self.profile['profile_id'],expected_revision=1,voice='shimmer')
+        self.assertEqual(legacy.status_code,200,legacy.text)
+        self.assertEqual(self.speech.calls[-1][-2:],('你好，这是一条人工智能合成的音色试听。','shimmer'))
+        self.assertEqual(self.speech.options[-1]['instructions'],'')
+
+    def test_role_style_change_during_synthesis_conflicts_without_sending(self):
+        self.prepare()
+        role=self.store.role_card(self.preferences()['effective']['role_card_code'])
+        def revise():
+            role['card']['data']['extensions']['wechat_agent_bridge']={'voices':{self.profile['profile_id']:'marin'},'voice_instructions':{self.profile['profile_id']:'新风格'}}
+            self.store.save_role_card(role['card'],role['card_code'],role['revision'])
+        self.speech.hook=revise
+        run=self.reply('[[VOICE]]\n不能按过期角色继续发送')
+        self.assertEqual(run['status'],'conflicted',run)
+        self.assertEqual(run['delivery']['total_parts'],0)
 
     def test_restart_resumes_prepared_result_without_chat_request(self):
         self.prepare()
+        role=self.store.role_card(self.preferences()['effective']['role_card_code'])
+        role['card']['data']['extensions']['wechat_agent_bridge']={'voices':{self.profile['profile_id']:'marin'},'voice_instructions':{self.profile['profile_id']:'冷淡懒散，短句克制'}}
+        self.store.save_role_card(role['card'],role['card_code'],role['revision'])
         with patch.object(self.app.state.ai.speech,'start_run'), patch.object(self.provider,'generate',return_value=dict(memory='保存的记忆',reply='[[VOICE]]\n保存的原文')):
             run=self.start()
             for _ in range(200):
@@ -251,6 +329,8 @@ class VoiceReplyTests(RoleTestCase):
             result=reopened.ai_run(self.ids[0],self.cids[0],run['run_id'])
             self.assertEqual(result['status'],'completed',result)
             self.assertEqual(result['reply_parts'][0]['text'],'保存的原文')
+            self.assertEqual(self.speech.calls[-1][-1],'marin')
+            self.assertEqual(self.speech.options[-1]['instructions'],'冷淡懒散，短句克制')
             generate.assert_not_called()
             self.assertEqual(reopened.call(lambda:reopened.db.execute('PRAGMA foreign_key_check').fetchall()),[])
         finally: worker.close();reopened.close()
@@ -259,7 +339,7 @@ class VoiceReplyTests(RoleTestCase):
         self.prepare()
         backup=self.create_api(name='备用',api_key='backup-only-key',speech_model='backup-speech')
         role=self.store.role_card(self.preferences()['effective']['role_card_code'])
-        role['card']['data']['extensions']['wechat_agent_bridge']={'voices':{self.profile['profile_id']:'alloy',backup['profile_id']:'nova'}}
+        role['card']['data']['extensions']['wechat_agent_bridge']={'voices':{self.profile['profile_id']:'alloy',backup['profile_id']:'nova'},'voice_instructions':{self.profile['profile_id']:'主配置风格',backup['profile_id']:'备用配置风格'}}
         self.store.save_role_card(role['card'],role['card_code'],role['revision'])
         seen=[]
         def generate(profile,key,envelope,mode):
@@ -277,6 +357,7 @@ class VoiceReplyTests(RoleTestCase):
         self.assertEqual(run['status'],'completed',run)
         self.assertEqual(seen,[self.profile['profile_id'],backup['profile_id']])
         self.assertEqual(self.speech.calls,[(backup['profile_id'],'backup-only-key','备用角色语音','nova')])
+        self.assertEqual([o['instructions'] for o in self.speech.options],['备用配置风格'])
 
     def test_invalid_mixed_reply_retries_backup_without_reusing_old_voice(self):
         self.prepare()
