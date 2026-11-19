@@ -6451,6 +6451,408 @@
         ]
       }
     },
+    "/api/v1/voice/service/query": {
+      "post": {
+        "summary": "Voice Service Query",
+        "operationId": "voice_service_query_api_v1_voice_service_query_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JsonRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceServiceSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CsrfToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/voice/service/update": {
+      "post": {
+        "summary": "Voice Service Update",
+        "operationId": "voice_service_update_api_v1_voice_service_update_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceServiceUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceServiceSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CsrfToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/voice/service/preview": {
+      "post": {
+        "summary": "Voice Service Preview",
+        "operationId": "voice_service_preview_api_v1_voice_service_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceServicePreview"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoicePreviewResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CsrfToken": []
+          }
+        ]
+      }
+    },
     "/api/v1/ai-settings/query": {
       "post": {
         "summary": "Ai Settings",
@@ -16196,6 +16598,123 @@
           "duration_ms"
         ],
         "title": "VoicePreviewResult"
+      },
+      "VoiceServicePreview": {
+        "properties": {
+          "service_id": {
+            "type": "string",
+            "const": "bailian",
+            "title": "Service Id"
+          },
+          "voice": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,200}$",
+            "title": "Voice",
+            "default": "longhuhu_v3"
+          },
+          "instructions": {
+            "type": "string",
+            "maxLength": 100,
+            "pattern": "^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]*$",
+            "title": "Instructions",
+            "default": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Revision"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 500,
+            "pattern": "^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]*$",
+            "title": "Text",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "service_id",
+          "expected_revision"
+        ],
+        "title": "VoiceServicePreview"
+      },
+      "VoiceServiceSettings": {
+        "properties": {
+          "service_id": {
+            "type": "string",
+            "const": "bailian",
+            "title": "Service Id",
+            "default": "bailian"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
+          },
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id",
+            "default": ""
+          },
+          "model": {
+            "type": "string",
+            "const": "cosyvoice-v3-flash",
+            "title": "Model",
+            "default": "cosyvoice-v3-flash"
+          },
+          "has_key": {
+            "type": "boolean",
+            "title": "Has Key",
+            "default": false
+          },
+          "key_readable": {
+            "type": "boolean",
+            "title": "Key Readable",
+            "default": false
+          },
+          "verification": {
+            "$ref": "#/components/schemas/SpeechVerification"
+          }
+        },
+        "type": "object",
+        "title": "VoiceServiceSettings"
+      },
+      "VoiceServiceUpdate": {
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Expected Revision"
+          },
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,127}$",
+            "title": "Workspace Id"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096,
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_revision",
+          "workspace_id"
+        ],
+        "title": "VoiceServiceUpdate"
       }
     },
     "securitySchemes": {

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { api, type ApiProfile } from "../api";
 import { settingsError } from "../role-cards";
+import BailianVoiceSettings from "./BailianVoiceSettings.vue";
 const props = defineProps<{
   modelValue: Record<string, unknown>;
   profiles: ApiProfile[];
@@ -17,6 +18,27 @@ function object(value: unknown): Record<string, unknown> {
 const extension = computed(() => object(props.modelValue.wechat_agent_bridge));
 const bindings = computed(() => object(extension.value.voices));
 const styles = computed(() => object(extension.value.voice_instructions));
+const serviceBinding = computed(() => object(extension.value.voice_service));
+const independent = computed(
+  () => serviceBinding.value.service_id === "bailian",
+);
+function setService(value?: Record<string, unknown>) {
+  const next = { ...extension.value };
+  if (value) next.voice_service = value;
+  else delete next.voice_service;
+  emit("update:modelValue", { ...props.modelValue, wechat_agent_bridge: next });
+}
+function chooseService(event: Event) {
+  setService(
+    (event.target as HTMLSelectElement).value === "bailian"
+      ? {
+          service_id: "bailian",
+          voice: "longhuhu_v3",
+          instructions: "你正在进行自由对话，你说话的情感是neutral。",
+        }
+      : undefined,
+  );
+}
 const previewText = ref("");
 function styleValue(pid: string): string {
   const value = styles.value[pid];
@@ -107,14 +129,25 @@ onBeforeUnmount(release);
   <section class="voice-settings" aria-label="角色语音">
     <h4>角色语音</h4>
     <p class="settings-note">
-      AI 会根据角色和对话选择文字或语音。音色按 API
-      配置绑定，留空使用服务商默认音色。说话风格控制语气和节奏，试听与正式回复使用相同设置；试听为
-      AI 合成语音。
+      AI 会根据角色和对话选择文字或语音。可跟随聊天 API 或使用独立语音服务。
+      说话风格控制语气和节奏，试听与正式回复使用相同设置；试听为 AI 合成语音。
     </p>
-    <p v-if="!profiles.length" class="settings-note">
+    <label class="editor-field">
+      <span>语音来源</span>
+      <select
+        class="editor-input"
+        aria-label="语音来源"
+        :value="independent ? 'bailian' : 'api'"
+        @change="chooseService"
+      >
+        <option value="api">跟随聊天 API</option>
+        <option value="bailian">阿里云百炼</option>
+      </select>
+    </label>
+    <p v-if="!profiles.length && !independent" class="settings-note">
       添加 API 配置后可设置音色。
     </p>
-    <label v-if="profiles.length" class="editor-field">
+    <label v-if="profiles.length || independent" class="editor-field">
       <span>试听文案（可选）</span>
       <textarea
         v-model="previewText"
@@ -126,8 +159,14 @@ onBeforeUnmount(release);
       />
       <small>最多 500 字符，仅用于试听，不保存到角色卡。</small>
     </label>
+    <BailianVoiceSettings
+      v-if="independent"
+      :binding="serviceBinding"
+      :text="previewText"
+      @update="setService"
+    />
     <div
-      v-for="profile in profiles"
+      v-for="profile in independent ? [] : profiles"
       :key="profile.profile_id"
       class="voice-setting"
     >

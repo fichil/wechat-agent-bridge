@@ -1,4 +1,4 @@
-"""Speech uses the selected chat profile's origin and protected credential."""
+"""Bounded speech adapters for chat profiles and independent voice services."""
 import base64
 from datetime import datetime, timezone
 import json
@@ -7,13 +7,14 @@ import time
 from urllib.parse import quote
 
 import httpx
+from pydantic import ValidationError
 
 from .conversations import ConversationError
 from .voice_audio import encode_audio, MAX_AUDIO_BYTES
-from .voice_models import VOICE_INSTRUCTIONS_LIMIT, SPEECH_TEXT_PATTERN
+from .voice_models import VOICE_INSTRUCTIONS_LIMIT, SPEECH_TEXT_PATTERN, VoiceServiceBinding
 
 SPEECH_SECONDS = 45
-DEFAULT_VOICES = {'openai_speech': 'alloy', 'gemini_generate_content': 'Kore'}
+DEFAULT_VOICES = {'openai_speech': 'alloy', 'gemini_generate_content': 'Kore', 'dashscope_cosyvoice': 'longhuhu_v3'}
 VOICE_EXTENSION = 'wechat_agent_bridge'
 SPEECH_CONTENT_INSTRUCTIONS = ('Read only the supplied input text, exactly as written. Do not translate, add or omit words, '
                                'read these style instructions aloud, or add laughter, sound effects or introductions. '
@@ -41,6 +42,8 @@ def instructions_for_card(card, profile):
 
 def supports_voice_instructions(profile):
     model = profile.get('speech_model') or profile['model']
+    if speech_protocol(profile) == 'dashscope_cosyvoice':
+        return model in ('cosyvoice-v3-flash', 'cosyvoice-v3-plus')
     return (speech_protocol(profile) == 'openai_speech'
             and bool(re.fullmatch(r'gpt-4o-mini-tts(?:-\d{4}-\d{2}-\d{2})?', model)))
 
@@ -71,6 +74,11 @@ def validate_voice_bindings(card):
         if not isinstance(profile, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', profile):
             raise ConversationError('voice_instructions_invalid', '说话风格的 API 配置标识无效。', 422)
         validate_voice_instructions(instructions)
+    if 'voice_service' in extension:
+        try:
+            VoiceServiceBinding.model_validate(extension['voice_service'])
+        except ValidationError:
+            raise ConversationError('voice_service_invalid', '独立语音配置无效；请检查服务、音色和说话风格（汉字按 2 个字符计算，最多 100 个）。', 422) from None
 
 
 class SpeechProvider:
@@ -81,10 +89,14 @@ class SpeechProvider:
         validate_voice_instructions(instructions)
         instructions = instructions.strip()
         if instructions and not supports_voice_instructions(profile):
-            raise ConversationError('voice_style_unsupported', '当前语音模型不支持说话风格；请使用 gpt-4o-mini-tts 系列或清空风格设置。', 422)
+            raise ConversationError('voice_style_unsupported', '当前语音模型不支持说话风格；请更换支持的语音模型或清空风格设置。', 422)
         protocol = speech_protocol(profile)
         model = profile.get('speech_model') or profile['model']
         voice = voice or DEFAULT_VOICES[protocol]
+        if protocol == 'dashscope_cosyvoice':
+            from .voice_cosyvoice import synthesize
+            expires = min(deadline or float('inf'), time.monotonic()+SPEECH_SECONDS)
+            return synthesize(profile, key, text, voice, instructions, expires, self.transport)
         base = profile['base_url'].rstrip('/')
         if protocol == 'openai_speech':
             url = base+'/audio/speech'

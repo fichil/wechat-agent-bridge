@@ -128,6 +128,10 @@ def quarantine(db, reset_compatibility=False):
         # The persistent migration marker is a separate hold. Keep user pauses.
         db.execute('UPDATE ai_sessions SET epoch=epoch+1,auto_pending=0')
         db.execute("DELETE FROM metadata WHERE key GLOB 'ai_agent_route:*'")
+        # Imported speech keys belong to another Windows user/machine. Retain
+        # role bindings but require local configuration and a fresh service test.
+        if reset_compatibility:
+            db.execute("DELETE FROM metadata WHERE key='speech-service:bailian'")
         db.execute("UPDATE deliveries SET status='cancelled',code='migration_cancelled' WHERE status IN ('queued','failed')")
         db.execute("UPDATE deliveries SET status='unknown',code='send_interrupted' WHERE status='sending'")
         db.execute("UPDATE delivery_attempts SET status='unknown',code='send_interrupted',completed_at=? WHERE status='sending'", (timestamp,))
