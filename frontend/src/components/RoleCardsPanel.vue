@@ -19,6 +19,7 @@ void config.load();
 const selected = ref<RoleCard | null>(null);
 const editing = ref(false);
 const draft = ref(blankCard());
+const voiceEditorGeneration = ref(0);
 const mode = ref<"form" | "json">("form");
 const raw = ref("");
 const baseline = ref("");
@@ -61,6 +62,7 @@ function setDraft(
   imported = false,
 ) {
   draft.value = card;
+  voiceEditorGeneration.value++;
   selected.value = existing;
   raw.value = JSON.stringify(card, null, 2);
   baseline.value = imported ? "" : raw.value;
@@ -415,6 +417,7 @@ watch(
                 >
               </div>
               <RoleVoiceSettings
+                :key="voiceEditorGeneration"
                 v-model="draft.data.extensions"
                 :profiles="config.items"
               />

@@ -441,7 +441,7 @@ def create_app(probe: AccountProbe = discover_local_accounts, *, conversation_re
 
     @app.post('/api/v1/voice/preview', response_model=VoicePreviewResult, responses=failures)
     def voice_preview(body: VoicePreview):
-        return app.state.ai.speech.preview(body.profile_id,body.expected_revision,body.voice)
+        return app.state.ai.speech.preview(body.profile_id,body.expected_revision,body.voice,body.instructions,body.text)
 
     @app.post("/api/v1/ai-settings/query", response_model=AiSettings, responses=failures)
     def ai_settings(_body: JsonRequest, request: Request):

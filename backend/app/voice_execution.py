@@ -8,7 +8,7 @@ from . import secret_protection
 from .conversations import ConversationError
 from .reply_media import parse_reply
 from .voice_audio import split_voice_text
-from .voice_provider import SpeechProvider, voice_for_card
+from .voice_provider import SpeechProvider, voice_for_card, instructions_for_card
 
 
 class SpeechExecution:
@@ -86,6 +86,7 @@ class SpeechExecution:
             envelope = snapshot['envelope']
             allowed = envelope.get('reply_media', {}).get('capabilities', {}).get('voice') and self.provider is not None
             voice = voice_for_card(envelope['character_card'], profile)
+            instructions = instructions_for_card(envelope['character_card'], profile)
             deadline = time.monotonic()+90
             key = secret_protection.reveal(secret) if allowed else None
             for index, part in enumerate(value['parts']):
@@ -100,7 +101,7 @@ class SpeechExecution:
                         raise ConversationError('voice_reply_limit', '语音段数超过上限。', 422)
                     for text in texts:
                         if not self.store.voice_preparation_valid(aid,cid,rid): return
-                        audio = self.provider.synthesize(profile, key, text, voice, deadline=deadline)
+                        audio = self.provider.synthesize(profile, key, text, voice, instructions=instructions, deadline=deadline)
                         chunks.append(dict(text=text, audio=audio))
                 except ConversationError as exc:
                     fallback = exc.code
@@ -120,12 +121,13 @@ class SpeechExecution:
             try: self.store.log_application(rid, self.store.ai_run(aid,cid,rid))
             except ConversationError: pass  # Account/run may be deleted while synthesis is in flight.
 
-    def preview(self, pid, revision, voice):
+    def preview(self, pid, revision, voice, instructions='', text=''):
         if self.provider is None:
             raise ConversationError('voice_unavailable', '语音服务尚未启用。', 409)
         profile, secret = self.store.speech_credentials(pid, revision)
         def work():
-            audio = self.provider.synthesize(profile, secret_protection.reveal(secret), '你好，这是一条人工智能合成的音色试听。', voice)
+            sample = text.strip() or '你好，这是一条人工智能合成的音色试听。'
+            audio = self.provider.synthesize(profile, secret_protection.reveal(secret), sample, voice, instructions=instructions)
             self.store.speech_credentials(pid, revision)  # Discard stale previews.
             return dict(mime_type='audio/wav', data_base64=base64.b64encode(audio['wav']).decode('ascii'), duration_ms=audio['duration_ms'])
         future = self.submit('preview:'+pid, work)

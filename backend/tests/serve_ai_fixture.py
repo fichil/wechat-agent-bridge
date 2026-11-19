@@ -43,9 +43,11 @@ class BrowserSender:
 
 sender = BrowserSender()
 class BrowserSpeech:
+    def __init__(self): self.calls = []
     def test(self, profile, key): return dict(status='supported',default_voice='alloy')
     def synthesize(self, profile, key, text, voice=None, **kwargs):
         from backend.app.voice_audio import encode_audio, make_wav
+        self.calls.append(dict(profile_id=profile['profile_id'],voice=voice,text=text,instructions=kwargs.get('instructions','')))
         return encode_audio(make_wav(b'\0\0' * 2400))
 app = create_app(accounts, database_path=":memory:", conversation_reader=reader, message_reader=reader, monitor=False, ai_provider=provider,send_transport=sender,send_auto=True,
                  auth_path=':memory:', auth_config=AuthConfig('development', 'http://127.0.0.1:15173', ('http://127.0.0.1:18765',)),speech_provider=BrowserSpeech())
@@ -79,6 +81,7 @@ def reset():
     provider.reply_override = None
     provider.role_update_override = ''
     sender.result = 'sent'
+    app.state.ai.speech.provider.calls.clear()
     def clear():
         with store.db:
             for table in ('delivery_attempts','deliveries','reply_triggers','delivery_sessions'):
@@ -100,6 +103,12 @@ def reset():
             store.db.execute("DELETE FROM role_cards")
     store.call(clear)
     return app.state.test_ids
+
+
+@app.post('/test/speech-calls')
+def speech_calls():
+    assert app.state.store.path == ':memory:'
+    return app.state.ai.speech.provider.calls
 
 
 @app.post("/test/message")

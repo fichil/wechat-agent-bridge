@@ -117,7 +117,7 @@ test("voice settings, audition and generated reply playback", async ({
   page,
 }) => {
   await page.goto(`/workspace/${ids[0]!.account_id}/agents`);
-  await addApi(page, "语音连接");
+  await addApi(page, "语音连接", "openai", "gpt-4o-mini-tts");
   const profile = (await post(page, "api-profiles/query")).items[0];
   expect(profile.verification.speech.status).toBe("supported");
   const card = blankCard();
@@ -125,7 +125,11 @@ test("voice settings, audition and generated reply playback", async ({
   const role = await post(page, "role-cards/create", { card });
   await page.getByRole("link", { name: "角色卡", exact: true }).click();
   await page.locator(".role-list-item").filter({ hasText: "语音角色" }).click();
-  await page.getByLabel("语音连接 音色", { exact: true }).fill("nova");
+  await page.getByLabel("语音连接 音色", { exact: true }).fill("marin");
+  const style = "清亮自然的女声。\n短句利落，认真时温柔克制。";
+  const sample = "才不是大肥鱼，是小鲸鱼。";
+  await page.getByLabel("语音连接 说话风格", { exact: true }).fill(style);
+  await page.getByLabel("试听文案", { exact: true }).fill(sample);
   await page.getByRole("button", { name: "试听音色", exact: true }).click();
   await expect(page.getByLabel("角色音色试听")).toBeVisible();
   await expect
@@ -142,7 +146,14 @@ test("voice settings, audition and generated reply playback", async ({
         (await post(page, "role-cards/get", { card_code: role.card_code })).card
           .data.extensions.wechat_agent_bridge?.voices?.[profile.profile_id],
     )
-    .toBe("nova");
+    .toBe("marin");
+  expect(
+    (await post(page, "role-cards/get", { card_code: role.card_code })).card
+      .data.extensions.wechat_agent_bridge.voice_instructions[
+      profile.profile_id
+    ],
+  ).toBe(style);
+  await expect(page.getByLabel("试听文案", { exact: true })).toHaveValue("");
   await post(page, "conversation-preferences/update", {
     ...ids[0]!,
     expected_revision: 0,
@@ -175,6 +186,23 @@ test("voice settings, audition and generated reply playback", async ({
   await expect(page.locator(".reply-part").nth(1)).toContainText(
     "你好，这是角色语音。",
   );
+  const speechCalls = await (
+    await fixturePost(page, service + "/test/speech-calls", { data: {} })
+  ).json();
+  expect(speechCalls).toEqual([
+    {
+      profile_id: profile.profile_id,
+      voice: "marin",
+      text: sample,
+      instructions: style,
+    },
+    {
+      profile_id: profile.profile_id,
+      voice: "marin",
+      text: "你好，这是角色语音。",
+      instructions: style,
+    },
+  ]);
   await page.setViewportSize({ width: 390, height: 844 });
   expect(
     await page.evaluate(
@@ -300,13 +328,20 @@ async function post(page: Page, path: string, data: object = {}) {
   expect(response.ok()).toBeTruthy();
   return response.json();
 }
-async function addApi(page: Page, name: string, provider = "openai") {
+async function addApi(
+  page: Page,
+  name: string,
+  provider = "openai",
+  speechModel = "",
+) {
   await page
     .getByRole("button", { name: "新增 API 配置", exact: true })
     .click();
   await page.getByLabel("配置名称 *", { exact: true }).fill(name);
   await page.getByLabel("服务商 *", { exact: true }).selectOption(provider);
   await page.getByLabel("模型名 *", { exact: true }).fill("synthetic-model");
+  if (speechModel)
+    await page.getByRole("textbox", { name: /^语音模型/ }).fill(speechModel);
   await page
     .getByLabel("API 密钥 *", { exact: true })
     .fill("synthetic-browser-key");
