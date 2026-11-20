@@ -110,6 +110,91 @@ class GroupSchedulingTests(RoleTestCase):
         self.delta(6, type='voice', content={'transcript': '就绪'})
         self.assertEqual(len(self.ready()), 2)
 
+    def test_waiting_voices_do_not_block_successive_mentions_and_thresholds(self):
+        self.group(10)
+        aid, cid = self.ids[0], self.cids[0]
+        for offset in (0, 12):
+            self.delta(offset+1, type='voice', content={'transcript': None})
+            self.delta(offset+2, mentioned_wxids=['wxid_synthetic_0'], mention_status='known')
+            mention = self.start()
+            self.assertEqual((mention['trigger_reason'], mention['round_message_count']), ('mention', 1))
+            self.finish(mention)
+            for index in range(offset+3, offset+13):
+                self.delta(index)
+            self.settle()
+            self.app.state.ai.tick()
+            run = self.wait_run(self.store.ai_runs(aid, cid)['items'][0])
+            self.assertEqual((run['trigger_reason'], run['message_count']), ('group_threshold', 10))
+            self.finish(run)
+        self.assertEqual(self.store.ai_runs(aid, cid)['waiting_count'], 2)
+        transcript = self.delta(1, type='voice', content={'transcript': '已转写'})
+        self.delta(1, type='voice', content=transcript['content'], sent_at=transcript['sent_at'])
+        self.assertEqual(len(self.ready()), 1)
+        for index in range(25, 34):
+            self.delta(index)
+        self.finish(self.start())
+        self.delta(1, type='voice', content=transcript['content'], sent_at=transcript['sent_at'])
+        self.settle()
+        self.assertEqual(self.ready(), [])
+        self.assertEqual(self.store.ai_candidates(), [])
+        self.assertEqual(self.store.ai_runs(aid, cid)['waiting_count'], 1)
+
+    def test_restart_releases_legacy_waiting_round_and_drains_existing_backlog(self):
+        self.group(10)
+        aid, cid = self.ids[0], self.cids[0]
+        for index in (1, 2):
+            self.delta(index, type='voice', content={'transcript': None})
+        self.delta(3, mentioned_wxids=['wxid_synthetic_0'], mention_status='known')
+        mention = self.start()
+        self.finish(mention)
+        for index in range(4, 46):
+            self.delta(index)
+        self.settle()
+
+        # Older releases captured waiting voices in the mention snapshot, but never submitted them.
+        def restore_legacy_snapshot():
+            with self.store.db:
+                rid = mention['round_id']
+                for row in self.store.db.execute('SELECT * FROM messages WHERE conversation_id=? AND local_id IN (1,2)', (cid,)):
+                    value, fingerprint, digest, _ = self.store._ai_item(row, False, group=True)
+                    self.store.db.execute('INSERT INTO group_round_messages VALUES(?,?,?,?,?,?,0) ON CONFLICT(round_id,message_id) DO NOTHING',
+                                          (rid, row['message_id'], row['local_id'], fingerprint, digest, json.dumps(value)))
+                self.store.db.execute("UPDATE group_rounds SET status='active',payload=json_set(payload,'$.message_count',3) WHERE round_id=?", (rid,))
+                self.store.db.execute('UPDATE ai_sessions SET auto_pending=0 WHERE conversation_id=?', (cid,))
+        self.store.call(restore_legacy_snapshot)
+        self.store.close()
+        batches = []
+        # Restart on both sides of releasing the persisted round. No new arrival wakes the consumer.
+        for iteration in range(2):
+            with closing(Store(self.path)) as store:
+                self.assertIsNone(store.call(store._group_round, aid, cid))
+                self.assertEqual(len(store.ai_candidates()), 1)
+                if iteration == 0:
+                    continue
+                for remaining in (32, 22, 12, 2):
+                    self.assertEqual(len(store.ai_candidates()), 1)
+                    run = store.start_ai_run(aid, cid, uuid4().hex, 'auto')
+                    messages = store.claim_ai_run(aid, cid, run['run_id'])['envelope']['messages']
+                    self.assertEqual((run['trigger_reason'], len(messages)), ('group_threshold', 10))
+                    batches.extend(m['message_id'] for m in messages)
+                    store.finish_ai_run(aid, cid, run['run_id'], result=dict(memory='已处理', reply=''))
+                    self.assertEqual(len(store.call(store._group_ready, aid, cid)), remaining)
+                self.assertEqual(len(set(batches)), 40)
+                self.assertEqual(store.ai_candidates(), [])
+                self.assertEqual(store.ai_runs(aid, cid)['waiting_count'], 2)
+                self.store = store
+                for index in range(46, 54):
+                    self.delta(index)
+                self.settle()
+                self.assertEqual(len(store.ai_candidates()), 1)
+                run = store.start_ai_run(aid, cid, uuid4().hex, 'auto')
+                messages = store.claim_ai_run(aid, cid, run['run_id'])['envelope']['messages']
+                self.assertEqual(len(messages), 10)
+                self.assertTrue(set(batches).isdisjoint(m['message_id'] for m in messages))
+                store.finish_ai_run(aid, cid, run['run_id'], result=dict(memory='已处理', reply=''))
+                self.assertEqual(self.ready(), [])
+                self.assertEqual(store.ai_candidates(), [])
+
     def test_quoted_video_mention_retries_then_delivers_once(self):
         self.group(20)
         title = '@合成账号 评价一下'

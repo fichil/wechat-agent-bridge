@@ -130,6 +130,34 @@ class ReplyPriorityTests(RoleTestCase):
             self.assertIn(reply['reply'], snapshot['envelope']['memory'])
             self.assertFalse(snapshot['envelope']['reply_allowed'])
 
+    def test_waiting_only_round_preserves_backoff_then_yields_to_new_threshold(self):
+        self.group(1)
+        aid, cid = self.ids[0], self.cids[0]
+        self.delta(1, type='voice', content={'transcript': '初次转写'})
+        background = self.queued()
+        with patch.object(self.provider, 'generate', side_effect=ConversationError('ai_network_error', 'synthetic')):
+            failed = self.perform(background)
+        self.delta(1, type='voice', content={'transcript': None})
+        self.mention(2)
+        reply = self.start()
+        self.finish(reply)
+        self.delta(3)
+        self.settle()
+        with patch('backend.app.ai_retry_storage.time.time', return_value=failed['next_retry_at']-1):
+            self.assertEqual(self.store.ai_candidates(), [])
+            self.assertEqual(self.store.ai_run(aid, cid, background['run_id'])['status'], 'suspended')
+            self.assertEqual(self.store.call(self.store._group_round, aid, cid)['round_id'], background['round_id'])
+        with patch('backend.app.ai_retry_storage.time.time', return_value=failed['next_retry_at']+1):
+            self.assertEqual(len(self.store.ai_candidates()), 1)
+            resumed = self.start()
+        self.assertEqual((resumed['run_id'], resumed['attempt_count']), (background['run_id'], 1))
+        self.assertIn(resumed['status'], ('cancelled', 'empty'))
+        self.assertEqual(len(self.store.ai_candidates()), 1)
+        next_run = self.start()
+        self.assertEqual((next_run['trigger_reason'], next_run['message_count']), ('group_threshold', 1))
+        self.finish(next_run)
+        self.assertEqual(self.store.ai_candidates(), [])
+
     def test_waiting_media_placeholder_is_not_reprocessed_when_ready(self):
         self.group()
         self.delta(1, type='image', content={})

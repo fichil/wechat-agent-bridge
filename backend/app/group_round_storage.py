@@ -108,10 +108,22 @@ class GroupRoundStoreMixin:
         return selected, [m[0]['message_id'] for m in selected if m[0]['message_id'] in targets], context_only
 
     def _group_memory_ready(self, group):
-        vision = self._ai_vision(group['account_id'], group['conversation_id'])
-        return any(self._ai_item(row, vision)[3]['status'] not in ('waiting_image', 'waiting_transcript', 'unsupported')
+        # Group media use placeholders regardless of the configured vision provider.
+        return any(self._ai_item(row, False, group=True)[3]['status'] not in ('waiting_image', 'waiting_transcript', 'unsupported')
                    for row in self.db.execute('SELECT m.* FROM group_round_messages g JOIN messages m USING(message_id) '
                                               'WHERE g.round_id=? AND g.done=0', (group['round_id'],)))
+
+    def _group_close_idle_round(self, group, finishing_run_id=None):
+        """Release a waiting-only snapshot without consuming its deferred messages."""
+        closed = self.db.execute(
+            "UPDATE group_rounds SET status='completed' WHERE round_id=? AND status='active' "
+            "AND NOT EXISTS (SELECT 1 FROM ai_runs WHERE account_id=? AND conversation_id=? "
+            "AND status IN ('queued','running','suspended') AND run_id IS NOT ?)",
+            (group['round_id'], group['account_id'], group['conversation_id'], finishing_run_id)).rowcount
+        if closed:
+            self.db.execute('UPDATE ai_sessions SET auto_pending=1 WHERE account_id=? AND conversation_id=?',
+                            (group['account_id'], group['conversation_id']))
+        return bool(closed)
 
     def _is_group(self, aid, cid):
         return self._conversation(aid, cid)["source_id"].endswith("@chatroom")
@@ -208,7 +220,7 @@ class GroupRoundStoreMixin:
         selected = []
         for row in self._group_live_rows(aid, cid):
             value, fingerprint, digest, state = self._ai_item(row, vision)
-            if state["status"] in ("pending", "failed") or (reason == 'mention' and state['status'] in ('waiting_image', 'waiting_transcript')):
+            if state["status"] in ("pending", "failed"):
                 selected.append((value, fingerprint, digest))
         if reason == 'group_threshold':
             selected = selected[:self._preferences(aid, cid)['group_proactive_message_threshold']]
@@ -287,6 +299,8 @@ class GroupRoundStoreMixin:
         payload["batch_count"] += 1
         run["round_completed_count"] = self.db.execute("SELECT count(*) FROM group_round_messages WHERE round_id=? AND done=1", (group["round_id"],)).fetchone()[0]
         complete = run['round_completed_count'] == group['message_count']
+        if not complete and group.get('memory_only') and not self._group_memory_ready(group):
+            complete = self._group_close_idle_round(group, run['run_id'])
         run['round_final'] = complete
         self.db.execute("UPDATE group_rounds SET status=?,payload=? WHERE round_id=?", ("completed" if complete else "active", packed(payload), group["round_id"]))
         self.db.execute("UPDATE ai_sessions SET auto_pending=1 WHERE account_id=? AND conversation_id=?", (run["account_id"], run["conversation_id"]))

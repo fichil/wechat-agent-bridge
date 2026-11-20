@@ -63,6 +63,13 @@ class AiExecutionStoreMixin:
                 task.update(status="failed", error="ai_interrupted", message="服务已重启，配置未保存，请重新提交。", completed_at=stamp())
                 self.db.execute("UPDATE api_tasks SET payload=? WHERE task_id=?", (pack(task), row["task_id"]))
 
+        # Upgrade existing idle snapshots as well, even when no new delta wakes the session.
+        for group in self.db.execute(
+                "SELECT g.* FROM group_rounds g JOIN ai_sessions s USING(account_id,conversation_id,epoch) "
+                "WHERE g.status='active' AND s.paused=0 AND json_extract(g.payload,'$.memory_only')=1").fetchall():
+            if not self._group_memory_ready(group):
+                self._group_close_idle_round(group)
+
     def ai_settings(self):
         return self.call(lambda: {**dict(self.db.execute("SELECT instructions,revision FROM ai_settings WHERE singleton=1").fetchone()), "default_instructions": DEFAULT_INSTRUCTIONS})
 
@@ -255,7 +262,25 @@ class AiExecutionStoreMixin:
         return self.call(query)
 
     def ai_candidates(self):
-        return self.call(lambda: [dict(row) for row in self.db.execute("SELECT s.account_id,s.conversation_id,EXISTS(SELECT 1 FROM reply_triggers t WHERE t.account_id=s.account_id AND t.conversation_id=s.conversation_id AND t.epoch=s.epoch AND t.consumed_run_id IS NULL) AS reply_priority FROM ai_sessions s JOIN conversation_preferences p USING(account_id,conversation_id) WHERE p.ai_enabled=1 AND s.auto_pending=1 AND s.paused=0 AND NOT EXISTS(SELECT 1 FROM ai_runs r WHERE r.account_id=s.account_id AND r.conversation_id=s.conversation_id AND r.status IN ('queued','running')) ORDER BY EXISTS(SELECT 1 FROM reply_triggers t WHERE t.account_id=s.account_id AND t.conversation_id=s.conversation_id AND t.epoch=s.epoch AND t.consumed_run_id IS NULL) DESC,s.rowid") if not self._compatibility_blocked(row['account_id']) and self.configuration_ready(row['account_id'],row['conversation_id']) and not self._delivery_blocked(row['account_id'],row['conversation_id']) and self._ai_auto_allowed(row['account_id'],row['conversation_id']) and not self._delivery_debouncing(row['account_id'],row['conversation_id'])])
+        def candidates():
+            with self.db:
+                rows = self.db.execute(
+                    "SELECT s.account_id,s.conversation_id,EXISTS(SELECT 1 FROM reply_triggers t "
+                    "WHERE t.account_id=s.account_id AND t.conversation_id=s.conversation_id AND t.epoch=s.epoch "
+                    "AND t.consumed_run_id IS NULL) AS reply_priority FROM ai_sessions s "
+                    "JOIN conversation_preferences p USING(account_id,conversation_id) "
+                    "WHERE p.ai_enabled=1 AND s.auto_pending=1 AND s.paused=0 AND NOT EXISTS("
+                    "SELECT 1 FROM ai_runs r WHERE r.account_id=s.account_id AND r.conversation_id=s.conversation_id "
+                    "AND r.status IN ('queued','running')) ORDER BY reply_priority DESC,s.rowid")
+                result = []
+                for row in rows.fetchall():
+                    aid, cid = row['account_id'], row['conversation_id']
+                    if (not self._compatibility_blocked(aid) and self.configuration_ready(aid, cid)
+                            and not self._delivery_blocked(aid, cid) and self._ai_auto_allowed(aid, cid)
+                            and not self._delivery_debouncing(aid, cid)):
+                        result.append(dict(row))
+                return result
+        return self.call(candidates)
 
     def _ai_auto_allowed(self, aid, cid):
         if self._is_group(aid, cid) and not self._group_reply_rows(aid, cid):
@@ -264,7 +289,11 @@ class AiExecutionStoreMixin:
                 return False
             group = self._group_round(aid, cid)
             if group and group.get('memory_only') and not self._group_memory_ready(group):
-                return False
+                if row:
+                    # A suspended retry whose backoff expired must get its normal resume turn.
+                    return True
+                if not self._group_close_idle_round(group):
+                    return False
         return not self._is_group(aid, cid) or bool(self._group_reason(aid, cid))
 
     def ai_schedule_delay(self):
@@ -394,7 +423,10 @@ class AiExecutionStoreMixin:
                            role_revision=card["revision"], settings_revision=settings["revision"])
                 if not selected:
                     run["completed_at"] = stamp()
-                    self.db.execute("UPDATE ai_sessions SET auto_pending=0 WHERE account_id=? AND conversation_id=?", (aid, cid))
+                    # Reconciliation may have finished an old group snapshot without a model call.
+                    # Let the scheduler evaluate any live arrivals already waiting behind it.
+                    recheck_group = bool(group and not self._group_round(aid, cid))
+                    self.db.execute("UPDATE ai_sessions SET auto_pending=? WHERE account_id=? AND conversation_id=?", (int(recheck_group), aid, cid))
                 reply_ids = self._reply_ids(aid,cid,{s[0]['message_id'] for s in selected})
                 if not group:
                     run['reply_trigger_ids'] = reply_ids
